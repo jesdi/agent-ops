@@ -142,6 +142,9 @@ class Sources:
         try:
             rows = self._github.rank_rows(repositories)
         except Exception:
+            current = self._rank_cache.get(key)
+            if current is not cached and current is not None:
+                return current["rows"], current["as_of"], current["stale"]
             # Re-probe gh once per TTL, not per request: the failure is cached
             # as a stale entry (never a blank queue if a cache ever existed).
             entry = {"rows": cached["rows"] if cached else [],
@@ -173,6 +176,9 @@ class Sources:
             ttl = DESCRIPTION_TTL_SECONDS
             cache_at = now
         except Exception as exc:
+            current = self._desc_cache.get(key)
+            if current is not cached and current is not None:
+                return current["data"]
             if cached and not cached["data"]["error"]:
                 data, ttl = cached["data"], DESCRIPTION_TTL_SECONDS
             else:

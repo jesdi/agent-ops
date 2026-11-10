@@ -835,3 +835,53 @@ def test_message_less_failure_keeps_error_marker_across_retries(tmp_path):
     clock[0] += web.sources.DESCRIPTION_RETRY_SECONDS
     src.issue_description("jesdi/alpha", 1)
     assert gh.calls == 3
+
+
+def test_rank_failure_does_not_overwrite_overlapping_success(tmp_path):
+    repository = make_repository()
+    source = []
+
+    class OverlapGH:
+        calls = 0
+
+        def rank_rows(self, repositories):
+            self.calls += 1
+            if self.calls == 1:
+                assert source[0].rank_rows([repository])[0] == [{"number": 9}]
+                raise TimeoutError("first probe timed out")
+            return [{"number": 9}]
+
+    gh = OverlapGH()
+    _, src = make_sources(tmp_path, github=gh)
+    source.append(src)
+    first = src.rank_rows([repository])
+    assert first[0] == [{"number": 9}] and first[2] is False
+    assert src.rank_rows([repository]) == first
+    assert gh.calls == 2
+
+
+def test_description_failure_does_not_overwrite_overlapping_success(tmp_path):
+    clock = FakeClock()
+    source = []
+
+    class OverlapGH:
+        calls = 0
+
+        def issue_view(self, repo, number):
+            self.calls += 1
+            if self.calls == 1:
+                return {"title": "old", "body": "old", "url": "old"}
+            if self.calls == 2:
+                assert source[0].issue_description(repo, number)["title"] == "new"
+                raise TimeoutError("first probe timed out")
+            return {"title": "new", "body": "new", "url": "new"}
+
+    gh = OverlapGH()
+    _, src = make_sources(tmp_path, github=gh, clock=clock)
+    source.append(src)
+    src.issue_description("jesdi/alpha", 73)
+    clock.t += DESCRIPTION_TTL_SECONDS
+    first = src.issue_description("jesdi/alpha", 73)
+    assert first["title"] == "new" and first["error"] == ""
+    assert src.issue_description("jesdi/alpha", 73) == first
+    assert gh.calls == 3
