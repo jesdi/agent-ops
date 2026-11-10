@@ -2,27 +2,49 @@
 import json
 import pytest
 import subprocess
+from datetime import datetime, timezone
 
 from dispatcher import eventlog, execution_overrides, state
 from dispatcher.queue_ops import QueuePlan
 from tests.webfakes import make_config, make_repository
-from web.sources import DESCRIPTION_TTL_SECONDS, RANK_TTL_SECONDS, Sources
+from web.sources import (DESCRIPTION_RETRY_SECONDS, DESCRIPTION_TTL_SECONDS,
+                         RANK_TTL_SECONDS, Sources)
+
+
+ISSUE = {"title": "T", "body": "B", "url": "u"}
 
 
 class FakeGitHub:
+    """rank_rows and issue_view share the failure knobs: `fail` (True or the
+    exception to raise) and `on_call`, run at the start of each call to model
+    a slow gh (advance the clock) or an overlapping request (re-enter)."""
     def __init__(self):
         self.rows = {}          # repository name -> list[dict]
-        self.calls = 0
+        self.calls = 0          # rank_rows calls
+        self.issues = {}        # (repo, number) -> issue_view payload
+        self.view_calls = 0     # issue_view calls
         self.fail = False
+        self.on_call = None
         self.states = {}        # (repo, number) -> "OPEN"/"CLOSED"/None
         self.state_calls = []   # (repo, number) per issue_state call
         self.boosts = []
 
+    def _probe(self, *args):
+        if self.on_call:
+            self.on_call(*args)
+        if self.fail:
+            raise (RuntimeError("gh exploded") if self.fail is True
+                   else self.fail)
+
     def rank_rows(self, repositories):
         self.calls += 1
-        if self.fail:
-            raise RuntimeError("gh exploded")
+        self._probe(repositories)
         return self.rows.get(repositories[0].name, [])
+
+    def issue_view(self, repo, number):
+        self.view_calls += 1
+        self._probe(repo, number)
+        return self.issues.get((repo, number), ISSUE)
 
     def issue_state(self, repo, number):
         self.state_calls.append((repo, number))
@@ -64,6 +86,9 @@ class FakeClock:
     def __call__(self):
         return self.t
 
+    def advance(self, seconds):
+        self.t += seconds
+
 
 def make_sources(tmp_path, github=None, sessions=None, clock=None,
                  systemctl=("true",)):
@@ -73,15 +98,33 @@ def make_sources(tmp_path, github=None, sessions=None, clock=None,
                         systemctl=systemctl)
 
 
-def test_tasks_reads_state_dir(tmp_path):
+@pytest.fixture
+def clock():
+    return FakeClock()
+
+
+@pytest.fixture
+def gh():
+    return FakeGitHub()
+
+
+@pytest.fixture
+def src(tmp_path, gh, clock):
+    return make_sources(tmp_path, github=gh, clock=clock)[1]
+
+
+@pytest.fixture
+def repository():
+    return make_repository()
+
+
+def test_tasks_reads_state_dir(tmp_path, src):
     from tests.webfakes import make_task
     state.save(tmp_path, make_task(issue=5))
-    _, src = make_sources(tmp_path)
     assert [t.issue for t in src.tasks()] == [5]
 
 
-def test_execution_override_is_durable_and_invalidates_board(tmp_path):
-    _, src = make_sources(tmp_path)
+def test_execution_override_is_durable_and_invalidates_board(src):
     before = json.loads(src.state_fingerprint())["board"]
 
     src.set_execution_override(
@@ -91,45 +134,6 @@ def test_execution_override_is_durable_and_invalidates_board(tmp_path):
         execution_overrides.ExecutionOverride(
             model="claude-fable-5", bypass_usage=True))
     assert json.loads(src.state_fingerprint())["board"] != before
-
-
-def test_rank_rows_cached_within_ttl(tmp_path):
-    gh = FakeGitHub()
-    gh.rows["alpha"] = [{"number": 9, "title": "t", "url": "u",
-                        "status": "Ready", "labels": ["auto"],
-                        "blocked": False, "score": 1.0, "boost": 0}]
-    clock = FakeClock()
-    _, src = make_sources(tmp_path, github=gh, clock=clock)
-    repository = make_repository()
-    rows1, as_of1, stale1 = src.rank_rows([repository])
-    rows2, as_of2, stale2 = src.rank_rows([repository])
-    assert gh.calls == 1
-    assert rows1 == rows2 and as_of1 == as_of2
-    assert stale1 is False and stale2 is False
-    clock.t += RANK_TTL_SECONDS + 1
-    src.rank_rows([repository])
-    assert gh.calls == 2
-
-
-def test_rank_failure_serves_stale_cache(tmp_path):
-    gh = FakeGitHub()
-    gh.rows["alpha"] = [{"number": 9, "boost": 0}]
-    clock = FakeClock()
-    _, src = make_sources(tmp_path, github=gh, clock=clock)
-    repository = make_repository()
-    rows, as_of, _ = src.rank_rows([repository])
-    clock.t += RANK_TTL_SECONDS + 1
-    gh.fail = True
-    rows2, as_of2, stale = src.rank_rows([repository])
-    assert rows2 == rows and as_of2 == as_of and stale is True
-
-
-def test_rank_failure_without_cache_is_empty_stale(tmp_path):
-    gh = FakeGitHub()
-    gh.fail = True
-    _, src = make_sources(tmp_path, github=gh)
-    rows, as_of, stale = src.rank_rows([make_repository()])
-    assert rows == [] and stale is True and as_of
 
 
 def test_usage_reads_fresh_cache_only(tmp_path):
@@ -197,7 +201,7 @@ def test_console_hides_codex_without_a_readable_login(tmp_path, monkeypatch):
     assert set(_usage_route(tmp_path, monkeypatch, UsageFetchError("401"))) == {"anthropic"}
 
 
-def test_failure_and_quarantine_entries(tmp_path):
+def test_failure_and_quarantine_entries(tmp_path, src):
     (tmp_path / "failures").mkdir()
     (tmp_path / "failures" / "abc123def456").write_text(json.dumps(
         {"repo": "jesdi/alpha", "issue": 4, "when": "2026-07-25T09:00:00"}))
@@ -206,7 +210,6 @@ def test_failure_and_quarantine_entries(tmp_path):
         {"task_issue": 7, "blocker_repo": "jesdi/agent-ops",
          "blocker_issue": 31, "fingerprint": "abc123def456",
          "created_at": "2026-07-25T09:05:00"}))
-    _, src = make_sources(tmp_path)
     fps = src.fingerprint_entries()
     assert fps == [{"fingerprint": "abc123def456", "repo": "jesdi/alpha",
                     "issue": 4, "when": "2026-07-25T09:00:00"}]
@@ -224,19 +227,17 @@ def test_issue_open_maps_states_and_failures(tmp_path):
     assert src.issue_open("r", 3) is None  # gh raised
 
 
-def test_events_tail_via_real_eventlog(tmp_path):
+def test_events_tail_via_real_eventlog(tmp_path, src):
     eventlog.append_event(tmp_path, "claimed", repository="alpha", issue=7,
                           stage="spec", actor="dispatcher")
-    _, src = make_sources(tmp_path)
     tail = src.events_tail(10)
     assert tail[-1]["event"] == "claimed" and tail[-1]["issue"] == 7
 
 
-def test_events_tail_degrades_to_empty_on_corrupt_log(tmp_path):
+def test_events_tail_degrades_to_empty_on_corrupt_log(tmp_path, src):
     """A torn or undecodable events.jsonl must not 500 /api/board or
     /api/task/{issue}; degrade to [] so the board still renders."""
     (tmp_path / "events.jsonl").write_bytes(b"\xff\xfe bad utf-8")
-    _, src = make_sources(tmp_path)
     assert src.events_tail(100) == []
 
 
@@ -269,9 +270,8 @@ def test_apply_queue_plan_delegates_to_queue_ops(tmp_path):
     assert gh.boosts == [("alpha", 9, 3)]
 
 
-def test_state_fingerprint_tracks_categories(tmp_path):
+def test_state_fingerprint_tracks_categories(tmp_path, src):
     from tests.webfakes import make_task
-    _, src = make_sources(tmp_path)
     f1 = json.loads(src.state_fingerprint())
     state.save(tmp_path, make_task(issue=5))
     f2 = json.loads(src.state_fingerprint())
@@ -282,21 +282,19 @@ def test_state_fingerprint_tracks_categories(tmp_path):
     assert f3["history"] != f2["history"]
 
 
-def test_fingerprint_ignores_attached_markers(tmp_path):
+def test_fingerprint_ignores_attached_markers(tmp_path, src):
     """attached-* is no longer state the console reads: a stale marker from
     a pre-deploy console must not keep the board SSE key churning."""
-    _, src = make_sources(tmp_path)
     f1 = json.loads(src.state_fingerprint())
     (tmp_path / "attached-alpha-7").write_text("")
     assert json.loads(src.state_fingerprint())["board"] == f1["board"]
 
 
-def test_quarantine_and_intent_entries_tolerate_oserror(tmp_path):
+def test_quarantine_and_intent_entries_tolerate_oserror(tmp_path, src):
     """If a file is deleted or becomes unreadable after glob() but before
     read_text() (race condition during dispatcher processing), OSError
     should be caught silently. We simulate this by creating a directory
     with .json extension."""
-    _, src = make_sources(tmp_path)
 
     # Add a valid quarantine entry
     (tmp_path / "quarantine").mkdir()
@@ -379,14 +377,12 @@ def test_pane_tail_prefers_live_capture(tmp_path):
     assert src.pane_tail("alpha", 7) == "live output"
 
 
-def test_pane_tail_dead_and_no_snapshot_degrades_to_empty(tmp_path):
-    _, src = make_sources(tmp_path)
+def test_pane_tail_dead_and_no_snapshot_degrades_to_empty(src):
     assert src.pane_tail("alpha", 7) == ""
 
 
-def test_pane_history_falls_back_to_snapshot_when_dead(tmp_path):
+def test_pane_history_falls_back_to_snapshot_when_dead(tmp_path, src):
     _write_snapshot(tmp_path, 7, "l1\nl2\nl3")
-    _, src = make_sources(tmp_path)
     assert src.pane_history("alpha", 7) == "l1\nl2\nl3"
 
 
@@ -400,27 +396,24 @@ def test_pane_tail_wedged_is_alive_degrades_to_empty(tmp_path):
     assert src.pane_tail("alpha", 7) == ""
 
 
-def test_pane_tail_corrupt_snapshot_degrades_to_empty(tmp_path):
+def test_pane_tail_corrupt_snapshot_degrades_to_empty(tmp_path, src):
     """Snapshot truncated mid-UTF-8 (e.g. by dispatcher kill) raises
     UnicodeDecodeError; must degrade to "" not 500 the task view."""
     snap = tmp_path / "snapshots" / "task-7.txt"
     snap.parent.mkdir(parents=True, exist_ok=True)
     snap.write_bytes(b"\xff\xfe\xff")  # Invalid UTF-8 sequence
-    _, src = make_sources(tmp_path)
     assert src.pane_tail("alpha", 7) == ""
 
 
-def test_pane_history_corrupt_snapshot_degrades_to_empty(tmp_path):
+def test_pane_history_corrupt_snapshot_degrades_to_empty(tmp_path, src):
     """Same as pane_tail: corrupt snapshot with invalid UTF-8 degrades."""
     snap = tmp_path / "snapshots" / "task-7.txt"
     snap.parent.mkdir(parents=True, exist_ok=True)
     snap.write_bytes(b"\x80\x81\x82")  # Invalid UTF-8 sequence
-    _, src = make_sources(tmp_path)
     assert src.pane_history("alpha", 7) == ""
 
 
-def test_pass_heartbeat_reads_and_degrades(tmp_path):
-    _, src = make_sources(tmp_path)
+def test_pass_heartbeat_reads_and_degrades(src):
     assert src.pass_heartbeat() is None
     src.state_dir.mkdir(parents=True, exist_ok=True)
     (src.state_dir / "pass.json").write_text('{"interval_minutes": 10}')
@@ -429,17 +422,15 @@ def test_pass_heartbeat_reads_and_degrades(tmp_path):
     assert src.pass_heartbeat() is None
 
 
-def test_state_fingerprint_changes_when_pass_json_changes(tmp_path):
-    _, src = make_sources(tmp_path)
+def test_state_fingerprint_changes_when_pass_json_changes(tmp_path, src):
     f1 = json.loads(src.state_fingerprint())
     (tmp_path / "pass.json").write_text('{"interval_minutes": 10}')
     f2 = json.loads(src.state_fingerprint())
     assert f2["board"] != f1["board"]
 
 
-def test_state_fingerprint_usage_key_follows_the_usage_cache(tmp_path):
+def test_state_fingerprint_usage_key_follows_the_usage_cache(tmp_path, src):
     """A fresh usage/<provider>.json must reach open consoles over SSE."""
-    _, src = make_sources(tmp_path)
     f1 = json.loads(src.state_fingerprint())
     (tmp_path / "usage").mkdir()
     (tmp_path / "usage" / "anthropic.json").write_text('{"fetched_at": 1}')
@@ -448,12 +439,11 @@ def test_state_fingerprint_usage_key_follows_the_usage_cache(tmp_path):
     assert f2["board"] == f1["board"]
 
 
-def test_triage_state_degrades_to_false(tmp_path, monkeypatch):
+def test_triage_state_degrades_to_false(monkeypatch, src):
     """Both triage flags degrade to False when the underlying call raises.
     Monkeypatching forces the error path so the test does not depend on
     whether the host has a tmux session named 'triage' or tmux installed."""
     import dispatcher.triage as triage_mod
-    _, src = make_sources(tmp_path)
 
     def boom(*_a, **_kw):
         raise RuntimeError("simulated triage read failure")
@@ -464,11 +454,10 @@ def test_triage_state_degrades_to_false(tmp_path, monkeypatch):
     assert src.triage_state() == (False, False)
 
 
-def test_triage_state_probes_tmux_once(tmp_path, monkeypatch):
+def test_triage_state_probes_tmux_once(monkeypatch, src):
     """triage.pending() calls running() internally; composing the two signals
     from one probe is the whole point (cf. dispatcher run_pass)."""
     import dispatcher.triage as triage_mod
-    _, src = make_sources(tmp_path)
     calls = []
     monkeypatch.setattr(triage_mod, "running",
                         lambda: (calls.append(1), False)[1])
@@ -476,18 +465,16 @@ def test_triage_state_probes_tmux_once(tmp_path, monkeypatch):
     assert len(calls) == 1
 
 
-def test_triage_state_request_file_pauses_claims(tmp_path, monkeypatch):
+def test_triage_state_request_file_pauses_claims(tmp_path, monkeypatch, src):
     import dispatcher.triage as triage_mod
-    _, src = make_sources(tmp_path)
     monkeypatch.setattr(triage_mod, "running", lambda: False)
     (tmp_path / triage_mod.REQUEST_FILE).write_text(
         '{"requested_at": "2026-08-01T00:00:00+00:00"}')
     assert src.triage_state() == (True, False)
 
 
-def test_triage_state_running_pauses_claims_too(tmp_path, monkeypatch):
+def test_triage_state_running_pauses_claims_too(monkeypatch, src):
     import dispatcher.triage as triage_mod
-    _, src = make_sources(tmp_path)
     monkeypatch.setattr(triage_mod, "running", lambda: True)
     assert src.triage_state() == (True, True)
 
@@ -498,85 +485,7 @@ def _quarantine(tmp_path, name, **rec):
     (d / name).write_text(json.dumps(rec))
 
 
-def test_issue_description_caches_and_degrades(tmp_path):
-    calls = []
-
-    class FakeGH:
-        def issue_view(self, repo, number):
-            calls.append((repo, number))
-            if len(calls) > 1:
-                raise RuntimeError("gh down")
-            return {"title": "T", "body": "B", "url": "u"}
-
-    clock = [1000.0]
-    _, src = make_sources(tmp_path, github=FakeGH(), clock=lambda: clock[0])
-    d = src.issue_description("jesdi/alpha", 73)
-    assert (d["title"], d["error"]) == ("T", "")
-    # within TTL: served from cache, no second gh call
-    clock[0] += 100
-    assert src.issue_description("jesdi/alpha", 73)["title"] == "T"
-    assert len(calls) == 1
-    # past TTL with gh down: stale cache beats an error
-    clock[0] += 400
-    d = src.issue_description("jesdi/alpha", 73)
-    assert d["title"] == "T" and d["error"] == ""
-    # cold cache with gh down: explicit error, never a raise
-    d = src.issue_description("jesdi/alpha", 99)
-    assert d["title"] == "" and d["error"] != ""
-
-
-def test_issue_description_non_dict_payload_degrades(tmp_path):
-    """issue_view returning None or a list (valid JSON but not a dict) must
-    not escape the try block and 500 the route — it must land in the explicit-
-    error path exactly as a fetch exception would."""
-    clock = [1000.0]
-
-    class ReturnNone:
-        def issue_view(self, repo, number):
-            return None
-
-    class ReturnList:
-        def issue_view(self, repo, number):
-            return [{"title": "oops"}]
-
-    _, src_none = make_sources(tmp_path, github=ReturnNone(),
-                               clock=lambda: clock[0])
-    d = src_none.issue_description("jesdi/alpha", 73)
-    assert d["title"] == "" and d["error"] != ""
-
-    _, src_list = make_sources(tmp_path, github=ReturnList(),
-                               clock=lambda: clock[0])
-    d = src_list.issue_description("jesdi/alpha", 73)
-    assert d["title"] == "" and d["error"] != ""
-
-
-def test_issue_description_cache_key_includes_repo(tmp_path):
-    """Cache key must include BOTH repo and number — (repo, number) not just
-    number — so alpha#73 and beta#73 are cached independently."""
-    clock = [1000.0]
-    calls = []
-
-    class FakeGH:
-        def issue_view(self, repo, number):
-            calls.append((repo, number))
-            return {"title": f"T-{repo}", "body": "", "url": ""}
-
-    _, src = make_sources(tmp_path, github=FakeGH(), clock=lambda: clock[0])
-    d_alpha = src.issue_description("jesdi/alpha", 73)
-    d_beta = src.issue_description("jesdi/beta", 73)
-    # Both should have been fetched (two separate gh calls)
-    assert len(calls) == 2
-    # Titles must reflect the correct repo, not bleed from one cache to another
-    assert d_alpha["title"] == "T-jesdi/alpha"
-    assert d_beta["title"] == "T-jesdi/beta"
-    # Within TTL: served from their respective caches (no new calls)
-    clock[0] += 100
-    src.issue_description("jesdi/alpha", 73)
-    src.issue_description("jesdi/beta", 73)
-    assert len(calls) == 2
-
-
-def test_quarantine_entries_skip_an_unreadable_record(tmp_path):
+def test_quarantine_entries_skip_an_unreadable_record(tmp_path, src):
     """A torn write_text leaves invalid UTF-8, whose read_text raises
     UnicodeDecodeError — a ValueError, NOT an OSError. The old
     (JSONDecodeError, OSError) guard missed it and 500'd the route. Valid
@@ -584,7 +493,6 @@ def test_quarantine_entries_skip_an_unreadable_record(tmp_path):
     rec.get -> AttributeError. Neither may raise, and neither may reach
     /api/failures: with no readable body every field would be blank and the
     row would be indistinguishable from a real entry."""
-    _, src = make_sources(tmp_path)
     d = tmp_path / "quarantine"
     d.mkdir(parents=True, exist_ok=True)
     (d / "alpha-73.json").write_bytes(b'{"blocker_issue": \xff\xfe}')
@@ -595,23 +503,21 @@ def test_quarantine_entries_skip_an_unreadable_record(tmp_path):
     assert [e["task_issue"] for e in src.quarantine_entries()] == [76]
 
 
-def test_quarantine_key_comes_from_the_filename_not_the_body(tmp_path):
+def test_quarantine_key_comes_from_the_filename_not_the_body(tmp_path, src):
     """check_quarantine — and the retry route that validates against these
     entries — looks a record up by FILENAME. A body whose task_issue
     disagrees must not shift the key."""
-    _, src = make_sources(tmp_path)
     _quarantine(tmp_path, "alpha-73.json", task_issue=999, blocker_repo="r",
                 blocker_issue=1, fingerprint="f", created_at="c")
     entry, = src.quarantine_entries()
     assert (entry["repository"], entry["task_issue"]) == ("alpha", 73)
 
 
-def test_state_fingerprint_board_and_usage_follow_the_priority_mode(tmp_path):
+def test_state_fingerprint_board_and_usage_follow_the_priority_mode(tmp_path, src):
     """A mode change must reach other open consoles over SSE: it moves the
     mode, the "first" chip and the board's next-launch models."""
     from datetime import datetime, timezone
     from dispatcher import priority
-    _, src = make_sources(tmp_path)
     f1 = json.loads(src.state_fingerprint())
     priority.save(tmp_path, "anthropic", actor="jesdi",
                   now=datetime.now(timezone.utc))
@@ -625,8 +531,7 @@ _GOOD = dict(task_issue=0, blocker_repo="r", blocker_issue=1,
              fingerprint="f", created_at="c")
 
 
-def test_quarantine_entries_skip_wrong_typed_blocker_issue(tmp_path):
-    _, src = make_sources(tmp_path)
+def test_quarantine_entries_skip_wrong_typed_blocker_issue(tmp_path, src):
     for n, bad in enumerate(["abc", "5", True, 1.5, None, [1]], start=80):
         _quarantine(tmp_path, f"alpha-{n}.json",
                     **{**_GOOD, "task_issue": n, "blocker_issue": bad})
@@ -636,14 +541,12 @@ def test_quarantine_entries_skip_wrong_typed_blocker_issue(tmp_path):
     assert (entry["task_issue"], entry["blocker_issue"]) == (86, 7)
 
 
-def test_quarantine_entries_skip_wrong_typed_task_issue_despite_filename(tmp_path):
-    _, src = make_sources(tmp_path)
+def test_quarantine_entries_skip_wrong_typed_task_issue_despite_filename(tmp_path, src):
     _quarantine(tmp_path, "alpha-90.json", **{**_GOOD, "task_issue": "x"})
     assert [e["task_issue"] for e in src.quarantine_entries()] == []
 
 
-def test_quarantine_entries_skip_wrong_typed_string_fields(tmp_path):
-    _, src = make_sources(tmp_path)
+def test_quarantine_entries_skip_wrong_typed_string_fields(tmp_path, src):
     for n, key, bad in [(91, "blocker_repo", 5), (92, "fingerprint", None),
                         (93, "created_at", {"at": 1})]:
         _quarantine(tmp_path, f"alpha-{n}.json",
@@ -652,8 +555,7 @@ def test_quarantine_entries_skip_wrong_typed_string_fields(tmp_path):
     assert [e["task_issue"] for e in src.quarantine_entries()] == [94]
 
 
-def test_quarantine_entries_keep_missing_fields_and_extra_keys(tmp_path):
-    _, src = make_sources(tmp_path)
+def test_quarantine_entries_keep_missing_fields_and_extra_keys(tmp_path, src):
     _quarantine(tmp_path, "alpha-95.json", blocker_repo="r", note=42)
     entry, = src.quarantine_entries()
     assert (entry["repository"], entry["task_issue"], entry["blocker_repo"],
@@ -661,8 +563,7 @@ def test_quarantine_entries_keep_missing_fields_and_extra_keys(tmp_path):
             entry["created_at"]) == ("alpha", 95, "r", 0, "", "")
 
 
-def test_quarantine_entries_existing_skips_still_hold(tmp_path):
-    _, src = make_sources(tmp_path)
+def test_quarantine_entries_existing_skips_still_hold(tmp_path, src):
     d = tmp_path / "quarantine"
     d.mkdir(parents=True, exist_ok=True)
     (d / "alpha-73.json").write_bytes(b"\xff\xfe\xfd")
@@ -671,3 +572,206 @@ def test_quarantine_entries_existing_skips_still_hold(tmp_path):
     _quarantine(tmp_path, "alpha-76.json", **{**_GOOD, "task_issue": 999})
     entry, = src.quarantine_entries()
     assert (entry["repository"], entry["task_issue"]) == ("alpha", 76)
+
+
+# gh-backed caches: rank_rows and issue_description.
+
+
+@pytest.fixture
+def stale_rank(src, gh, clock, repository):
+    """A cached ranking past its TTL, with gh now down."""
+    gh.rows["alpha"] = [{"number": 9, "boost": 0}]
+    cached = src.rank_rows([repository])
+    gh.fail = True
+    clock.advance(RANK_TTL_SECONDS + 1)
+    return cached
+
+
+@pytest.fixture
+def stale_description(src, gh, clock):
+    """A cached description of alpha#73 past its TTL, with gh now down."""
+    cached = src.issue_description("jesdi/alpha", 73)
+    gh.fail = True
+    clock.advance(DESCRIPTION_TTL_SECONDS + 1)
+    return cached
+
+
+def test_rank_rows_cached_within_ttl(src, gh, clock, repository):
+    gh.rows["alpha"] = [{"number": 9, "title": "t", "url": "u",
+                        "status": "Ready", "labels": ["auto"],
+                        "blocked": False, "score": 1.0, "boost": 0}]
+    first = src.rank_rows([repository])
+    assert src.rank_rows([repository]) == first
+    assert first[2] is False and gh.calls == 1
+    clock.advance(RANK_TTL_SECONDS + 1)
+    src.rank_rows([repository])
+    assert gh.calls == 2
+
+
+def test_rank_failure_serves_stale_cache(src, repository, stale_rank):
+    rows, as_of, _ = stale_rank
+    assert src.rank_rows([repository]) == (rows, as_of, True)
+
+
+def test_rank_failure_without_cache_is_empty_stale(src, gh, repository):
+    gh.fail = True
+    rows, as_of, stale = src.rank_rows([repository])
+    assert rows == [] and stale is True and as_of
+
+
+def test_rank_rows_outage_reprobes_at_ttl_cadence_not_per_request(
+        src, gh, clock, repository, stale_rank):
+    """#83: during a gh outage every request re-shelled gh. A failed probe,
+    stale or cold, must be remembered for exactly one TTL."""
+    rows, as_of, _ = stale_rank
+    for _ in range(5):
+        assert src.rank_rows([repository]) == (rows, as_of, True)
+    assert gh.calls == 2   # one probe on expiry, then the stale serve holds
+    clock.advance(RANK_TTL_SECONDS - 1)
+    src.rank_rows([repository])
+    assert gh.calls == 2
+    clock.advance(1)
+    src.rank_rows([repository])
+    assert gh.calls == 3   # re-probed exactly when the refreshed TTL lapses
+
+    cold = make_repository(name="beta", repo="jesdi/beta")
+    expected_as_of = datetime.fromtimestamp(clock.t, timezone.utc).isoformat()
+    for _ in range(5):
+        assert src.rank_rows([cold]) == ([], expected_as_of, True)
+        clock.advance(1)
+    assert gh.calls == 4
+
+
+def test_cold_rank_timeout_starts_ttl_window_after_failure(
+        src, gh, clock, repository):
+    gh.on_call = lambda *_: clock.advance(120)
+    gh.fail = TimeoutError("gh timed out")
+    first = src.rank_rows([repository])
+    assert first[0] == [] and first[2] is True
+    assert src.rank_rows([repository]) == first
+    assert gh.calls == 1
+
+
+def test_rank_failure_does_not_overwrite_overlapping_success(
+        src, gh, repository):
+    gh.rows["alpha"] = [{"number": 9}]
+
+    def first_probe_overlaps(_repositories):
+        if gh.calls == 1:
+            assert src.rank_rows([repository])[0] == [{"number": 9}]
+            raise TimeoutError("first probe timed out")
+
+    gh.on_call = first_probe_overlaps
+    first = src.rank_rows([repository])
+    assert first[0] == [{"number": 9}] and first[2] is False
+    assert src.rank_rows([repository]) == first
+    assert gh.calls == 2
+
+
+def test_issue_description_cached_within_ttl(src, gh, clock):
+    d = src.issue_description("jesdi/alpha", 73)
+    assert (d["title"], d["error"]) == ("T", "")
+    clock.advance(100)
+    assert src.issue_description("jesdi/alpha", 73) == d
+    assert gh.view_calls == 1
+
+
+@pytest.mark.parametrize("payload", [None, [{"title": "oops"}]])
+def test_issue_description_non_dict_payload_degrades(src, gh, payload):
+    """issue_view returning valid JSON that is not a dict must land in the
+    explicit-error path exactly as a fetch exception would, not 500 the
+    route."""
+    gh.issues[("jesdi/alpha", 73)] = payload
+    d = src.issue_description("jesdi/alpha", 73)
+    assert d["title"] == "" and d["error"] != ""
+
+
+def test_issue_description_cache_key_includes_repo(src, gh, clock):
+    """alpha#73 and beta#73 are cached independently."""
+    for repo in ("jesdi/alpha", "jesdi/beta"):
+        gh.issues[(repo, 73)] = {**ISSUE, "title": f"T-{repo}"}
+    assert src.issue_description("jesdi/alpha", 73)["title"] == "T-jesdi/alpha"
+    assert src.issue_description("jesdi/beta", 73)["title"] == "T-jesdi/beta"
+    clock.advance(100)
+    src.issue_description("jesdi/alpha", 73)
+    src.issue_description("jesdi/beta", 73)
+    assert gh.view_calls == 2
+
+
+def test_issue_description_outage_reprobes_at_ttl_cadence_not_per_request(
+        src, gh, clock, stale_description):
+    """#83: during a gh outage every request re-shelled `gh issue view` (a
+    120 s subprocess). A stale serve is re-probed once per TTL."""
+    for _ in range(5):
+        assert src.issue_description("jesdi/alpha", 73) == stale_description
+    assert gh.view_calls == 2   # one probe on expiry, then the stale serve holds
+    clock.advance(DESCRIPTION_TTL_SECONDS - 1)
+    src.issue_description("jesdi/alpha", 73)
+    assert gh.view_calls == 2
+    clock.advance(1)
+    src.issue_description("jesdi/alpha", 73)
+    assert gh.view_calls == 3   # re-probed exactly when the refreshed TTL lapses
+
+
+def test_cold_description_failure_retries_after_the_retry_interval(
+        src, gh, clock):
+    gh.fail = True
+    first = src.issue_description("jesdi/alpha", 99)
+    assert (first["title"], first["body"], first["url"]) == ("", "", "")
+    assert first["error"] != ""
+    for _ in range(4):
+        assert src.issue_description("jesdi/alpha", 99) == first
+    assert gh.view_calls == 1   # negative-cached, error marker kept
+    clock.advance(DESCRIPTION_RETRY_SECONDS + 1)
+    gh.fail = False
+    d = src.issue_description("jesdi/alpha", 99)
+    assert (d["title"], d["error"]) == ("T", "") and gh.view_calls == 2
+    clock.advance(100)
+    assert src.issue_description("jesdi/alpha", 99) == d
+    assert gh.view_calls == 2   # the recovered payload gets a full TTL
+
+
+def test_cold_description_timeout_starts_retry_window_after_failure(
+        src, gh, clock):
+    gh.on_call = lambda *_: clock.advance(120)
+    gh.fail = TimeoutError("gh timed out")
+    first = src.issue_description("jesdi/alpha", 99)
+    assert first["error"]
+    assert src.issue_description("jesdi/alpha", 99) == first
+    assert gh.view_calls == 1
+
+
+def test_message_less_failure_keeps_error_marker_across_retries(
+        src, gh, clock):
+    gh.fail = RuntimeError()
+    first = src.issue_description("jesdi/alpha", 1)
+    assert first["error"] != ""
+    assert src.issue_description("jesdi/alpha", 1) == first
+    assert gh.view_calls == 1
+    clock.advance(DESCRIPTION_RETRY_SECONDS)
+    again = src.issue_description("jesdi/alpha", 1)
+    assert gh.view_calls == 2 and again["error"] != ""
+    clock.advance(DESCRIPTION_RETRY_SECONDS)
+    src.issue_description("jesdi/alpha", 1)
+    assert gh.view_calls == 3
+
+
+def test_description_failure_does_not_overwrite_overlapping_success(
+        src, gh, clock):
+    key = ("jesdi/alpha", 73)
+    new = {"title": "new", "body": "new", "url": "new"}
+    gh.issues[key] = {"title": "old", "body": "old", "url": "old"}
+    src.issue_description(*key)
+
+    def second_probe_overlaps(repo, number):
+        if gh.view_calls == 2:
+            gh.issues[key] = new
+            assert src.issue_description(repo, number)["title"] == "new"
+            raise TimeoutError("first probe timed out")
+
+    gh.on_call = second_probe_overlaps
+    clock.advance(DESCRIPTION_TTL_SECONDS)
+    first = src.issue_description(*key)
+    assert first["title"] == "new" and first["error"] == ""
+    assert src.issue_description(*key) == first
+    assert gh.view_calls == 3

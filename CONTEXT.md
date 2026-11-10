@@ -457,6 +457,22 @@ it into main. Wayfinder or the operator creates, rebases and merges it; the
 dispatcher never does.
 _Avoid_: feature branch, epic branch
 
+**Stale serve**:
+Returning previously fetched issue descriptions or rank rows after a failed
+`gh` probe. The payload and its original fetch timestamp stay unchanged; a
+rank answer reports `stale=True`.
+
+**Negative cache**:
+A cached cold failure: an issue description with a nonempty `error`, or empty
+rank rows with `stale=True`. It limits repeat `gh` calls until the entry's
+retry window expires.
+
+**Re-probe window**:
+The time after a failed `gh` call finishes during which the console serves
+the cached answer without another `gh` call. Descriptions use 300 seconds
+after a stale serve or 30 seconds after a cold failure; rank rows use 15
+seconds. The payload timestamp still names the earlier fetch.
+
 ## Loop-policy ownership
 
 **Single owner**: `dispatcher/loops.py` owns all round accounting, cap arithmetic, and reset scopes.
