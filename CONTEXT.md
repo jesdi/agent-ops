@@ -259,6 +259,18 @@ One limit a provider reports: a kind (session, weekly), an optional model
 scope (Fable), a used fraction, when it resets, and its nominal length.
 _Avoid_: quota, bucket
 
+**Dead token**:
+For Anthropic usage, every candidate OAuth token is rejected by the usage
+endpoint or yields no usage windows. Local session logs cannot establish
+that the token is live (ADR 0008).
+
+**Reading**:
+The `ProviderUsage` returned by a usage adapter.
+
+**Unavailable reading**:
+A reading with `source == "unavailable"` and no windows. The Anthropic adapter
+returns it after exhausting OAuth candidates, with no ccusage fallback.
+
 **Allowance**:
 The fraction of a window the box may have consumed by now — the session
 threshold, or the weekend-weighted elapsed share of the week plus the pace
