@@ -28,6 +28,8 @@ export function FailureList({ failures, onRetry, errors = {}, busy = new Set() }
             return (
             <li
               key={`${q.repository}#${q.task_issue}`}
+              role="group"
+              aria-label={`${q.repository}#${q.task_issue}`}
               className="flex flex-wrap items-center gap-2 rounded border border-border bg-surface-raised p-3 text-sm"
             >
               <span className="font-mono text-xs">{q.fingerprint}</span>
@@ -48,7 +50,6 @@ export function FailureList({ failures, onRetry, errors = {}, busy = new Set() }
                 type="button"
                 className="ml-auto rounded border px-2 py-0.5 text-xs disabled:opacity-50"
                 disabled={busy.has(`${q.repository}#${q.task_issue}`)}
-                aria-label={`Retry ${q.repository} task #${q.task_issue}`}
                 onClick={() => onRetry(q.repository, q.task_issue)}
               >
                 Retry

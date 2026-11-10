@@ -19,11 +19,13 @@
   prop is replaced by a per-task prop: a `ReadonlySet<string>` of `${repository}#${task_issue}`
   keys, defaulting to empty. Tradeoff: a breaking prop change, but `FailuresPage` is its only
   caller.
-- **Accessible name via `aria-label`, visible text unchanged.** Each button gets
-  `aria-label="Retry <repository> task #<task_issue>"`, matching the row's own visible
-  `<repository> task #<task_issue>` text; the button text stays `Retry`. Tradeoff: the
-  `role="group"` alternative from #84's comment would keep one name per button but is not what
-  #43 or its reproduction tests ask for (proposal non-goal).
+- **Named rows follow ADR 0007; button names stay unchanged.** Each existing Retry row
+  gets `role="group"` and `aria-label="<repository>#<task_issue>"`; its button's accessible
+  name and visible text stay `Retry`, without a button `aria-label`. Tests scope the button
+  query with `within(getByRole('group', { name: 'widget#38' })).getByRole('button', { name: 'Retry' })`.
+  Tradeoff: task context is announced on entering the group rather than on each button.
+  The operator confirmed on 2026-11-10 that ADR 0007 supersedes this task's earlier
+  button-renaming decision, with no exception.
 - **One ticket.** Both defects live in the same button of the same component and the same test
   file, and the rename of the existing test queries depends on the new name; split, each half
   would be a few lines and the two would restructure the same render.

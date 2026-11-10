@@ -69,9 +69,9 @@ it('retry posts the intent for the quarantined task', async () => {
   )
   renderWithProviders(<FailuresPage />)
   await waitFor(() =>
-    expect(screen.getByRole('button', { name: 'Retry widget task #38' })).toBeInTheDocument(),
+    expect(within(screen.getByRole('group', { name: 'widget#38' })).getByRole('button', { name: 'Retry' })).toBeInTheDocument(),
   )
-  await userEvent.click(screen.getByRole('button', { name: 'Retry widget task #38' }))
+  await userEvent.click(within(screen.getByRole('group', { name: 'widget#38' })).getByRole('button', { name: 'Retry' }))
   await waitFor(() => expect(retried).toBe(true))
 })
 
@@ -85,9 +85,9 @@ it('a failing retry surfaces the API detail inline instead of looking like succe
   )
   renderWithProviders(<FailuresPage />)
   await waitFor(() =>
-    expect(screen.getByRole('button', { name: 'Retry widget task #38' })).toBeInTheDocument(),
+    expect(within(screen.getByRole('group', { name: 'widget#38' })).getByRole('button', { name: 'Retry' })).toBeInTheDocument(),
   )
-  await userEvent.click(screen.getByRole('button', { name: 'Retry widget task #38' }))
+  await userEvent.click(within(screen.getByRole('group', { name: 'widget#38' })).getByRole('button', { name: 'Retry' }))
   await waitFor(() =>
     expect(screen.getByTestId('retry-error-38')).toHaveTextContent(
       'issue 38 is not quarantined',
@@ -113,15 +113,15 @@ const twoQuarantined = {
   fingerprints: [],
 }
 
-it('each Retry button names the task it retries', async () => {
+it('each Retry row names its task and keeps the Retry button name', async () => {
   server.use(http.get('/api/failures', () => HttpResponse.json(twoQuarantined)))
   renderWithProviders(<FailuresPage />)
   await waitFor(() =>
-    expect(screen.getByRole('button', { name: 'Retry widget task #38' })).toBeInTheDocument(),
+    expect(within(screen.getByRole('group', { name: 'widget#38' })).getByRole('button', { name: 'Retry' })).toBeInTheDocument(),
   )
-  expect(screen.getByRole('button', { name: 'Retry gadget task #38' })).toBeInTheDocument()
-  expect(screen.getByRole('button', { name: 'Retry widget task #38' })).toHaveTextContent(/^Retry$/)
-  expect(screen.getByRole('button', { name: 'Retry gadget task #38' })).toHaveTextContent(/^Retry$/)
+  expect(within(screen.getByRole('group', { name: 'gadget#38' })).getByRole('button', { name: 'Retry' })).toBeInTheDocument()
+  expect(within(screen.getByRole('group', { name: 'widget#38' })).getByRole('button', { name: 'Retry' })).toHaveTextContent(/^Retry$/)
+  expect(within(screen.getByRole('group', { name: 'gadget#38' })).getByRole('button', { name: 'Retry' })).toHaveTextContent(/^Retry$/)
 })
 
 it('an in-flight retry disables only its own row', async () => {
@@ -135,9 +135,8 @@ it('an in-flight retry disables only its own row', async () => {
     }),
   )
   renderWithProviders(<FailuresPage />)
-  const buttons = await screen.findAllByRole('button', { name: /^Retry/ })
-  expect(buttons).toHaveLength(2)
-  const [widget, gadget] = buttons as [HTMLElement, HTMLElement]
+  const widget = within(await screen.findByRole('group', { name: 'widget#38' })).getByRole('button', { name: 'Retry' })
+  const gadget = within(screen.getByRole('group', { name: 'gadget#38' })).getByRole('button', { name: 'Retry' })
   await userEvent.click(widget)
   await waitFor(() => expect(widget).toBeDisabled())
   expect(gadget).toBeEnabled()
@@ -156,9 +155,9 @@ function gate() {
 
 async function twoButtons() {
   renderWithProviders(<FailuresPage />)
-  const buttons = await screen.findAllByRole('button', { name: /^Retry/ })
-  expect(buttons).toHaveLength(2)
-  return buttons as [HTMLElement, HTMLElement]
+  const widget = within(await screen.findByRole('group', { name: 'widget#38' })).getByRole('button', { name: 'Retry' })
+  const gadget = within(screen.getByRole('group', { name: 'gadget#38' })).getByRole('button', { name: 'Retry' })
+  return [widget, gadget] as const
 }
 
 it('a gadget retry in flight disables gadget and leaves widget enabled', async () => {
@@ -204,11 +203,11 @@ it('a failed retry re-enables its button and shows its error only in its row', a
     ),
   )
   renderWithProviders(<FailuresPage />)
-  const widget = await screen.findByRole('button', { name: 'Retry widget task #38' })
+  const widget = within(await screen.findByRole('group', { name: 'widget#38' })).getByRole('button', { name: 'Retry' })
   await userEvent.click(widget)
-  const gadget = screen.getByRole('button', { name: 'Retry gadget task #38' })
-  const widgetRow = widget.closest('li') as HTMLElement
-  const gadgetRow = gadget.closest('li') as HTMLElement
+  const gadget = within(screen.getByRole('group', { name: 'gadget#38' })).getByRole('button', { name: 'Retry' })
+  const widgetRow = screen.getByRole('group', { name: 'widget#38' })
+  const gadgetRow = screen.getByRole('group', { name: 'gadget#38' })
   expect(widgetRow).not.toBe(gadgetRow)
   await waitFor(() =>
     expect(within(widgetRow).getByTestId('retry-error-38')).toHaveTextContent(

@@ -10,14 +10,15 @@
 2. **Concurrent retries.** Retries for different tasks can be in flight at the same time.
    Each button re-enables when its own request settles (success or error), whatever the
    other requests are doing.
-3. **Distinct accessible name.** Each Retry button's accessible name is
-   `Retry <repository> task #<task_issue>`, for example `Retry widget task #38`. Its visible
-   text stays `Retry`.
+3. **Named Retry rows.** Each existing quarantined task row has `role="group"` and
+   accessible name `${repository}#${task_issue}`, for example `widget#38`, following
+   ADR 0007. Each button's accessible name and visible text stay `Retry`. Tests select
+   a row's button with `within(getByRole('group', { name: 'widget#38' })).getByRole('button', { name: 'Retry' })`.
 4. **Existing behaviour is kept.** A retry still POSTs `/api/task/{repository}/{issue}/retry`
    for its row, and a failed retry still shows the API `detail` inline in that row
    (`data-testid="retry-error-<task_issue>"`). The existing tests in
    `frontend/src/pages/__tests__/FailuresPage.test.tsx` that query
-   `getByRole('button', { name: 'Retry' })` are updated to query the task-specific name.
+   `getByRole('button', { name: 'Retry' })` are updated to scope the Retry query to the task-specific group.
    This is a test change only, and their assertions stay the same.
 
 ## Scenarios
@@ -37,14 +38,14 @@ Committed as the failing test `an in-flight retry disables only its own row`.
   (today both are disabled)
 - **And when** the held request then answers 202, the `widget` button is enabled again
 
-### Scenario: reproduction: each Retry button names its task (req 3)
+### Scenario: reproduction: each Retry row names its task (req 3)
 
-Committed as the failing test `each Retry button names the task it retries`.
+Committed as the failing test `each Retry row names its task and keeps the Retry button name`.
 
 - **Given** the Failures page shows `widget` task #38 and `gadget` task #38
 - **When** the buttons are queried by role
-- **Then** there is a button named exactly `Retry widget task #38` and one named exactly
-  `Retry gadget task #38` (today both are named `Retry`)
+- **Then** the groups named exactly `widget#38` and `gadget#38` each contain a button
+  named exactly `Retry`
 - **And** each of those buttons still shows the visible text `Retry`
 
 ### Scenario: same issue number on another repository does not share busy state (req 1)
@@ -65,14 +66,14 @@ Committed as the failing test `each Retry button names the task it retries`.
 
 - **Given** the two-task fixture and `POST /api/task/widget/38/retry` answering 404
   `{"detail": "issue 38 is not quarantined"}`
-- **When** the operator clicks `Retry widget task #38`
+- **When** the operator clicks `Retry` within the `widget#38` group
 - **Then** that row shows `issue 38 is not quarantined` inline, and the `widget` button is
   enabled again
 
 ### Scenario: retry still posts the intent (req 4)
 
 - **Given** the default single-task fixture (`widget` task #38)
-- **When** the operator clicks `Retry widget task #38`
+- **When** the operator clicks `Retry` within the `widget#38` group
 - **Then** `POST /api/task/widget/38/retry` is called
 
 ## Out of scope
