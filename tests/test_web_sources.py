@@ -885,3 +885,55 @@ def test_description_failure_does_not_overwrite_overlapping_success(tmp_path):
     assert first["title"] == "new" and first["error"] == ""
     assert src.issue_description("jesdi/alpha", 73) == first
     assert gh.calls == 3
+
+
+_GOOD = dict(task_issue=0, blocker_repo="r", blocker_issue=1,
+             fingerprint="f", created_at="c")
+
+
+def test_quarantine_entries_skip_wrong_typed_blocker_issue(tmp_path):
+    _, src = make_sources(tmp_path)
+    for n, bad in enumerate(["abc", "5", True, 1.5, None, [1]], start=80):
+        _quarantine(tmp_path, f"alpha-{n}.json",
+                    **{**_GOOD, "task_issue": n, "blocker_issue": bad})
+    _quarantine(tmp_path, "alpha-86.json",
+                **{**_GOOD, "task_issue": 86, "blocker_issue": 7})
+    entry, = src.quarantine_entries()
+    assert (entry["task_issue"], entry["blocker_issue"]) == (86, 7)
+
+
+def test_quarantine_entries_skip_wrong_typed_task_issue_despite_filename(tmp_path):
+    _, src = make_sources(tmp_path)
+    _quarantine(tmp_path, "alpha-90.json", **{**_GOOD, "task_issue": "x"})
+    assert [e["task_issue"] for e in src.quarantine_entries()] == []
+
+
+def test_quarantine_entries_skip_wrong_typed_string_fields(tmp_path):
+    _, src = make_sources(tmp_path)
+    for n, key, bad in [(91, "blocker_repo", 5), (92, "fingerprint", None),
+                        (93, "created_at", {"at": 1})]:
+        _quarantine(tmp_path, f"alpha-{n}.json",
+                    **{**_GOOD, "task_issue": n, key: bad})
+    _quarantine(tmp_path, "alpha-94.json", **{**_GOOD, "task_issue": 94})
+    assert [e["task_issue"] for e in src.quarantine_entries()] == [94]
+
+
+def test_quarantine_entries_keep_missing_fields_and_extra_keys(tmp_path):
+    _, src = make_sources(tmp_path)
+    _quarantine(tmp_path, "alpha-95.json", blocker_repo="r", note=42)
+    entry, = src.quarantine_entries()
+    assert (entry["repository"], entry["task_issue"], entry["blocker_repo"],
+            entry["blocker_issue"], entry["fingerprint"],
+            entry["created_at"]) == ("alpha", 95, "r", 0, "", "")
+
+
+def test_quarantine_entries_existing_skips_still_hold(tmp_path):
+    _, src = make_sources(tmp_path)
+    d = tmp_path / "quarantine"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "alpha-73.json").write_bytes(b"\xff\xfe\xfd")
+    (d / "alpha-74.json").write_text("null")
+    (d / "alpha-75.json").write_text("[1, 2]")
+    _quarantine(tmp_path, "alpha-76.json", **{**_GOOD, "task_issue": 999})
+    entry, = src.quarantine_entries()
+    assert (entry["repository"], entry["task_issue"]) == ("alpha", 76)

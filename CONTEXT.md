@@ -6,6 +6,30 @@ sessions to a finished PR.
 
 ## Language
 
+**Dark usage**:
+A dispatcher pass whose usage fetch returns no providers or only providers
+whose source is `unavailable`. The box fails closed during this state; a
+single unavailable provider among readable providers does not make usage dark.
+
+**Auth-dark incident**:
+One continuous period of dark usage, starting with the first dark pass and
+ending when a pass sees readable usage. The `<state_dir>/auth-dark` marker is
+its only persisted record; recovery deletes it.
+
+**Auth-dark grace**:
+The first 30 minutes of an auth-dark incident, during which no `auth_dark`
+alert is sent. `AUTH_DARK_GRACE_MINUTES` in `dispatcher/main.py` owns the value.
+
+**Auth-dark re-alert interval**:
+Eight hours since the last successful `auth_dark` send, after which a dark
+pass sends another alert. `AUTH_DARK_REALERT_HOURS` in `dispatcher/main.py`
+owns the value. Each alert's `minutes` still counts from incident start.
+
+**Last alert time**:
+The `last_alert` ISO-8601 UTC timestamp in the auth-dark marker, written after
+a successful send. An alerted marker without it is a legacy marker and uses
+the incident's `since` timestamp until its next alert.
+
 **Frontend Node version**:
 Node 24 is the supported version for local frontend work and the `frontend` and
 `e2e` CI jobs. `frontend/.node-version` gives version managers the major version;
@@ -185,6 +209,12 @@ session and the state of every ticket. A session that finds one continues
 from it. The review session reads it only after its own review. Never
 committed.
 
+**Malformed quarantine record**:
+A readable JSON object under `state_dir/quarantine/` with a wrong-typed
+`task_issue`, `blocker_issue`, `blocker_repo`, `fingerprint` or `created_at`.
+`Sources.quarantine_entries()` skips it as it skips an unreadable record;
+the field types are checked before the filename supplies the task key.
+
 **Implement progress**:
 The note of the implement session's last `working` report, for example
 "2/4 tickets merged". The console shows it on the task page while the task
@@ -258,6 +288,18 @@ _Avoid_: vendor, backend, API
 One limit a provider reports: a kind (session, weekly), an optional model
 scope (Fable), a used fraction, when it resets, and its nominal length.
 _Avoid_: quota, bucket
+
+**Dead token**:
+For Anthropic usage, every candidate OAuth token is rejected by the usage
+endpoint or yields no usage windows. Local session logs cannot establish
+that the token is live (ADR 0008).
+
+**Reading**:
+The `ProviderUsage` returned by a usage adapter.
+
+**Unavailable reading**:
+A reading with `source == "unavailable"` and no windows. The Anthropic adapter
+returns it after exhausting OAuth candidates, with no ccusage fallback.
 
 **Allowance**:
 The fraction of a window the box may have consumed by now — the session
