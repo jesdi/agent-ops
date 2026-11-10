@@ -32,8 +32,12 @@ yourself: no ticket is ever worked by this main session.
 
 If `.agent/ledger.md` already exists, an earlier session stopped before the
 end: continue from the ledger, and do not redo the tickets it records as
-merged; they are on `$branch`. Run `git worktree prune` first, then reuse or
-recreate the ticket worktree the ledger names for a ticket still in work.
+merged; they are on `$branch`. For a ticket still in work, reuse the ticket
+worktree the ledger names. If its directory is gone, run
+`git worktree remove --force <that path>` before you recreate it; if
+`git -C <that path> status` fails, run `git worktree repair <that path>`.
+Never run `git worktree prune` or touch any other worktree: the clone is
+shared with other tasks, and a prune deletes their records too.
 
 ## Signals (write `.agent/stage.json`, then do what the line says)
 After each ticket is merged into `$branch`, report how many of the

@@ -133,9 +133,18 @@ def test_plan_prompt_signals_working_before_it_applies_feedback():
 
 def test_implement_prompt_keeps_ticket_worktrees_inside_the_task_worktree():
     out = render_stage_prompt(Stage.IMPLEMENT, CTX)
-    for token in (".agent/worktrees/", "git worktree prune",
-                  "ticket worktrees are removed"):
+    for token in (".agent/worktrees/", "git worktree remove --force <that path>",
+                  "git worktree repair <that path>", "ticket worktrees are removed"):
         assert token in out
+
+
+def test_no_prompt_tells_a_session_to_prune_worktrees():
+    """The clone is shared: one session's `git worktree prune` deleted the
+    records of 16 other tasks' worktrees (#280)."""
+    for path in PROMPTS_DIR.glob("*.md"):
+        text = " ".join(path.read_text().split())
+        assert "worktree prune" not in text.replace(
+            "Never run `git worktree prune`", ""), path.name
 
 
 def _review_para(*words):
