@@ -35,7 +35,8 @@ since: the plan review gate (ADR 0001), one implement session (ADR 0003), one ta
 5. **Rejections are loud.** A `Reject` in the dispatcher appends a `transition-rejected` event
    (status, event, reason) and mutates nothing. The web intent endpoints call the same `decide`
    before queueing an intent and answer **409** with the reason on `Reject`. `Ignore` writes only a
-   debug log.
+   debug log. A reply's message is queued before `decide` runs: a rejected `op-reply` rejects the
+   wake and keeps the message.
 6. **The events.**
    - Session: `session-signal`, `session-died`, `session-idle`, `session-waiting`,
      `launch-failed`, `task-crashed`, `grace-expired`, `track-unconfigured`.
@@ -121,11 +122,17 @@ since: the plan review gate (ADR 0001), one implement session (ADR 0003), one ta
     reply, plain-text and login-code handlers are deleted, with `hold_for_attach` and
     `park_msg_id`. The console login-code input of requirement 9 ships before the removal.
     Outbound notifications and the morning digest are unchanged. `dispatcher/tmux_migration.py`
-    and its test are deleted (the box has no tmux server, checked 2026-11-10).
+    and its test are deleted (the box has no tmux server, checked 2026-11-10). The call to
+    `--migrate-tmux` in `agent-ops-infra/provision/update.sh` is removed first, in a pull request
+    of that repository.
 17. **Old task files are migrated once (ADR 0004).** A migration command rewrites every task file
     to `(stage, status)` per the table in the Migration scenario, with the dispatcher stopped,
-    under the pass lock, all-or-nothing, and safe to run twice. The loader does not convert a
-    retired stage value; it drops retired fields. `park`, `park_reason`, `park_note`, `ci_run_id`,
+    under the pass lock, all-or-nothing, and safe to run twice. `update.sh` of `agent-ops-infra`
+    runs it on the box, inside the lock it already holds (`--lock-held`: the command takes no
+    lock); run by hand, the command takes the pass lock itself. A woken file
+    (`park=unpark-requested`) gets the `from` its other fields give as if it were still parked.
+    A file the table does not classify stops the run. Until every file is migrated the dispatcher
+    starts no pass. The loader does not convert a retired stage value; it drops retired fields. `park`, `park_reason`, `park_note`, `ci_run_id`,
     `crashed_stage`, `unlaunched` and the stored request move into the status detail.
 18. **The console and `agent-ops status` read status.** Board columns and zones are unchanged for
     the operator; `column_for(status, stage)` places cards, and the task page branches on the same
@@ -418,6 +425,10 @@ since: the plan review gate (ADR 0001), one implement session (ADR 0003), one ta
 | `stage=implement`, `park=awaiting-ci`, `ci_run_id=991` | implement | `parked(ci(991))` |
 | `stage=spec`, `park=parked-login` | spec | `held(login)` |
 | `stage=plan`, `park=unpark-requested` | plan | `waking(from=parked(human(operator)), cause=reply)` |
+| `stage=implement`, `park=unpark-requested`, `crashed_stage=implement` | implement | `waking(from=failed(session-crash), cause=resume)` |
+| `stage=spec`, `park=unpark-requested`, `operator_request={kind: answers, path: q.html, fingerprint: ab12}` | spec | `waking(from=parked(answers("q.html", "ab12")), cause=reply)` |
+| `stage=awaiting-plan-review`, `park=unpark-requested`, `operator_request={kind: plan-approval, path: review.html, fingerprint: cd34}` | plan | `waking(from=parked(review("review.html", "cd34")), cause=reply)` |
+| `stage=queued`, `park=unpark-requested`, `park_reason=access` | queued | `waking(from=parked(access), cause=access)` |
 | `stage=queued`, `unlaunched=true` | queued | `waking(from=none, cause=launch)` |
 | `stage=implement`, `implement_providers=[anthropic]`, no `implement` pick | review | `waking(from=none, cause=next-stage)` |
 | `stage=pr-open`, `feedback_pending=true`, `attention=conflict` | pr-open | `waking(from=parked(pr), cause=attention(conflict))` |
@@ -446,6 +457,26 @@ since: the plan review gate (ADR 0001), one implement session (ADR 0003), one ta
 - **Given** a dispatcher pass holds the pass lock
 - **When** the migration command runs
 - **Then** it exits non-zero with "dispatcher is running" and no task file is changed
+
+### Scenario: migration run by the updater
+- **Given** `update.sh` holds the pass lock and the state dir holds legacy task files
+- **When** it runs the migration command with `--lock-held`
+- **Then** the command takes no lock, every file is rewritten, and it exits zero
+
+### Scenario: an unclassified file stops the migration
+- **Given** 13 task files, one with `park=awaiting-ci` and `ci_run_id=0`
+- **When** the migration command runs
+- **Then** it exits non-zero naming that file and no task file is changed
+
+### Scenario: the dispatcher waits for the migration
+- **Given** a state dir with one task file in the old shape
+- **When** the dispatcher starts
+- **Then** it exits non-zero before its pass, names the migration command, and changes no file
+
+### Scenario: a rejected reply keeps its message
+- **Given** `stage=pr-open, parked(human(loop-cap))`; the operator replies "try once more" and the endpoint answers 202
+- **When** the pass in progress moves the task to `failed(pr-closed)` before the next pass applies the reply
+- **Then** `op-reply` is a `Reject`, a `transition-rejected` event is written, and "try once more" stays in the message queue, undelivered
 
 ### Scenario: migrated file has only the new shape
 - **Given** a legacy `stage=implement, park=parked` file
