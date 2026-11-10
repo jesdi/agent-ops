@@ -9,7 +9,7 @@ Issue: #83.
 - **Per-entry lifetime for descriptions.** The description entry carries its own `ttl` (`DESCRIPTION_TTL_SECONDS` after success or stale refresh, `DESCRIPTION_RETRY_SECONDS` for a cold failure); the freshness check uses it. Tradeoff: one more key versus a second cache dict.
 - **Two parallel edits, no shared helper** (spec out of scope). Tradeoff: ~6 duplicated lines.
 - **`DESCRIPTION_RETRY_SECONDS = 30`** is a proposal, see the review page's open question.
-- No lock: `Sources` caches are already unsynchronised; a concurrent double probe at expiry is no worse than today.
+- No lock: `Sources` caches are already unsynchronised. A failed probe writes only if the entry it read is still current, so an overlapping success cannot be replaced by stale data. Concurrent double probes at expiry remain possible.
 
 ## Data model
 
