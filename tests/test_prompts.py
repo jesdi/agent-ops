@@ -133,9 +133,21 @@ def test_plan_prompt_signals_working_before_it_applies_feedback():
 
 def test_implement_prompt_keeps_ticket_worktrees_inside_the_task_worktree():
     out = render_stage_prompt(Stage.IMPLEMENT, CTX)
-    for token in (".agent/worktrees/", "git worktree remove --force <that path>",
-                  "git worktree repair <that path>", "ticket worktrees are removed"):
+    for token in (".agent/worktrees/", "ticket worktrees are removed"):
         assert token in out
+
+
+def test_implement_prompt_repairs_only_its_own_ticket_worktree():
+    """A resumed session touches only a ledger-named path under its own
+    worktree, repairs or re-adds it on its own ticket branch, never removes."""
+    out = " ".join(render_stage_prompt(Stage.IMPLEMENT, CTX).split())
+    para = out[out.index("If `.agent/ledger.md` already exists"):out.index("## Signals")]
+    assert "under `.agent/worktrees/` of this worktree" in para
+    assert "git worktree repair <that path>" in para
+    assert "git worktree add --force <that path> <ticket branch>" in para
+    assert "registers that path on the ticket branch the ledger names" in para
+    assert "Never remove a worktree here" in para
+    assert "worktree remove" not in para
 
 
 def test_no_prompt_tells_a_session_to_prune_worktrees():
@@ -144,7 +156,7 @@ def test_no_prompt_tells_a_session_to_prune_worktrees():
     for path in PROMPTS_DIR.glob("*.md"):
         text = " ".join(path.read_text().split())
         assert "worktree prune" not in text.replace(
-            "Never run `git worktree prune`", ""), path.name
+            "never run `git worktree prune`", ""), path.name
 
 
 def _review_para(*words):
