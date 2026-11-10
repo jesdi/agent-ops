@@ -2,6 +2,7 @@
 import json
 import pytest
 import subprocess
+from datetime import datetime, timezone
 
 from dispatcher import eventlog, execution_overrides, state
 from dispatcher.queue_ops import QueuePlan
@@ -638,18 +639,20 @@ def test_issue_description_outage_reprobes_at_ttl_cadence_not_per_request(tmp_pa
 
     clock = [1000.0]
     _, src = make_sources(tmp_path, github=FakeGH(), clock=lambda: clock[0])
-    src.issue_description("jesdi/alpha", 73)
+    original = src.issue_description("jesdi/alpha", 73)
     down[0] = True
     clock[0] += DESCRIPTION_TTL_SECONDS + 1
     for _ in range(5):
-        assert src.issue_description("jesdi/alpha", 73)["title"] == "T"
+        assert src.issue_description("jesdi/alpha", 73) == original
     assert len(calls) == 2   # one probe on expiry, then the stale serve holds
     clock[0] += DESCRIPTION_TTL_SECONDS + 1
     src.issue_description("jesdi/alpha", 73)
     assert len(calls) == 3   # re-probed once the refreshed TTL lapses
 
     for _ in range(5):
-        assert src.issue_description("jesdi/alpha", 99)["error"] != ""
+        failed = src.issue_description("jesdi/alpha", 99)
+        assert (failed["title"], failed["body"], failed["url"]) == ("", "", "")
+        assert failed["error"] != ""
     assert len(calls) == 4   # cold failure negative-cached
     clock[0] += web.sources.DESCRIPTION_RETRY_SECONDS + 1
     down[0] = False
@@ -674,9 +677,10 @@ def test_rank_rows_outage_reprobes_at_ttl_cadence_not_per_request(tmp_path):
     assert gh.calls == 3
 
     cold = make_repository(name="beta", repo="jesdi/beta")
+    expected_as_of = datetime.fromtimestamp(clock.t, timezone.utc).isoformat()
     for _ in range(5):
-        cold_rows, _, stale = src.rank_rows([cold])
-        assert cold_rows == [] and stale is True
+        assert src.rank_rows([cold]) == ([], expected_as_of, True)
+        clock.t += 1
     assert gh.calls == 4
 
 
@@ -720,26 +724,6 @@ def _stale_rank(tmp_path):
     return gh, src, clock, repository, rows, as_of
 
 
-def test_ac_r1_warm_description_outage_probes_once_per_ttl(tmp_path):
-    gh, src, clock = _stale_desc(tmp_path)
-    for _ in range(5):
-        d = src.issue_description("jesdi/alpha", 73)
-        assert (d["title"], d["error"]) == ("T", "")
-    assert gh.calls == 2
-    clock[0] += DESCRIPTION_TTL_SECONDS + 1
-    src.issue_description("jesdi/alpha", 73)
-    assert gh.calls == 3
-
-
-def test_ac_r2_cold_description_failure_is_negative_cached(tmp_path):
-    gh = DescGH(down=True)
-    src, _ = _desc_sources(tmp_path, gh)
-    for _ in range(5):
-        d = src.issue_description("jesdi/alpha", 99)
-        assert d["title"] == "" and d["error"] != ""
-    assert gh.calls == 1
-
-
 def test_ac_r2_description_recovers_after_retry_interval(tmp_path):
     gh = DescGH(down=True)
     src, clock = _desc_sources(tmp_path, gh)
@@ -753,26 +737,6 @@ def test_ac_r2_description_recovers_after_retry_interval(tmp_path):
     clock[0] += 100
     assert src.issue_description("jesdi/alpha", 99)["title"] == "T"
     assert gh.calls == 2
-
-
-def test_ac_r3_warm_rank_outage_probes_once_per_ttl(tmp_path):
-    gh, src, clock, repository, rows, as_of = _stale_rank(tmp_path)
-    for _ in range(5):
-        assert src.rank_rows([repository]) == (rows, as_of, True)
-    assert gh.calls == 2
-    clock.t += RANK_TTL_SECONDS + 1
-    src.rank_rows([repository])
-    assert gh.calls == 3
-
-
-def test_ac_r4_cold_rank_failure_is_negative_cached(tmp_path):
-    gh = FakeGitHub()
-    gh.fail = True
-    _, src = make_sources(tmp_path, github=gh)
-    for _ in range(5):
-        rows, _, stale = src.rank_rows([make_repository()])
-        assert rows == [] and stale is True
-    assert gh.calls == 1
 
 
 def test_ac_r5_failure_written_entries_keep_their_marker(tmp_path):
@@ -850,3 +814,24 @@ def test_cold_rank_timeout_starts_ttl_window_after_failure(tmp_path):
     assert first[0] == [] and first[2] is True
     assert src.rank_rows([make_repository()]) == first
     assert gh.calls == 1
+
+
+def test_message_less_failure_keeps_error_marker_across_retries(tmp_path):
+    class BlankErrGH:
+        calls = 0
+
+        def issue_view(self, repo, number):
+            self.calls += 1
+            raise RuntimeError()
+
+    gh = BlankErrGH()
+    src, clock = _desc_sources(tmp_path, gh)
+    first = src.issue_description("jesdi/alpha", 1)
+    assert first["error"] != ""
+    assert src.issue_description("jesdi/alpha", 1) == first and gh.calls == 1
+    clock[0] += web.sources.DESCRIPTION_RETRY_SECONDS
+    again = src.issue_description("jesdi/alpha", 1)
+    assert gh.calls == 2 and again["error"] != ""
+    clock[0] += web.sources.DESCRIPTION_RETRY_SECONDS
+    src.issue_description("jesdi/alpha", 1)
+    assert gh.calls == 3
