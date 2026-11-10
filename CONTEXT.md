@@ -180,6 +180,12 @@ session and the state of every ticket. A session that finds one continues
 from it. The review session reads it only after its own review. Never
 committed.
 
+**Malformed quarantine record**:
+A readable JSON object under `state_dir/quarantine/` with a wrong-typed
+`task_issue`, `blocker_issue`, `blocker_repo`, `fingerprint` or `created_at`.
+`Sources.quarantine_entries()` skips it as it skips an unreadable record;
+the field types are checked before the filename supplies the task key.
+
 **Implement progress**:
 The note of the implement session's last `working` report, for example
 "2/4 tickets merged". The console shows it on the task page while the task
