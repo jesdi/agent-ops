@@ -25,6 +25,7 @@ from dispatcher.state import TaskState
 RANK_TTL_SECONDS = 15.0
 DESCRIPTION_TTL_SECONDS = 300.0
 DESCRIPTION_RETRY_SECONDS = 30.0  # cold failure: retry sooner than the TTL
+TRIAGE_TTL_SECONDS = 5.0
 DISPATCHER_KICK = ("systemctl", "--user", "start", "--no-block",
                    "agent-ops-dispatcher.service")
 
@@ -66,6 +67,7 @@ class Sources:
         self._systemctl = systemctl
         self._rank_cache: dict[str, dict] = {}
         self._desc_cache: dict[tuple[str, int], dict] = {}
+        self._triage_running: tuple[float, bool] | None = None
 
     @property
     def state_dir(self) -> Path:
@@ -284,7 +286,8 @@ class Sources:
         return onboarding_sessions.running(self.state_dir)
 
     def triage_state(self) -> tuple[bool, bool]:
-        """(claims_paused, triage_running) from exactly ONE session-layer probe.
+        """(claims_paused, triage_running) from at most ONE session-layer probe
+        per TRIAGE_TTL_SECONDS window (the request file is read on every call).
 
         Mirrors dispatcher/main.py:1135-1137, which evaluates triage.running()
         once per pass for the reason its comment gives: running() is a real
@@ -295,12 +298,20 @@ class Sources:
 
         Degrades to (False, False) on any error: False is the non-blocking
         value for both. A read failure must not make the console claim claims
-        are paused, nor reduce the effective capacity it shows.
+        are paused, nor reduce the effective capacity it shows. A raising probe
+        is cached as False for the window, so a wedged server costs one slow
+        probe per TTL, not one per request.
         """
-        try:
-            running = triage.running()
-        except Exception:
-            running = False
+        cached = self._triage_running
+        if cached is not None and self._clock() - cached[0] < TRIAGE_TTL_SECONDS:
+            running = cached[1]
+        else:
+            try:
+                running = triage.running()
+            except Exception:
+                running = False
+            # stamped after the probe: a slow (30 s) probe must not expire its own window
+            self._triage_running = (self._clock(), running)
         try:
             # pending() == request file present OR running — inlined so the
             # running half is the value already probed above.
