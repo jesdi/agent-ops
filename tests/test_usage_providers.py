@@ -125,6 +125,25 @@ def test_unavailable_is_never_cached(tmp_path, monkeypatch, ccusage_on_path):
     assert not (tmp_path / "usage" / "anthropic.json").exists()
 
 
+def test_a_429_spaces_the_next_oauth_request(tmp_path, monkeypatch):
+    """#1: a rate-limited usage endpoint is not called again on the next pass."""
+    import email.message
+    import urllib.error
+    requests = []
+
+    def rate_limited(req, timeout):
+        requests.append(req.full_url)
+        raise urllib.error.HTTPError(req.full_url, 429, "Too Many Requests",
+                                     email.message.Message(), None)
+
+    monkeypatch.setattr(up.urllib.request, "urlopen", rate_limited)
+    t = [1000.0]
+    adapters = {"anthropic": up.AnthropicUsage(credentials_path=creds(tmp_path))}
+    first = up.fetch_provider("anthropic", tmp_path, now=lambda: t[0], adapters=adapters)
+    t[0] += 5
+    second = up.fetch_provider("anthropic", tmp_path, now=lambda: t[0], adapters=adapters)
+    assert (first.source, second.source) == ("unavailable", "unavailable")
+    assert len(requests) == 1
 
 
 def test_a_dead_token_is_unavailable_even_if_ccusage_would_answer(tmp_path, monkeypatch, ccusage_on_path):
