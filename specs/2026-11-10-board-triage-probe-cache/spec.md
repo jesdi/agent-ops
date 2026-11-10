@@ -133,6 +133,12 @@ imports as `triage`) with a call counter. No request file exists unless a scenar
 - **When** `triage_state()` is called twice within the TTL
 - **Then** both calls return `(True, True)` and `running` was called once
 
+### Scenario: the cache follows the injected clock, not wall time
+
+- **Given** `running` counts calls and `triage_state()` has been called once with `clock.t` unchanged
+- **When** real time passes but `clock.t` stays put, and `triage_state()` is called again
+- **Then** `running` was called once; only advancing `clock.t` by `TRIAGE_TTL_SECONDS` re-probes
+
 ### Scenario: existing tests still pass
 
 - **Given** the change is in place
