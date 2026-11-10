@@ -303,7 +303,10 @@ def fetch_provider(name: str, state_dir: str | Path, *,
             try:  # an older cache must not outlive the failed refresh
                 cp.unlink(missing_ok=True)
             except OSError:
-                _UNTRUSTED.add(cp)
+                try:  # other readers share the file: blank it in place
+                    cp.write_text("")
+                except OSError:
+                    _UNTRUSTED.add(cp)
     return u
 
 
