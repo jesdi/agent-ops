@@ -683,3 +683,59 @@ def test_board_snapshot_includes_inspection_capacity(tmp_path):
     body = client.get("/api/board/snapshot", headers=HEADERS).json()
     assert body["capacity"]["active"] == 1
     assert body["capacity"]["slots_used"] == 0
+
+
+class _RecordingGitHub:
+    def __init__(self):
+        self.state_calls = []
+
+    def rank_rows(self, _): return []
+
+    def issue_state(self, repo, number):
+        self.state_calls.append((repo, number))
+        return "OPEN"
+
+
+class _NullSessions:
+    def is_alive(self, _): return False
+
+
+def _real_client(tmp_path, records):
+    from web.sources import Sources
+    cfg = make_config(tmp_path)
+    q = tmp_path / "quarantine"
+    q.mkdir(parents=True, exist_ok=True)
+    for name, rec in records.items():
+        (q / name).write_text(json.dumps(rec))
+    gh = _RecordingGitHub()
+    client = TestClient(create_app(cfg, Sources(cfg.state_dir, _NullSessions(),
+                                                gh)),
+                        raise_server_exceptions=False)
+    return client, gh
+
+
+def test_failures_lists_a_record_with_missing_fields_and_extra_keys(tmp_path):
+    client, _ = _real_client(
+        tmp_path, {"alpha-95.json": {"blocker_repo": "r", "note": 42}})
+    resp = client.get("/api/failures", headers=HEADERS)
+    assert resp.status_code == 200
+    q, = resp.json()["quarantined"]
+    assert (q["task_issue"], q["blocker_open"]) == (95, None)
+
+
+def test_failures_makes_no_github_lookup_for_a_malformed_record(tmp_path):
+    client, gh = _real_client(tmp_path, {"alpha-73.json": {
+        "task_issue": 73, "blocker_repo": "r", "blocker_issue": "abc",
+        "fingerprint": "f", "created_at": "c"}})
+    assert client.get("/api/failures", headers=HEADERS).status_code == 200
+    assert all(n != "abc" for _, n in gh.state_calls)
+
+
+def test_board_and_retry_tolerate_a_malformed_record(tmp_path):
+    client, _ = _real_client(tmp_path, {"alpha-73.json": {
+        "task_issue": 73, "blocker_repo": "r", "blocker_issue": "abc",
+        "fingerprint": "f", "created_at": "c"}})
+    assert client.get("/api/board", headers=HEADERS).status_code == 200
+    r = client.post("/api/task/alpha/73/retry", headers=HEADERS, json={})
+    assert r.status_code == 404
+    assert "issue alpha/73 is not quarantined" in r.text
