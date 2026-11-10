@@ -250,11 +250,18 @@ def cache_path(state_dir: str | Path, provider: str) -> Path:
     return Path(state_dir) / "usage" / f"{provider}.json"
 
 
+# Caches a failed refresh could neither replace nor delete: never served again
+# in this process. ponytail: lost on restart, a read-only state dir stays stale.
+_UNTRUSTED: set[Path] = set()
+
+
 def _cached(cp: Path, at: float) -> ProviderUsage | None:
     """The cached reading if it is fresh and usable; None is a miss. A file
     this unit cannot read, or cannot parse, is a miss, never a raise. So is
     a readable reading with no windows (written before readings failed
     closed): served, it would admit every model until it aged out."""
+    if cp in _UNTRUSTED:
+        return None
     try:
         cached = json.loads(cp.read_text())
         if not 0 <= at - cached["fetched_at"] < MIN_POLL_SECONDS:
@@ -287,7 +294,16 @@ def fetch_provider(name: str, state_dir: str | Path, *,
         log.exception("usage adapter %r failed", name)
         return unavailable(name, at)
     if u.source != "unavailable":
-        write_json_atomic(cp, {"fetched_at": at, "usage": usage_to_json(u)})
+        try:
+            write_json_atomic(cp, {"fetched_at": at, "usage": usage_to_json(u)})
+            _UNTRUSTED.discard(cp)
+        except OSError:
+            # The cache is an optimisation: lose it, keep the reading.
+            log.warning("usage cache write failed for %r", name, exc_info=True)
+            try:  # an older cache must not outlive the failed refresh
+                cp.unlink(missing_ok=True)
+            except OSError:
+                _UNTRUSTED.add(cp)
     return u
 
 

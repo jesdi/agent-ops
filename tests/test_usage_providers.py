@@ -546,3 +546,92 @@ def test_openai_never_writes_auth_json(tmp_path, monkeypatch):
 
 def test_openai_adapter_is_registered():
     assert isinstance(up.ADAPTERS["openai"], up.OpenAIUsage)
+
+
+# ---- #80: a failed cache write costs only the cache ------------------------
+
+def unwritable_state(tmp_path):
+    """A plain file where usage/ belongs: every cache write raises OSError,
+    even as root."""
+    (tmp_path / "usage").write_text("not a directory")
+    return tmp_path
+
+
+def test_fetch_provider_returns_the_reading_when_the_cache_write_fails(tmp_path):
+    state = unwritable_state(tmp_path)
+    reading = session_usage(0.42)
+    u = up.fetch_provider("anthropic", state, now=lambda: 1000.0,
+                          adapters={"anthropic": FakeUsage(reading)})
+    assert u.source == "oauth"
+    assert [(w.kind, w.used) for w in u.windows] == [(WindowKind.SESSION, 0.42), (WindowKind.WEEKLY, 0.0)]
+
+
+def test_fetch_all_survives_an_unwritable_usage_cache(tmp_path):
+    state = unwritable_state(tmp_path)
+    reading = session_usage(0.42)
+    c = cfg(state, models=one_track_policy("anthropic/claude-sonnet-4-6"))
+    out = up.fetch_all(c, adapters={"anthropic": FakeUsage(reading)})
+    assert out == {"anthropic": reading}
+
+
+def test_cache_write_failure_is_logged_as_a_warning_naming_the_provider(tmp_path, caplog):
+    state = unwritable_state(tmp_path)
+    with caplog.at_level("WARNING", logger="dispatcher.usage_providers"):
+        up.fetch_provider("anthropic", state, now=lambda: 1000.0,
+                          adapters={"anthropic": FakeUsage(session_usage())})
+    assert any(r.levelname == "WARNING" and r.name == "dispatcher.usage_providers"
+               and "anthropic" in r.getMessage() for r in caplog.records)
+
+
+def test_failed_cache_write_leaves_no_cache_so_the_next_call_refetches(tmp_path):
+    state = unwritable_state(tmp_path)
+    fake = FakeUsage(session_usage())
+    for t in (1000.0, 1010.0):
+        up.fetch_provider("anthropic", state, now=lambda t=t: t,
+                          adapters={"anthropic": fake})
+    assert fake.calls == 2
+
+
+def failing_replace(monkeypatch):
+    def fail(src, dst):
+        raise OSError("read-only filesystem")
+    monkeypatch.setattr(up.os, "replace", fail)
+
+
+def test_failed_refresh_does_not_leave_an_older_cache_to_serve_the_next_call(tmp_path, monkeypatch):
+    up.fetch_provider("anthropic", tmp_path, now=lambda: 1005.0,
+                      adapters={"anthropic": FakeUsage(session_usage(0.10))})
+    failing_replace(monkeypatch)
+    fake = FakeUsage(session_usage(0.42))
+    # the clock stepped back, so the 1005 cache is a miss at 1000; the refresh fails to write
+    up.fetch_provider("anthropic", tmp_path, now=lambda: 1000.0, adapters={"anthropic": fake})
+    u = up.fetch_provider("anthropic", tmp_path, now=lambda: 1010.0, adapters={"anthropic": fake})
+    assert fake.calls == 2
+    assert u.windows[0].used == 0.42
+
+
+def test_failed_refresh_with_undeletable_older_cache_still_refetches_next_call(tmp_path, monkeypatch):
+    up.fetch_provider("anthropic", tmp_path, now=lambda: 1005.0,
+                      adapters={"anthropic": FakeUsage(session_usage(0.10))})
+    failing_replace(monkeypatch)
+    cache = up.cache_path(tmp_path, "anthropic")
+    real_unlink = up.Path.unlink
+
+    def unlink(self, *a, **kw):
+        if self == cache:
+            raise PermissionError("read-only filesystem")
+        return real_unlink(self, *a, **kw)
+    monkeypatch.setattr(up.Path, "unlink", unlink)
+    fake = FakeUsage(session_usage(0.42))
+    up.fetch_provider("anthropic", tmp_path, now=lambda: 1000.0, adapters={"anthropic": fake})
+    u = up.fetch_provider("anthropic", tmp_path, now=lambda: 1010.0, adapters={"anthropic": fake})
+    assert fake.calls == 2
+    assert u.windows[0].used == 0.42
+
+
+def test_a_failed_rename_leaves_no_temp_file_behind(tmp_path, monkeypatch):
+    failing_replace(monkeypatch)
+    u = up.fetch_provider("anthropic", tmp_path, now=lambda: 1000.0,
+                          adapters={"anthropic": FakeUsage(session_usage(0.42))})
+    assert u.windows[0].used == 0.42
+    assert list((tmp_path / "usage").iterdir()) == []

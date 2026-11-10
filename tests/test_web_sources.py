@@ -203,7 +203,7 @@ def test_console_hides_codex_without_a_readable_login(tmp_path, monkeypatch):
 
 def test_board_survives_an_unwritable_usage_cache(tmp_path, monkeypatch):
     """#80: an OSError writing usage/<provider>.json costs the cache, not
-    /api/board. A plain file where the usage/ dir belongs makes every cache
+    /api/usage. A plain file where the usage/ dir belongs makes every cache
     write fail, even as root; the reading itself is still served."""
     from fastapi.testclient import TestClient
     from dispatcher import usage_providers
@@ -219,9 +219,11 @@ def test_board_survives_an_unwritable_usage_cache(tmp_path, monkeypatch):
     (tmp_path / "usage").write_text("not a directory")
     cfg, src = make_sources(tmp_path)
     with TestClient(create_app(cfg, src), raise_server_exceptions=False) as client:
-        resp = client.get("/api/board", headers=HEADERS)
+        resp = client.get("/api/usage", headers=HEADERS)
+        again = client.get("/api/usage", headers=HEADERS)
     assert resp.status_code == 200
-    providers = {p["provider"]: p for p in resp.json()["usage"]["providers"]}
+    assert again.status_code == 200
+    providers = {p["provider"]: p for p in resp.json()["providers"]}
     assert providers["anthropic"]["source"] == "oauth"
     assert (tmp_path / "usage").read_text() == "not a directory"
 
