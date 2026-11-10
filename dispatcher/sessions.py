@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import shlex
 import subprocess
+import sys
 import time
 import os
 from pathlib import Path
@@ -39,6 +40,21 @@ def podman_cmd(repository: str, issue: int, worktree: str, memory: str, cpus: st
     return containers.session_cmd(session_name(repository, issue), worktree, memory,
                                   cpus, model, args, effort=effort,
                                   second=second, clone=clone, gh_config=gh_config)
+
+
+def _remove_container(name: str) -> None:
+    """`podman rm -f`, never raising: teardown runs after the park's question
+    is sent, and a raise here fails the task. A container left behind is
+    harmless, since the next launch replaces it (`podman run --replace`)."""
+    try:
+        done = subprocess.run(["podman", "rm", "-f", name],
+                              capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"[warn] container {name} not removed: {exc}", file=sys.stderr)
+        return
+    if done.returncode != 0:
+        print(f"[warn] container {name} not removed (exit {done.returncode}): "
+              f"{done.stderr.decode(errors='replace').strip()}", file=sys.stderr)
 
 
 # The idle time of a session that is not `working` but whose status just
@@ -269,10 +285,8 @@ class Sessions:
         if tab is not None:
             tab.close()  # HUPs the shell and the -it podman
         # Belt and braces: the container may outlive the HUP.
-        subprocess.run(["podman", "rm", "-f", name],
-                       capture_output=True, timeout=60)
+        _remove_container(name)
         # Pre-rekey containers are named task-<issue> and nothing renames them,
         # so a wedged one leaks unless end() reaches for that name too.
-        subprocess.run(["podman", "rm", "-f", f"task-{issue}"],
-                       capture_output=True, timeout=60)
+        _remove_container(f"task-{issue}")
         self.forget_status(repository, issue)

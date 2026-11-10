@@ -4432,6 +4432,27 @@ def test_park_for_input_frees_the_slot(tmp_path):
     assert t.park == PARK_HUMAN and t.slot == NO_SLOT
 
 
+@pytest.mark.parametrize("podman", ["hangs", "fails"])
+def test_park_for_input_parks_when_podman_rm_hangs_or_fails(tmp_path, monkeypatch, podman):
+    """The question is already on Telegram when the session ends, so a podman
+    rm that times out or exits non-zero must not turn the park into a failure
+    (agent-ops#43, #49, #83). A container left behind beats a lost park."""
+    from dispatcher import sessions as sessions_mod
+
+    def run(args, **kw):
+        if podman == "hangs":
+            raise subprocess.TimeoutExpired(args, kw.get("timeout"))
+        return subprocess.CompletedProcess(args, 125, b"", b"Error: lock timeout")
+    monkeypatch.setattr(sessions_mod.subprocess, "run", run)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, slot=1)
+    main._park_for_input(c, deps(sess=sessions_mod.Sessions(state_dir=c.state_dir)),
+                         c.repositories[0], load(c.state_dir, "portfolio_eval", 42),
+                         note="which redirect URL?")
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == PARK_HUMAN and t.slot == NO_SLOT and t.park_msg_id == 77
+
+
 def test_park_for_ci_frees_the_slot(tmp_path):
     c = cfg(tmp_path)
     make_task(c, issue=42, slot=2)

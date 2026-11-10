@@ -132,8 +132,12 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
         Path(state, "wait").mkdir(parents=True, exist_ok=True)
     except OSError:
         pass
+    # --replace: a teardown whose `podman rm` timed out leaves the old
+    # container behind under this name (sessions._remove_container), and
+    # without it the next launch dies on "name already in use".
     return (
-        f"{shlex.join([*_wrapper(), 'podman'])} run --rm -it --name {shlex.quote(name)} "
+        f"{shlex.join([*_wrapper(), 'podman'])} run --rm -it --replace "
+        f"--name {shlex.quote(name)} "
         f"--memory {shlex.quote(memory)} --cpus {shlex.quote(cpus)} "
         f"{shlex.join(_runtime_args(runtime) + extra)} "
         # The Stop hook fires inside the container and resolves waitd's
