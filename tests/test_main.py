@@ -4417,12 +4417,15 @@ def test_auth_dark_legacy_marker_inside_interval_stays_silent(
     "not valid json{{",
     "null",
     json.dumps({"alerted": True}),
-    json.dumps({"since": "garbage", "alerted": True}),
+    "alerted-garbage-since",
     "alerted-garbage-last-alert",
 ], ids=["non-json", "null", "no-since", "bad-since", "bad-last-alert"])
 def test_auth_dark_corrupt_marker_resets_without_alert(
         tmp_path, monkeypatch, raw):
-    if raw == "alerted-garbage-last-alert":
+    if raw == "alerted-garbage-since":
+        raw = json.dumps({"since": "garbage", "alerted": True,
+                          "last_alert": _ago(hours=9)})
+    elif raw == "alerted-garbage-last-alert":
         raw = json.dumps({"since": _ago(hours=9), "alerted": True,
                           "last_alert": "garbage"})
     c, d = _dark_pass(tmp_path, monkeypatch, raw)
@@ -4433,6 +4436,30 @@ def test_auth_dark_corrupt_marker_resets_without_alert(
         datetime.now(timezone.utc) - timedelta(minutes=1))
     assert "auth_dark" not in d.notifier.sent
 
+
+def _fail_then_recover(tmp_path, monkeypatch, marker):
+    c, d = _dark_pass(tmp_path, monkeypatch, marker)
+    before = _marker(c)
+    d.notifier.msg_id = 0
+    main.run_pass(c, d)
+    assert d.notifier.sent.count("auth_dark") == 1
+    assert _marker(c) == before
+    d.notifier.msg_id = 77
+    main.run_pass(c, d)
+    assert d.notifier.sent.count("auth_dark") == 2
+    assert _marker(c)["last_alert"] != before.get("last_alert")
+
+
+def test_failed_reminder_is_retried_on_the_next_pass(tmp_path, monkeypatch):
+    _fail_then_recover(tmp_path, monkeypatch, {
+        "since": _ago(hours=9), "alerted": True,
+        "last_alert": _ago(seconds=_realert_h(minutes=1).total_seconds())})
+
+
+def test_failed_first_alert_is_retried_on_the_next_pass(tmp_path, monkeypatch):
+    _fail_then_recover(tmp_path, monkeypatch, {
+        "since": _ago(minutes=main.AUTH_DARK_GRACE_MINUTES + 1),
+        "alerted": False})
 
 def test_pass_writes_heartbeat(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
