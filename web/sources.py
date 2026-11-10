@@ -48,6 +48,10 @@ class ArtifactListing:
     expired: bool
 
 
+_QUARANTINE_DEFAULTS = {"task_issue": 0, "blocker_repo": "", "blocker_issue": 0,
+                        "fingerprint": "", "created_at": ""}
+
+
 class Sources:
     def __init__(self, state_dir: str, sessions, github,
                  clock: Callable[[], float] = time.time,
@@ -217,8 +221,12 @@ class Sources:
                 continue  # null / a list: rec.get() would raise downstream
             # Blank defaults keep FailuresView's model valid for a readable
             # record that is missing a field.
-            entry = {"task_issue": 0, "blocker_repo": "", "blocker_issue": 0,
-                     "fingerprint": "", "created_at": "", **d}
+            entry = {**_QUARANTINE_DEFAULTS, **d}
+            # A wrong-typed field would 500 FailuresView or reach GitHub; skip
+            # like an unreadable record. bool is an int subclass: reject it.
+            if not all(type(entry[k]) is type(default)
+                       for k, default in _QUARANTINE_DEFAULTS.items()):
+                continue
             entry["repository"] = (repository if keyed_issue is not None
                                    else p.stem.rsplit("-", 1)[0])
             if keyed_issue is not None:
