@@ -55,7 +55,8 @@ No settled decision is contradicted by the code.
    succeed. If `pnpm install --frozen-lockfile` fails under Node 24, the PR reports the failure
    instead of regenerating the lockfile (requirement 4 holds either way).
 7. The change touches exactly three files: `frontend/.node-version` (new),
-   `frontend/package.json` and `.github/workflows/ci.yml` (plus this spec folder).
+   `frontend/package.json` and `.github/workflows/ci.yml` (plus this spec folder and the shipped acceptance test
+   `tests/test_pin_node_24_acceptance.py`).
 
 ## Scenarios
 
@@ -150,7 +151,7 @@ No settled decision is contradicted by the code.
 - **Given** `git diff --name-only origin/main...HEAD`
 - **When** listing the changed files
 - **Then** the list is `.github/workflows/ci.yml`, `frontend/.node-version`, `frontend/package.json`
-  and the two files of `specs/2026-11-06-pin-node-24/`, nothing else
+  the files of `specs/2026-11-06-pin-node-24/` and `tests/test_pin_node_24_acceptance.py`, nothing else
 
 ### Scenario: a fourth file changed is a violation (R7)
 
