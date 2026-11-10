@@ -87,37 +87,10 @@ def test_cache_clock_step_back_triggers_refetch(tmp_path, monkeypatch):
     assert len(calls) == 2
 
 
-def boom(url, headers):
-    raise up.UsageFetchError("dark")
-
-
-def test_unavailable_is_never_cached(tmp_path, monkeypatch):
-    monkeypatch.setattr(up, "_http_get_json", boom)
-    monkeypatch.setattr(up, "_ccusage_json", lambda: None)
-    adapters = {"anthropic": up.AnthropicUsage(credentials_path=creds(tmp_path))}
-    u = up.fetch_provider("anthropic", tmp_path, adapters=adapters)
-    assert u.source == "unavailable"
-    assert not (tmp_path / "usage" / "anthropic.json").exists()
-
-
-def test_falls_back_to_ccusage_with_a_session_window_only(tmp_path, monkeypatch):
-    monkeypatch.setattr(up, "_http_get_json", boom)
-    monkeypatch.setattr(up, "_ccusage_json", lambda: {"blocks": [
-        {"isActive": True, "projection": {"remainingMinutes": 45}, "percentUsed": 62.0}]})
-    u = up.AnthropicUsage(credentials_path=creds(tmp_path)).fetch(tmp_path)
-    assert u.source == "ccusage"
-    (w,) = u.windows
-    assert (w.kind, w.length) == (WindowKind.SESSION, timedelta(hours=5))
-    assert abs(w.used - 0.62) < 1e-9
-    assert 44 <= (w.resets_at - datetime.now(timezone.utc)).total_seconds() / 60 <= 46
-
-
-def test_a_dead_token_is_unavailable_even_if_ccusage_would_answer(tmp_path, monkeypatch):
-    """#75: ccusage reads local JSONL logs and proves nothing about the OAuth
-    token the fleet needs. A dead token must read as unavailable, never as a
-    healthy ccusage session window: the auth-dark detector and the spawn gate
-    only act on `unavailable`."""
-    monkeypatch.setattr(up, "_http_get_json", boom)
+@pytest.fixture
+def ccusage_on_path(tmp_path, monkeypatch):
+    """A working ccusage first on PATH: an unavailable reading must stay
+    unavailable whatever local tool would answer."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
     fake = bindir / "ccusage"
@@ -126,18 +99,42 @@ def test_a_dead_token_is_unavailable_even_if_ccusage_would_answer(tmp_path, monk
                     '"percentUsed": 62.0}]}\'\n')
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
+
+
+def boom(url, headers):
+    raise up.UsageFetchError("dark")
+
+
+def test_unavailable_is_never_cached(tmp_path, monkeypatch, ccusage_on_path):
+    monkeypatch.setattr(up, "_http_get_json", boom)
+    adapters = {"anthropic": up.AnthropicUsage(credentials_path=creds(tmp_path))}
+    u = up.fetch_provider("anthropic", tmp_path, adapters=adapters)
+    assert u.source == "unavailable"
+    assert not (tmp_path / "usage" / "anthropic.json").exists()
+
+
+
+
+def test_a_dead_token_is_unavailable_even_if_ccusage_would_answer(tmp_path, monkeypatch, ccusage_on_path):
+    """#75: ccusage reads local JSONL logs and proves nothing about the OAuth
+    token the fleet needs. A dead token must read as unavailable, never as a
+    healthy ccusage session window: the auth-dark detector and the spawn gate
+    only act on `unavailable`."""
+    monkeypatch.setattr(up, "_http_get_json", boom)
     u = up.AnthropicUsage(credentials_path=creds(tmp_path)).fetch(tmp_path)
     assert u.source == "unavailable" and u.windows == ()
 
 
-def test_both_dark_is_unavailable(tmp_path, monkeypatch):
+def test_the_adapter_reads_oauth_then_unavailable_with_no_ccusage_left():
+    assert not [n for n in dir(up) if "ccusage" in n.lower()]
+
+
+def test_both_dark_is_unavailable(tmp_path, monkeypatch, ccusage_on_path):
     monkeypatch.setattr(up, "_http_get_json", boom)
-    monkeypatch.setattr(up, "_ccusage_json", lambda: None)
     assert up.AnthropicUsage(credentials_path=creds(tmp_path)).fetch(tmp_path).source == "unavailable"
 
 
-def test_missing_credentials_is_unavailable(tmp_path, monkeypatch):
-    monkeypatch.setattr(up, "_ccusage_json", lambda: None)
+def test_missing_credentials_is_unavailable(tmp_path, ccusage_on_path):
     assert up.AnthropicUsage(credentials_path=tmp_path / "nope.json").fetch(tmp_path).source == "unavailable"
 
 
@@ -243,11 +240,10 @@ def test_env_token_suffices_without_credentials_store(tmp_path, monkeypatch):
 # ---- fail closed on unreadable readings ------------------------------------
 
 @pytest.mark.parametrize("payload", [{"limits": []}, {}])
-def test_an_empty_oauth_reading_is_not_oauth(tmp_path, monkeypatch, payload):
+def test_an_empty_oauth_reading_is_not_oauth(tmp_path, monkeypatch, ccusage_on_path, payload):
     """A 200 with zero windows would admit every model; it fails closed like
-    a rejected token: next token, then ccusage, then unavailable."""
+    a rejected token: next token, then unavailable."""
     monkeypatch.setattr(up, "_http_get_json", lambda url, headers: payload)
-    monkeypatch.setattr(up, "_ccusage_json", lambda: None)
     u = up.AnthropicUsage(credentials_path=creds(tmp_path)).fetch(tmp_path)
     assert u.source == "unavailable" and u.windows == ()
 
@@ -260,11 +256,6 @@ def test_an_empty_oauth_reading_tries_the_next_token(tmp_path, monkeypatch):
     assert u.source == "oauth" and len(u.windows) == 3
 
 
-def test_an_empty_oauth_reading_falls_back_to_ccusage(tmp_path, monkeypatch):
-    monkeypatch.setattr(up, "_http_get_json", lambda url, headers: {})
-    monkeypatch.setattr(up, "_ccusage_json", lambda: {"blocks": [
-        {"isActive": True, "projection": {"remainingMinutes": 45}, "percentUsed": 62.0}]})
-    assert up.AnthropicUsage(credentials_path=creds(tmp_path)).fetch(tmp_path).source == "ccusage"
 
 
 class RaisingAdapter:
@@ -287,21 +278,12 @@ def test_a_raising_adapter_reports_unavailable_and_caches_nothing(tmp_path):
     {"limits": [dict(FIXTURE["limits"][0], resets_at=1757764799)]},
     ["not", "an", "object"],
 ])
-def test_a_malformed_anthropic_payload_is_unavailable_not_a_raise(tmp_path, monkeypatch, payload):
+def test_a_malformed_anthropic_payload_is_unavailable_not_a_raise(tmp_path, monkeypatch, ccusage_on_path, payload):
     monkeypatch.setattr(up, "_http_get_json", lambda url, headers: payload)
-    monkeypatch.setattr(up, "_ccusage_json", lambda: None)
     adapters = {"anthropic": up.AnthropicUsage(credentials_path=creds(tmp_path))}
     assert up.fetch_provider("anthropic", tmp_path, adapters=adapters).source == "unavailable"
 
 
-def test_ccusage_used_is_clamped_and_resets_follow_the_injected_clock(tmp_path, monkeypatch):
-    monkeypatch.setattr(up, "_http_get_json", boom)
-    monkeypatch.setattr(up, "_ccusage_json", lambda: {"blocks": [
-        {"isActive": True, "projection": {"remainingMinutes": 45}, "percentUsed": 130}]})
-    u = up.AnthropicUsage(credentials_path=creds(tmp_path)).fetch(tmp_path, now=lambda: 1_000_000.0)
-    (w,) = u.windows
-    assert w.used == 1.0
-    assert w.resets_at == datetime.fromtimestamp(1_000_000.0, timezone.utc) + timedelta(minutes=45)
 
 
 # ---- Anthropic payload parser ----------------------------------------------
