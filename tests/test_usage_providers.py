@@ -75,6 +75,14 @@ def test_cache_is_per_provider_and_respects_min_poll(tmp_path, monkeypatch):
     assert len(calls) == 2
 
 
+def test_live_token_preserves_usage_in_every_window(tmp_path, monkeypatch):
+    monkeypatch.setattr(up, "_http_get_json", lambda url, headers: FIXTURE)
+    u = up.AnthropicUsage(credentials_path=creds(tmp_path)).fetch(tmp_path)
+    assert u.source == "oauth"
+    assert [(w.kind, w.scope, w.used) for w in u.windows] == [
+        ("session", None, 0.05), ("weekly", None, 0.13), ("weekly", "Fable", 0.23)]
+
+
 def test_cache_clock_step_back_triggers_refetch(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(up, "_http_get_json", lambda url, headers: calls.append(1) or oauth_response())
@@ -94,11 +102,15 @@ def ccusage_on_path(tmp_path, monkeypatch):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     fake = bindir / "ccusage"
+    marker = tmp_path / "ccusage-invoked"
+    monkeypatch.setenv("CCUSAGE_MARKER", str(marker))
     fake.write_text("#!/bin/sh\n"
+                    'touch "$CCUSAGE_MARKER"\n'
                     'echo \'{"blocks": [{"isActive": true, "projection": {"remainingMinutes": 45}, '
                     '"percentUsed": 62.0}]}\'\n')
     fake.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
+    return marker
 
 
 def boom(url, headers):
@@ -125,8 +137,10 @@ def test_a_dead_token_is_unavailable_even_if_ccusage_would_answer(tmp_path, monk
     assert u.source == "unavailable" and u.windows == ()
 
 
-def test_the_adapter_reads_oauth_then_unavailable_with_no_ccusage_left():
-    assert not [n for n in dir(up) if "ccusage" in n.lower()]
+def test_a_dead_token_never_runs_ccusage(tmp_path, monkeypatch, ccusage_on_path):
+    monkeypatch.setattr(up, "_http_get_json", boom)
+    up.AnthropicUsage(credentials_path=creds(tmp_path)).fetch(tmp_path)
+    assert not ccusage_on_path.exists()
 
 
 def test_both_dark_is_unavailable(tmp_path, monkeypatch, ccusage_on_path):
