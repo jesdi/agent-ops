@@ -106,6 +106,15 @@ def _no_herdr_server(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_podman(monkeypatch):
+    """Likewise for podman: sessions probe and remove containers by name, and
+    the developer's own must never be touched. Default to a podman with no
+    containers at all; tests that exercise podman patch sessions._podman."""
+    from dispatcher import sessions
+    monkeypatch.setattr(sessions, "_podman", lambda args, timeout: (0, ""))
+
+
+@pytest.fixture(autouse=True)
 def codex_package(tmp_path, monkeypatch) -> Path:
     """Every test gets a home holding a Codex package: containers refuse a
     Codex binary outside one, and CI has no ~/.local/bin/codex while a dev
