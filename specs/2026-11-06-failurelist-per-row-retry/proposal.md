@@ -26,16 +26,16 @@ row, and screen-reader users who need to know which task a Retry button acts on.
 
 ## Goal
 
-Each Retry button is disabled only while a retry for its own task is in flight, and exposes
-an accessible name that names its task (`Retry <repository> task #<task_issue>`).
+Each Retry button is disabled only while a retry for its own task is in flight, and belongs to
+a named group identifying its task (`<repository>#<task_issue>`), following ADR 0007.
 
 ## Non-goals
 
 - GhostCard's shared action names and shared busy state (#84) and the collapsed-column
   markers (#85). An issue comment suggests fixing them together. They are separate issues
   with their own components, and this slice stays inside FailureList and FailuresPage.
-- The `role="group"` + `aria-label` approach floated in #84's comment. Issue #43 asks for a
-  distinct accessible name on each button, and the reproduction tests query that name.
+- Renaming the Retry buttons. The operator confirmed ADR 0007: name the existing row
+  group and keep the accessible button name `Retry`.
 - Any change to the visible button text (it stays `Retry`), the retry API, or the inline
   error channel.
 - Rate-limiting or deduplicating retries beyond disabling the in-flight row's button.
