@@ -1,5 +1,6 @@
 import json
 import os
+import socket
 import subprocess
 import time
 from dataclasses import replace as dc_replace
@@ -4251,6 +4252,210 @@ def test_auth_dark_malformed_marker_is_repaired(tmp_path, monkeypatch):
     assert st["alerted"] is False
     assert "auth_dark" not in d.notifier.sent
 
+
+def _ago(**kw):
+    return (datetime.now(timezone.utc) - timedelta(**kw)).isoformat()
+
+
+def _realert_h(**extra):
+    return timedelta(hours=main.AUTH_DARK_REALERT_HOURS, **extra)
+
+
+def _dark_pass(tmp_path, monkeypatch, marker=None):
+    """Dark pass(es) setup: returns (cfg, deps) with `marker` (dict or raw
+    str) written to the auth-dark file when given."""
+    patch_usage_dark(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c, d = cfg(tmp_path), deps()
+    if marker is not None:
+        Path(c.state_dir).mkdir(parents=True, exist_ok=True)
+        dark_marker(c).write_text(
+            marker if isinstance(marker, str) else json.dumps(marker))
+    return c, d
+
+
+def _marker(c):
+    return json.loads(dark_marker(c).read_text())
+
+
+def test_auth_dark_realert_hours_is_eight():
+    assert main.AUTH_DARK_REALERT_HOURS == 8
+
+
+def test_auth_dark_silent_at_29_minutes(tmp_path, monkeypatch):
+    c, d = _dark_pass(tmp_path, monkeypatch,
+                      {"since": _ago(minutes=29), "alerted": False})
+    main.run_pass(c, d)
+    assert "auth_dark" not in d.notifier.sent
+    assert _marker(c)["alerted"] is False
+
+
+def test_auth_dark_stray_last_alert_does_not_skip_grace(tmp_path, monkeypatch):
+    m = {"since": _ago(minutes=10), "alerted": False, "last_alert": "garbage"}
+    c, d = _dark_pass(tmp_path, monkeypatch, m)
+    main.run_pass(c, d)
+    assert "auth_dark" not in d.notifier.sent
+    assert _marker(c) == m
+
+
+def test_auth_dark_first_alert_records_last_alert(tmp_path, monkeypatch):
+    since = _ago(minutes=main.AUTH_DARK_GRACE_MINUTES + 1)
+    c, d = _dark_pass(tmp_path, monkeypatch, {"since": since, "alerted": False})
+    main.run_pass(c, d)
+    st = _marker(c)
+    assert d.notifier.sent.count("auth_dark") == 1
+    assert st["since"] == since and st["alerted"] is True
+    age = datetime.now(timezone.utc) - datetime.fromisoformat(st["last_alert"])
+    assert abs(age.total_seconds()) < 10
+
+
+def test_auth_dark_realerts_after_interval(tmp_path, monkeypatch):
+    since = _ago(hours=9)
+    c, d = _dark_pass(tmp_path, monkeypatch, {
+        "since": since, "alerted": True,
+        "last_alert": (datetime.now(timezone.utc) - _realert_h(minutes=1)).isoformat()})
+    main.run_pass(c, d)
+    main.run_pass(c, d)                        # back to back: silent
+    st = _marker(c)
+    assert d.notifier.sent.count("auth_dark") == 1
+    assert st["since"] == since and st["alerted"] is True
+    age = datetime.now(timezone.utc) - datetime.fromisoformat(st["last_alert"])
+    assert abs(age.total_seconds()) < 10
+
+
+def test_auth_dark_realerts_exactly_at_interval(tmp_path, monkeypatch):
+    c, d = _dark_pass(tmp_path, monkeypatch, {
+        "since": _ago(hours=9), "alerted": True,
+        "last_alert": (datetime.now(timezone.utc) - _realert_h()).isoformat()})
+    main.run_pass(c, d)
+    assert d.notifier.sent.count("auth_dark") == 1
+
+
+def test_auth_dark_silent_just_inside_interval(tmp_path, monkeypatch):
+    m = {"since": (datetime.now(timezone.utc) - _realert_h()).isoformat(),
+         "alerted": True,
+         "last_alert": (datetime.now(timezone.utc) - _realert_h()
+                        + timedelta(minutes=1)).isoformat()}
+    c, d = _dark_pass(tmp_path, monkeypatch, m)
+    main.run_pass(c, d)
+    assert "auth_dark" not in d.notifier.sent
+    assert _marker(c) == m
+
+
+def test_auth_dark_long_outage_keeps_reminding(tmp_path, monkeypatch):
+    def stale():
+        return (datetime.now(timezone.utc) - _realert_h(minutes=1)).isoformat()
+    c, d = _dark_pass(tmp_path, monkeypatch,
+                      {"since": _ago(hours=21), "alerted": True,
+                       "last_alert": stale()})
+    main.run_pass(c, d)
+    st = _marker(c)
+    st["last_alert"] = stale()
+    dark_marker(c).write_text(json.dumps(st))
+    main.run_pass(c, d)
+    assert d.notifier.sent.count("auth_dark") == 2
+
+
+def test_auth_dark_realert_reports_minutes_since_incident_began(
+        tmp_path, monkeypatch):
+    c, d = _dark_pass(tmp_path, monkeypatch, {
+        "since": _ago(minutes=540), "alerted": True,
+        "last_alert": _ago(minutes=481)})
+    main.run_pass(c, d)
+    sent = [ctx for t, ctx in d.notifier.calls if t == "auth_dark"]
+    assert len(sent) == 1
+    assert abs(sent[0]["minutes"] - 540) <= 1
+    assert sent[0]["host"] == socket.gethostname()
+
+
+def test_auth_dark_new_incident_after_recovery_starts_with_grace(
+        tmp_path, monkeypatch):
+    c, d = _dark_pass(tmp_path, monkeypatch, {
+        "since": _ago(hours=2), "alerted": True, "last_alert": _ago(hours=1)})
+    patch_usage(monkeypatch, util=0.2)
+    main.run_pass(c, d)
+    assert not dark_marker(c).exists()
+    assert "auth_dark" not in d.notifier.sent
+    patch_usage_dark(monkeypatch)
+    main.run_pass(c, d)
+    st = _marker(c)
+    assert st["alerted"] is False and "last_alert" not in st
+    assert "auth_dark" not in d.notifier.sent
+
+
+def test_auth_dark_legacy_marker_realerts_once_past_interval(
+        tmp_path, monkeypatch):
+    since = _ago(hours=9)
+    c, d = _dark_pass(tmp_path, monkeypatch, {"since": since, "alerted": True})
+    main.run_pass(c, d)
+    main.run_pass(c, d)
+    st = _marker(c)
+    assert d.notifier.sent.count("auth_dark") == 1
+    assert st["since"] == since
+    age = datetime.now(timezone.utc) - datetime.fromisoformat(st["last_alert"])
+    assert abs(age.total_seconds()) < 10
+
+
+def test_auth_dark_legacy_marker_realerts_exactly_at_interval(
+        tmp_path, monkeypatch):
+    since = (datetime.now(timezone.utc) - _realert_h()).isoformat()
+    c, d = _dark_pass(tmp_path, monkeypatch, {"since": since, "alerted": True})
+    main.run_pass(c, d)
+    assert d.notifier.sent.count("auth_dark") == 1
+
+
+def test_auth_dark_legacy_marker_inside_interval_stays_silent(
+        tmp_path, monkeypatch):
+    since = _ago(hours=2)
+    c, d = _dark_pass(tmp_path, monkeypatch, {"since": since, "alerted": True})
+    main.run_pass(c, d)
+    assert "auth_dark" not in d.notifier.sent
+    assert _marker(c)["since"] == since
+
+
+@pytest.mark.parametrize("raw", [
+    "not valid json{{",
+    "null",
+    json.dumps({"alerted": True}),
+    json.dumps({"since": "garbage", "alerted": True,
+                "last_alert": _ago(hours=9)}),
+    json.dumps({"since": _ago(hours=9), "alerted": True,
+                "last_alert": "garbage"}),
+], ids=["non-json", "null", "no-since", "bad-since", "bad-last-alert"])
+def test_auth_dark_corrupt_marker_resets_without_alert(
+        tmp_path, monkeypatch, raw):
+    c, d = _dark_pass(tmp_path, monkeypatch, raw)
+    main.run_pass(c, d)                        # must not raise
+    st = _marker(c)
+    assert st["alerted"] is False and "last_alert" not in st
+    assert datetime.fromisoformat(st["since"]) > (
+        datetime.now(timezone.utc) - timedelta(minutes=1))
+    assert "auth_dark" not in d.notifier.sent
+
+
+def _fail_then_recover(tmp_path, monkeypatch, marker):
+    c, d = _dark_pass(tmp_path, monkeypatch, marker)
+    before = _marker(c)
+    d.notifier.msg_id = 0
+    main.run_pass(c, d)
+    assert d.notifier.sent.count("auth_dark") == 1
+    assert _marker(c) == before
+    d.notifier.msg_id = 77
+    main.run_pass(c, d)
+    assert d.notifier.sent.count("auth_dark") == 2
+    assert _marker(c)["last_alert"] != before.get("last_alert")
+
+
+def test_failed_reminder_is_retried_on_the_next_pass(tmp_path, monkeypatch):
+    _fail_then_recover(tmp_path, monkeypatch, {
+        "since": _ago(hours=9), "alerted": True,
+        "last_alert": _ago(seconds=_realert_h(minutes=1).total_seconds())})
+
+
+def test_failed_first_alert_is_retried_on_the_next_pass(tmp_path, monkeypatch):
+    _fail_then_recover(tmp_path, monkeypatch, {
+        "since": _ago(minutes=main.AUTH_DARK_GRACE_MINUTES + 1),
+        "alerted": False})
 
 def test_pass_writes_heartbeat(tmp_path, monkeypatch):
     patch_usage(monkeypatch)

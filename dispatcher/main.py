@@ -789,10 +789,12 @@ def _budget_edge(cfg: Config, deps: Deps, verdict: Verdict, now: datetime) -> No
 
 
 AUTH_DARK_GRACE_MINUTES = 30
+AUTH_DARK_REALERT_HOURS = 8
 
 
 def _auth_dark_edge(cfg: Config, deps: Deps, usages: dict[str, ProviderUsage]) -> None:
-    """One alert per unknowable-usage incident (auth likely dead). Dark means
+    """One alert per unknowable-usage incident, repeated every
+    AUTH_DARK_REALERT_HOURS while it lasts (auth likely dead). Dark means
     EVERY fetched provider is unavailable; a single dark provider only fails
     its own models closed and stays visible on the console.
 
@@ -809,19 +811,25 @@ def _auth_dark_edge(cfg: Config, deps: Deps, usages: dict[str, ProviderUsage]) -
         marker.parent.mkdir(parents=True, exist_ok=True)
         marker.write_text(json.dumps({"since": _now(), "alerted": False}))
         return
+    now = datetime.now(timezone.utc)
     try:
         st = json.loads(marker.read_text())
-        if st.get("alerted"):
-            return
-        age_min = (datetime.now(timezone.utc)
-                   - datetime.fromisoformat(st["since"])).total_seconds() / 60
+        since = datetime.fromisoformat(st["since"])
+        alerted = bool(st.get("alerted"))
+        # legacy marker (alerted, no last_alert): count the interval from since
+        last = datetime.fromisoformat(st["last_alert"]) if alerted and "last_alert" in st else since
+        age_min = (now - since).total_seconds() / 60
+        # subtracting here also rejects offset-free timestamps (TypeError)
+        due = (now - last >= timedelta(hours=AUTH_DARK_REALERT_HOURS) if alerted
+               else age_min >= AUTH_DARK_GRACE_MINUTES)
     except (json.JSONDecodeError, AttributeError, KeyError, TypeError, ValueError):
         marker.write_text(json.dumps({"since": _now(), "alerted": False}))
         return
-    if age_min >= AUTH_DARK_GRACE_MINUTES:
-        deps.notifier.send("auth_dark", minutes=int(age_min),
-                           host=socket.gethostname())
-        marker.write_text(json.dumps({"since": st["since"], "alerted": True}))
+    # send returns 0 on failure: keep the marker so the next pass retries
+    if due and deps.notifier.send("auth_dark", minutes=int(age_min),
+                                  host=socket.gethostname()):
+        marker.write_text(json.dumps({"since": st["since"], "alerted": True,
+                                      "last_alert": _now()}))
 
 
 def _end_session(cfg: Config, deps: Deps, repository: str, issue: int) -> None:
