@@ -23,6 +23,8 @@ from dispatcher.state import (NO_SLOT, PARK_CI, PARK_HUMAN, PARK_LOGIN,
                                load_all, mark_waiting, save, SessionRecord, write_session)
 from tests.usagefakes import session_usage
 from tests.configfakes import with_project
+# Bound at import, before tests/conftest.py's _no_podman fake replaces it.
+from dispatcher.sessions import _podman as real_podman
 
 POLICY = parse_policy({
     "triage": ["claude-sonnet-5@low"],
@@ -4430,6 +4432,30 @@ def test_park_for_input_frees_the_slot(tmp_path):
                          note="which redirect URL?")
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_HUMAN and t.slot == NO_SLOT
+
+
+@pytest.mark.parametrize("podman", ["hangs", "fails"])
+def test_park_for_input_parks_when_podman_rm_hangs_or_fails(tmp_path, monkeypatch, podman):
+    """The question is already on Telegram when the session ends, so a podman
+    rm that times out or exits non-zero must not turn the park into a failure
+    (agent-ops#43, #49, #83). A container left behind beats a lost park, and
+    is surfaced, since the park frees the slot."""
+    from dispatcher import sessions as sessions_mod
+
+    def run(args, **kw):
+        if podman == "hangs":
+            raise subprocess.TimeoutExpired(args, kw.get("timeout"))
+        return subprocess.CompletedProcess(args, 125, "", "Error: lock timeout")
+    monkeypatch.setattr(sessions_mod, "_podman", real_podman)  # the real one, over subprocess
+    monkeypatch.setattr(sessions_mod.subprocess, "run", run)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, slot=1)
+    main._park_for_input(c, deps(sess=sessions_mod.Sessions(state_dir=c.state_dir)),
+                         c.repositories[0], load(c.state_dir, "portfolio_eval", 42),
+                         note="which redirect URL?")
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.park == PARK_HUMAN and t.slot == NO_SLOT and t.park_msg_id == 77
+    assert "teardown-failed" in [e["event"] for e in eventlog.read_tail(c.state_dir)]
 
 
 def test_park_for_ci_frees_the_slot(tmp_path):

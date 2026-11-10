@@ -15,14 +15,16 @@ mutations best-effort — except a launch, which raises (see _launch)."""
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import subprocess
+import sys
 import time
 import os
 from pathlib import Path
 from typing import Mapping
 
-from dispatcher import containers, herdr, workspace
+from dispatcher import containers, eventlog, herdr, workspace
 from dispatcher.models import Entry
 from dispatcher.runtimes import runtime_for
 from dispatcher.state import clear_session
@@ -39,6 +41,65 @@ def podman_cmd(repository: str, issue: int, worktree: str, memory: str, cpus: st
     return containers.session_cmd(session_name(repository, issue), worktree, memory,
                                   cpus, model, args, effort=effort,
                                   second=second, clone=clone, gh_config=gh_config)
+
+
+# An rm racing the `podman run --rm` client that the tab close HUPs waits about
+# 60 s inside podman (box journal, agent-ops#294); give it room to finish.
+_RM_TIMEOUT = 150
+# States in which a container runs nothing, so removing it loses no work.
+_DEAD = frozenset({"created", "configured", "initialized", "exited", "stopped"})
+
+
+def _podman(args: list[str], timeout: int) -> tuple[int | None, str]:
+    """podman's exit status and its stdout (stderr on a failure). Never
+    raises: (None, why) when podman could not answer (absent, hung)."""
+    try:
+        done = subprocess.run(["podman", *args], capture_output=True,
+                              text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, str(exc)
+    return done.returncode, (done.stdout if done.returncode == 0 else done.stderr).strip()
+
+
+def _container_state(name: str) -> str | None:
+    """podman's state of the container named exactly `name` ("running",
+    "exited", …), "" when there is none, None when podman cannot tell."""
+    rc, out = _podman(["ps", "-a", "--filter", f"name=^{re.escape(name)}$",
+                       "--format", "{{.State}}"], 30)
+    return out if rc == 0 else None
+
+
+def _remove_container(name: str) -> str:
+    """Remove the container `name` if there is one. Never raises: teardown
+    runs after a park's question is sent, and a raise there fails the task.
+    Returns "" once nothing holds the name, else the survivor's state."""
+    if _container_state(name) == "":
+        return ""
+    rc, out = _podman(["rm", "-f", name], _RM_TIMEOUT)
+    if rc == 0:
+        return ""
+    state = _container_state(name)
+    if state == "":
+        return ""
+    state = state or "in an unknown state"
+    print(f"[warn] container {name} not removed ({out}); it is {state}", file=sys.stderr)
+    return state
+
+
+def _free_name(name: str) -> None:
+    """Make way for `podman run --name <name>`: remove a dead leftover of a
+    teardown whose rm failed. A live one is a session still at work, so
+    raise rather than kill it or double-book its slot."""
+    state = _container_state(name)
+    if state is None:
+        raise RuntimeError(f"podman cannot say whether container {name} exists: not launching")
+    if state and state not in _DEAD:
+        raise RuntimeError(f"container {name} is still {state}: not launching "
+                           "a second session beside it")
+    # Not `rm -f`: should the leftover start after the probe, podman refuses
+    # to remove a running container rather than kill it.
+    if state and _podman(["rm", name], _RM_TIMEOUT)[0] != 0:
+        raise RuntimeError(f"leftover container {name} could not be removed: not launching")
 
 
 # The idle time of a session that is not `working` but whose status just
@@ -98,6 +159,7 @@ class Sessions:
                          model, args, effort=effort,
                          second=second, clone=clone, gh_config=gh_config)
         workspace.install_stop_hook(worktree)
+        _free_name(session_name(repository, issue))
         tab = herdr.Tab.ensure(
             repository, session_name(repository, issue), worktree,
             # herdr's hint for detecting an agent behind a wrapper (podman
@@ -268,11 +330,16 @@ class Sessions:
         tab = self._tab(repository, issue)
         if tab is not None:
             tab.close()  # HUPs the shell and the -it podman
-        # Belt and braces: the container may outlive the HUP.
-        subprocess.run(["podman", "rm", "-f", name],
-                       capture_output=True, timeout=60)
-        # Pre-rekey containers are named task-<issue> and nothing renames them,
-        # so a wedged one leaks unless end() reaches for that name too.
-        subprocess.run(["podman", "rm", "-f", f"task-{issue}"],
-                       capture_output=True, timeout=60)
+        # Belt and braces: the container may outlive the HUP. Pre-rekey
+        # containers are named task-<issue> and nothing renames them, so a
+        # wedged one leaks unless end() reaches for that name too.
+        survivors = [f"{n} ({state})" for n in (name, f"task-{issue}")
+                     if (state := _remove_container(n))]
+        # The caller frees the task's slot next: a container still standing
+        # is a session nobody counts, so it must not pass silently.
+        if survivors and self.state_dir is not None:
+            eventlog.append_event(
+                self.state_dir, "teardown-failed", repository=repository, issue=issue,
+                detail="container still standing after teardown, remove it by hand: "
+                       + ", ".join(survivors))
         self.forget_status(repository, issue)

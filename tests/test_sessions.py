@@ -3,12 +3,13 @@ drives the real `Sessions` over a faked `herdr._run` (an argv-prefix ->
 (returncode, stdout) table), so both the degrade contract and the exact
 CLI calls are asserted."""
 import json as _json
+import re
 import subprocess as _sp
 
 import pytest
 
 import dispatcher.sessions as sessions
-from dispatcher import herdr
+from dispatcher import eventlog, herdr
 from dispatcher.sessions import Sessions, podman_cmd
 from tests.test_containers import TOKENS
 
@@ -128,13 +129,29 @@ def _worktree(tmp_path):
     return str(tmp_path)
 
 
-def _fake_podman(monkeypatch, seen=None):
-    """end() shells out to podman; record the argv instead of running it."""
-    def run(args, **kw):
+def _fake_podman(monkeypatch, seen=None, states=None, rm=(0, "")):
+    """A podman behind sessions._podman holding `states` (container name ->
+    podman state). `ps` reports a name's state, "" when there is none; `rm`
+    answers `rm` and, when that is a success, deletes the container. Every
+    argv (without the leading "podman") is recorded in `seen`."""
+    states = {} if states is None else states
+
+    def podman(args, timeout):
         if seen is not None:
             seen.append(args)
-        return _sp.CompletedProcess(args, 0, "", "")
-    monkeypatch.setattr(sessions.subprocess, "run", run)
+        if args[0] == "ps":
+            pattern = args[args.index("--filter") + 1]
+            return 0, states.get(re.sub(r"\\(.)", r"\1", pattern[len("name=^"):-1]), "")
+        if args[0] == "rm":
+            if rm[0] == 0:
+                states.pop(args[-1], None)
+            return rm
+        raise AssertionError(f"unexpected podman call {args}")
+    monkeypatch.setattr(sessions, "_podman", podman)
+
+
+def _removed(seen):
+    return [c[-1] for c in seen if c[0] == "rm"]
 
 
 # --- naming and the container command ----------------------------------------
@@ -259,6 +276,59 @@ def test_spawn_stage_writes_the_prompt_and_runs_podman_in_a_new_tab(tmp_path, mo
     assert "HERDR_AGENT" not in run[3]
 
 
+def test_spawn_removes_a_stopped_leftover_container_first(tmp_path, monkeypatch):
+    """A teardown whose rm failed leaves the name taken, and `podman run
+    --name` would die on "name already in use"."""
+    wt = _worktree(tmp_path)
+    calls, podman = [], []
+    herdr_fake_creating(monkeypatch, calls)
+    _fake_podman(monkeypatch, podman, states={"task-acme-42": "exited"})
+    Sessions(state_dir=tmp_path).spawn_stage("acme", 42, wt, "P", "spec",
+                                             "claude-fable-5", gh_config=TOKENS)
+    # Not forced: should the leftover start between the probe and the rm,
+    # podman refuses to remove it instead of killing live work.
+    assert [c for c in podman if c[0] == "rm"] == [["rm", "task-acme-42"]]
+    assert any(c[:2] == ["pane", "run"] for c in calls)
+
+
+def test_spawn_refuses_when_the_leftover_container_will_not_go(tmp_path, monkeypatch):
+    wt = _worktree(tmp_path)
+    calls = []
+    herdr_fake_creating(monkeypatch, calls)
+    _fake_podman(monkeypatch, states={"task-acme-42": "exited"},
+                 rm=(2, "Error: cannot remove container task-acme-42 as it is running"))
+    with pytest.raises(RuntimeError, match="task-acme-42 could not be removed"):
+        Sessions(state_dir=tmp_path).spawn_stage("acme", 42, wt, "P", "spec",
+                                                 "claude-fable-5", gh_config=TOKENS)
+    assert not any(c[:2] == ["pane", "run"] for c in calls)
+
+
+@pytest.mark.parametrize("state", ["running", "paused", "stopping"])
+def test_spawn_refuses_while_a_same_name_container_is_live(tmp_path, monkeypatch, state):
+    """A live container under the name is a session still at work: killing
+    it loses that work, launching beside it double-books the slot."""
+    wt = _worktree(tmp_path)
+    calls, podman = [], []
+    herdr_fake_creating(monkeypatch, calls)
+    _fake_podman(monkeypatch, podman, states={"task-acme-42": state})
+    with pytest.raises(RuntimeError, match=f"task-acme-42 is still {state}"):
+        Sessions(state_dir=tmp_path).spawn_stage("acme", 42, wt, "P", "spec",
+                                                 "claude-fable-5", gh_config=TOKENS)
+    assert _removed(podman) == []
+    assert not any(c[:2] in (["tab", "create"], ["pane", "run"]) for c in calls)
+
+
+def test_spawn_refuses_when_podman_cannot_say_what_holds_the_name(tmp_path, monkeypatch):
+    wt = _worktree(tmp_path)
+    calls = []
+    herdr_fake_creating(monkeypatch, calls)
+    monkeypatch.setattr(sessions, "_podman", lambda args, timeout: (None, "timed out"))
+    with pytest.raises(RuntimeError, match="task-acme-42"):
+        Sessions(state_dir=tmp_path).spawn_stage("acme", 42, wt, "P", "spec",
+                                                 "claude-fable-5", gh_config=TOKENS)
+    assert not any(c[:2] == ["pane", "run"] for c in calls)
+
+
 def test_spawn_stage_closes_an_idle_tab_and_creates_a_fresh_one(tmp_path, monkeypatch):
     """The restored-tab launch path: the label must never carry two tabs, and
     a restored shell must not host a launch that never got the tab env."""
@@ -381,7 +451,7 @@ def test_dry_run_touches_no_herdr_and_no_podman(tmp_path, monkeypatch, capsys):
         raise AssertionError("dry-run must not call podman")
 
     monkeypatch.setattr(herdr, "_run", boom)
-    monkeypatch.setattr(sessions.subprocess, "run", no_podman)
+    monkeypatch.setattr(sessions, "_podman", no_podman)
     s = Sessions(dry_run=True, state_dir=tmp_path)
 
     s.spawn_stage("acme", 42, str(tmp_path), "P", "spec", "claude-opus-4-8", gh_config=TOKENS)
@@ -589,7 +659,7 @@ def test_end_snapshots_then_closes_the_tab_and_removes_both_containers(tmp_path,
     herdr_fake(monkeypatch, LIVE + [(("pane", "read"), 0, "last words\n"),
                                     (("tab", "close"), 0, CLOSE_OK)], calls)
     podman = []
-    _fake_podman(monkeypatch, podman)
+    _fake_podman(monkeypatch, podman, states={"task-acme-42": "exited"})
 
     Sessions(state_dir=tmp_path).end("acme", 42)
 
@@ -598,8 +668,7 @@ def test_end_snapshots_then_closes_the_tab_and_removes_both_containers(tmp_path,
     close_i = next(i for i, c in enumerate(calls) if c[:2] == ["tab", "close"])
     assert read_i < close_i
     assert calls[close_i] == ["tab", "close", "w1:t2"]
-    assert podman == [["podman", "rm", "-f", "task-acme-42"],
-                      ["podman", "rm", "-f", "task-42"]]
+    assert ["rm", "-f", "task-acme-42"] in podman
     assert not side.exists()
 
 
@@ -610,11 +679,31 @@ def test_end_on_a_dead_task_still_removes_both_container_names(monkeypatch):
     calls = []
     herdr_fake(monkeypatch, [(("tab", "list"), 0, NO_TABS)], calls)
     podman = []
-    _fake_podman(monkeypatch, podman)
+    _fake_podman(monkeypatch, podman,
+                 states={"task-acme-42": "running", "task-42": "exited"})
     Sessions().end("acme", 42)
     assert not any(c[:2] == ["tab", "close"] for c in calls)
-    assert podman == [["podman", "rm", "-f", "task-acme-42"],
-                      ["podman", "rm", "-f", "task-42"]]
+    assert _removed(podman) == ["task-acme-42", "task-42"]
+
+
+def test_end_skips_the_rm_when_no_container_is_left(monkeypatch):
+    """The tab close usually takes the container with it (podman run --rm),
+    and an rm of a container being torn down waits about 60 s in podman."""
+    podman = []
+    _fake_podman(monkeypatch, podman)
+    Sessions().end("acme", 42)
+    assert _removed(podman) == []
+
+
+def test_end_records_a_container_that_survives_its_rm(tmp_path, monkeypatch):
+    """The task's slot is freed after end(): a container still standing then
+    is a session nobody counts, so it is surfaced instead of passing silently."""
+    _fake_podman(monkeypatch, states={"task-acme-42": "running"},
+                 rm=(None, "timed out after 150 seconds"))
+    Sessions(state_dir=tmp_path).end("acme", 42)
+    [event] = [e for e in eventlog.read_tail(tmp_path) if e["event"] == "teardown-failed"]
+    assert (event["repository"], event["issue"]) == ("acme", 42)
+    assert "task-acme-42" in event["detail"] and "running" in event["detail"]
 
 
 def test_end_empty_capture_keeps_the_existing_snapshot(tmp_path, monkeypatch):
