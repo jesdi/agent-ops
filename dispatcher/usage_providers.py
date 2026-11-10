@@ -5,8 +5,10 @@ portfolio_eval#155; payload verified 2026-09-13 (tests/fixtures)."""
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -250,9 +252,12 @@ def cache_path(state_dir: str | Path, provider: str) -> Path:
     return Path(state_dir) / "usage" / f"{provider}.json"
 
 
-# Caches a failed refresh could neither replace nor delete: never served again
-# in this process. ponytail: lost on restart, a read-only state dir stays stale.
-_UNTRUSTED: set[Path] = set()
+def _untrusted(cp: Path) -> Path:
+    """Marker, outside the state dir, for a cache a failed refresh could neither
+    replace nor delete (read-only state dir): every process on the host skips it.
+    ponytail: lost when the tmp dir is cleared; the stale cache then serves again."""
+    return Path(tempfile.gettempdir()) / (
+        "agent-ops-usage-untrusted-" + hashlib.sha1(str(cp).encode()).hexdigest())
 
 
 def _cached(cp: Path, at: float) -> ProviderUsage | None:
@@ -260,7 +265,7 @@ def _cached(cp: Path, at: float) -> ProviderUsage | None:
     this unit cannot read, or cannot parse, is a miss, never a raise. So is
     a readable reading with no windows (written before readings failed
     closed): served, it would admit every model until it aged out."""
-    if cp in _UNTRUSTED:
+    if _untrusted(cp).exists():
         return None
     try:
         cached = json.loads(cp.read_text())
@@ -296,7 +301,7 @@ def fetch_provider(name: str, state_dir: str | Path, *,
     if u.source != "unavailable":
         try:
             write_json_atomic(cp, {"fetched_at": at, "usage": usage_to_json(u)})
-            _UNTRUSTED.discard(cp)
+            _untrusted(cp).unlink(missing_ok=True)
         except OSError:
             # The cache is an optimisation: lose it, keep the reading.
             log.warning("usage cache write failed for %r", name, exc_info=True)
@@ -306,7 +311,7 @@ def fetch_provider(name: str, state_dir: str | Path, *,
                 try:  # other readers share the file: blank it in place
                     cp.write_text("")
                 except OSError:
-                    _UNTRUSTED.add(cp)
+                    _untrusted(cp).touch()
     return u
 
 
