@@ -47,3 +47,16 @@ def test_read_only_state_dir_cache_is_not_served_to_an_independent_reader(tmp_pa
     u = up.fetch_provider("anthropic", tmp_path, now=lambda: 1010.0, adapters={"anthropic": fake})
     assert fake.calls == 1
     assert u.windows[0].used == 0.55
+
+
+def test_marker_write_failure_still_returns_the_reading(tmp_path, monkeypatch):
+    failing_replace(monkeypatch)
+
+    def deny(self, *a, **kw):
+        raise PermissionError("denied")
+    monkeypatch.setattr(up.Path, "unlink", deny)
+    monkeypatch.setattr(up.Path, "write_text", deny)
+    monkeypatch.setattr(up.Path, "touch", deny)
+    u = up.fetch_provider("anthropic", tmp_path, now=lambda: 1000.0,
+                          adapters={"anthropic": FakeUsage(session_usage(0.42))})
+    assert u.windows[0].used == 0.42

@@ -311,7 +311,10 @@ def fetch_provider(name: str, state_dir: str | Path, *,
                 try:  # other readers share the file: blank it in place
                     cp.write_text("")
                 except OSError:
-                    _untrusted(cp).touch()
+                    try:  # last resort: a marker every reader skips
+                        _untrusted(cp).touch()
+                    except OSError:
+                        log.warning("usage cache marker failed for %r", name, exc_info=True)
     return u
 
 
