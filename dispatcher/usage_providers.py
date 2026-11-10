@@ -7,11 +7,10 @@ from __future__ import annotations
 import json
 import logging
 import os
-import subprocess
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -114,27 +113,6 @@ def _http_get_json(url: str, headers: dict) -> dict:
         raise UsageFetchError(str(e)) from e
 
 
-def _ccusage_json() -> dict | None:
-    try:
-        out = subprocess.run(["ccusage", "blocks", "--json"],
-                             capture_output=True, text=True, timeout=60, check=True).stdout
-        return json.loads(out)
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
-        return None
-
-
-def _parse_ccusage(data: dict, now: float) -> tuple[Window, ...]:
-    """ccusage knows the session window only; the weekly windows are absent,
-    which the gate treats as passing and the console labels unknown."""
-    active = [b for b in data.get("blocks", []) if b.get("isActive")]
-    if not active:
-        return ()
-    b = active[0]
-    remaining = float((b.get("projection") or {}).get("remainingMinutes", 0))
-    resets = datetime.fromtimestamp(now, timezone.utc) + timedelta(minutes=remaining)
-    return (Window(WindowKind.SESSION, None, _used(b.get("percentUsed") or 0.0, None), resets),)
-
-
 def _read_token(credentials_path: str | Path) -> str | None:
     p = Path(credentials_path).expanduser()
     if not p.exists():
@@ -165,7 +143,7 @@ class AnthropicUsage:
         self._credentials_path = credentials_path
 
     def fetch(self, state_dir: Path, *, now: Callable[[], float] = time.time) -> ProviderUsage:
-        """OAuth endpoint → ccusage → unavailable. Token preference: explicit
+        """OAuth endpoint → unavailable. Token preference: explicit
         env override, then the OAuth stores, claude-home before the host's.
         The box's long-lived setup-token is not read from 1P here: the usage
         endpoint rejects it (403 as of 2026-09-23), and each read spent the
@@ -180,15 +158,11 @@ class AnthropicUsage:
                 windows = parse_anthropic(_http_get_json(
                     USAGE_URL, {"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT}))
             except (UsageFetchError, KeyError, ValueError, TypeError):
-                continue  # next token, then ccusage; the cache spaces passes ≥180s apart
+                continue  # next token; the cache spaces passes ≥180s apart
             # A reading with no windows would admit every model: fail closed
             # exactly like a rejected token.
             if windows:
                 return ProviderUsage(self.name, "oauth", at, windows)
-        cc = _ccusage_json()
-        windows = _parse_ccusage(cc, at) if cc is not None else ()
-        if windows:
-            return ProviderUsage(self.name, "ccusage", at, windows)
         return unavailable(self.name, at)
 
 

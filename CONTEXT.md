@@ -30,6 +30,11 @@ The `last_alert` ISO-8601 UTC timestamp in the auth-dark marker, written after
 a successful send. An alerted marker without it is a legacy marker and uses
 the incident's `since` timestamp until its next alert.
 
+**Frontend Node version**:
+Node 24 is the supported version for local frontend work and the `frontend` and
+`e2e` CI jobs. `frontend/.node-version` gives version managers the major version;
+`frontend/package.json` sets the `>=24` engine floor. CI alone pins pnpm 10.
+
 **Box**:
 The dedicated VPS that runs the dispatcher and all sessions. There is exactly one.
 _Avoid_: server, host, VPS (in prose — "box" everywhere)
@@ -277,6 +282,18 @@ _Avoid_: vendor, backend, API
 One limit a provider reports: a kind (session, weekly), an optional model
 scope (Fable), a used fraction, when it resets, and its nominal length.
 _Avoid_: quota, bucket
+
+**Dead token**:
+For Anthropic usage, every candidate OAuth token is rejected by the usage
+endpoint or yields no usage windows. Local session logs cannot establish
+that the token is live (ADR 0008).
+
+**Reading**:
+The `ProviderUsage` returned by a usage adapter.
+
+**Unavailable reading**:
+A reading with `source == "unavailable"` and no windows. The Anthropic adapter
+returns it after exhausting OAuth candidates, with no ccusage fallback.
 
 **Allowance**:
 The fraction of a window the box may have consumed by now — the session
