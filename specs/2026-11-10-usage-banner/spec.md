@@ -38,8 +38,11 @@ Terms:
    all carry `auth_dark`.
 5. **Generated types current.** `frontend/src/lib/api-types.ts` is regenerated with
    `pnpm gen:api` (from `frontend/`) and committed, never hand-edited; `UsageView.auth_dark` is
-   in it. The existing usage fixtures in `frontend/src/test/fixtures.ts` (`usage`,
-   `usageUnavailable`, `usageCcusage`) gain `auth_dark: null` and type-check.
+   in it, as a required (nullable) field, like `pinned` today. Every `UsageView` literal in the
+   frontend tests gains `auth_dark: null` and type-checks: the fixtures `usage`,
+   `usageUnavailable`, `usageCcusage` and `usageRouted` in `frontend/src/test/fixtures.ts`
+   (`usagePinned`/`usageUnpinned` spread `usageRouted`), and `twoProviders` in
+   `frontend/src/pages/__tests__/BoardPage.test.tsx`.
 
 ### Frontend
 
@@ -105,6 +108,12 @@ patterned on `UsagePanel.test.tsx`.
 - **When** `Sources.auth_dark_since()` is called
 - **Then** it returns the file's mtime as an ISO UTC string and raises nothing
 
+### Scenario: marker deleted mid-read reads as None (req 1)
+
+- **Given** `auth-dark` exists when `Sources.auth_dark_since()` starts, and reading it fails with `FileNotFoundError` (the dispatcher deleted it in between; simulated by patching the read)
+- **When** `Sources.auth_dark_since()` is called
+- **Then** it returns `None` and raises nothing
+
 ### Scenario: usage digest follows the marker's life (req 2)
 
 - **Given** a state dir without `auth-dark`; digest D0 = `json.loads(state_fingerprint())["usage"]`
@@ -137,17 +146,23 @@ patterned on `UsagePanel.test.tsx`.
 - **When** `GET /api/board`
 - **Then** `body["usage"]["auth_dark"] == {"since": "2026-11-05T10:00:00+00:00"}`
 
+### Scenario: the usage socket carries the same field (req 4)
+
+- **Given** the console serving its usage view on a Unix socket (as in `tests/test_usage_socket_acceptance.py`) over a state dir holding the marker `{"since": "2026-11-05T10:00:00+00:00", "alerted": false}`
+- **When** `GET /api/usage` is sent over the socket
+- **Then** the body has `"auth_dark": {"since": "2026-11-05T10:00:00+00:00"}`, the same as over TCP
+
 ### Scenario: generated types are current (req 5, req 11)
 
 - **Given** the change is complete
 - **When** `make gate` runs
-- **Then** `pnpm gen:api` leaves `frontend/src/lib/api-types.ts` unchanged, `UsageView` in it has `auth_dark`, and `pnpm typecheck` passes with `auth_dark: null` on the three fixtures
+- **Then** `pnpm gen:api` leaves `frontend/src/lib/api-types.ts` unchanged, `UsageView` in it has `auth_dark`, and `pnpm typecheck` passes with `auth_dark: null` on every `UsageView` literal (the four fixtures and `twoProviders`)
 
 ### Scenario: auth-dark banner (req 6, req 7)
 
 - **Given** `/api/usage` returns `usageUnavailable` with `auth_dark: { since: "2026-11-05T10:00:00+00:00" }`
 - **When** `UsageBanner` renders
-- **Then** an element with `role="alert"` and test id `auth-dark-banner` shows `Can't read usage: the provider login has probably expired` and a line starting with `since `, and no `usage-exhausted-banner` exists
+- **Then** an element with `role="alert"` and test id `auth-dark-banner` carries the classes of `banner.failed`, shows `Can't read usage: the provider login has probably expired` and a line whose text is `since ` + `new Date("2026-11-05T10:00:00+00:00").toLocaleString()`, and no `usage-exhausted-banner` exists
 
 ### Scenario: auth-dark wins over a closed binding gate (req 7)
 
@@ -159,7 +174,7 @@ patterned on `UsagePanel.test.tsx`.
 
 - **Given** `auth_dark: null`, `gate.admitted: false`, `gate.binding` a window view, `gate.minutes_to_reset: 130`
 - **When** `UsageBanner` renders
-- **Then** an element with `role="alert"` and test id `usage-exhausted-banner` shows exactly `Usage over pace: claims paused. The window resets in 2h 10m` (`formatDuration(7800)` is `2h 10m`), and the text `until` does not appear
+- **Then** an element with `role="alert"` and test id `usage-exhausted-banner` carries the classes of `banner.waiting` and shows exactly `Usage over pace: claims paused. The window resets in 2h 10m` (`formatDuration(7800)` is `2h 10m`), and the text `until` does not appear
 
 ### Scenario: closed gate without a binding window renders nothing (req 9)
 
@@ -190,6 +205,12 @@ patterned on `UsagePanel.test.tsx`.
 - **Given** the Board page rendered with a payload whose `auth_dark` is set
 - **When** the page has loaded
 - **Then** `auth-dark-banner` precedes the board header's content in document order (it is the first child of the page column)
+
+### Scenario: the banner adds no request (req 6)
+
+- **Given** the Board page rendered with msw counting requests to `/api/usage`, and a payload whose `auth_dark` is set
+- **When** the page has loaded and `auth-dark-banner` is shown
+- **Then** `/api/usage` was requested exactly once (the banner and the header share the `usage` query)
 
 ## Reconciliation
 
