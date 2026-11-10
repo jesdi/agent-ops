@@ -155,6 +155,19 @@ def test_the_token_dir_carries_the_session_signing_key_the_gitconfig_names(
     assert stat.S_IMODE(copy.stat().st_mode) == 0o600
 
 
+def test_the_token_dir_carries_the_allowed_signers_the_image_trusts(
+        tmp_path, monkeypatch, home):
+    """The image sets gpg.ssh.allowedSignersFile=/root/.config/gh/allowed-signers:
+    without the copy a session's commits read %G? = N and implement-spec refuses
+    to push them."""
+    monkeypatch.setattr(Path, "home", lambda: home)   # over conftest's isolated home
+    trust = home / ".config" / "gh" / "allowed-signers"
+    trust.write_text("agent@example.com ssh-ed25519 AAAAkey\n")
+    world = world_of(tmp_path, monkeypatch, ("analytics",))
+    launch = analytics_launch(world, tmp_path)
+    assert Path(launch["gh_config"], "allowed-signers").read_bytes() == trust.read_bytes()
+
+
 def test_hosts_yml_is_not_readable_by_other_users(tmp_path, monkeypatch, home):
     world = world_of(tmp_path, monkeypatch, ("analytics",))
     launch = analytics_launch(world, tmp_path)
