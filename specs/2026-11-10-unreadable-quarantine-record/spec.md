@@ -1,8 +1,11 @@
 # Unreadable quarantine record — Spec
 
 An unreadable quarantine record is any `quarantine/{repository}-{issue}.json`
-whose read fails (`OSError`), whose bytes are not UTF-8, whose text is not
-JSON, or whose JSON is not an object (`null`, a list, a number, a string).
+whose read fails (`OSError` other than the file being gone), whose bytes are
+not UTF-8, whose text is not JSON, or whose JSON is not an object (`null`, a
+list, a number, a string). Any JSON object, even `{}`, is readable. A record
+that vanishes between listing the directory and reading it (a retry or a
+closed blocker deleted it) is gone, not unreadable: it blocks nothing.
 Its identity (`repository`, `task_issue`) always comes from the filename, the
 same key `check_quarantine` and the retry route use.
 
@@ -16,7 +19,8 @@ same key `check_quarantine` and the retry route use.
    `frontend/src/lib/api-types.ts` carries the field (the gate's
    `gen:api` freshness check passes).
 3. An unreadable record whose filename does not parse as
-   `{repository}-{issue}` is not listed (it blocks nothing).
+   `{repository}-{issue}` is not listed (it blocks nothing), and neither is
+   a record that is gone by the time it is read.
 4. `failures.check_quarantine` returns `True` (still blocked) for every
    unreadable record and never raises; it leaves the file in place.
 5. `POST /api/task/{repository}/{issue}/retry` returns 202 for an issue whose
@@ -64,6 +68,20 @@ This is the reproduction committed as
   "jesdi/alpha", blocker_issue: 5, fingerprint: "fp", created_at: <written>,
   blocker_open: true, readable: true}`
 
+### Scenario: an empty object is a readable record (boundary)
+
+- **Given** only `alpha-78.json` = `{}`
+- **When** `GET /api/failures`
+- **Then** its entry has `task_issue: 78`, `readable: true` and
+  `blocker_open: null` — listed as today, not as unreadable
+
+### Scenario: the generated API types carry the flag
+
+- **Given** `QuarantineEntry` with its `readable` field
+- **When** the gate regenerates `frontend/src/lib/api-types.ts` (`pnpm gen:api`)
+- **Then** the file is unchanged against the committed one, and its
+  `QuarantineEntry` has `readable: boolean`
+
 ### Scenario: no blocker lookup for an unreadable record
 
 - **Given** only `alpha-74.json` = `null`
@@ -75,6 +93,14 @@ This is the reproduction committed as
 - **Given** `quarantine/broken.json` = `null` and readable `alpha-77.json`
 - **When** `GET /api/failures`
 - **Then** `quarantined` holds only task issue 77
+
+### Scenario: a record gone before it is read is not listed
+
+- **Given** `quarantine/alpha-79.json` is listed by the directory scan but
+  deleted before its read (the read raises `FileNotFoundError`), and readable
+  `alpha-77.json`
+- **When** `GET /api/failures`
+- **Then** `quarantined` holds only task issue 77, and the response is 200
 
 ### Scenario: an unreadable record never crashes the claim pass
 
@@ -110,6 +136,8 @@ This is the reproduction committed as
   unknown" chip and no relative time
 - **And when** the operator clicks Retry **then** `onRetry("widget", 40)` is
   called, and while `widget#40` is busy the button is disabled
+- **And when** the retry fails with "issue widget/40 is not quarantined"
+  **then** that error shows inside the `widget#40` row
 
 ### Scenario: readable rows render as before
 
