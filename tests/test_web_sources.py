@@ -812,3 +812,41 @@ def test_ac_boundary_rank_window_ends_at_exactly_ttl(tmp_path):
     clock.t += 1
     src.rank_rows([repository])
     assert gh.calls == 3
+
+
+def test_cold_description_timeout_starts_retry_window_after_failure(tmp_path):
+    clock = FakeClock()
+
+    class TimeoutGH:
+        calls = 0
+
+        def issue_view(self, repo, number):
+            self.calls += 1
+            clock.t += 120
+            raise TimeoutError("gh timed out")
+
+    gh = TimeoutGH()
+    _, src = make_sources(tmp_path, github=gh, clock=clock)
+    first = src.issue_description("jesdi/alpha", 99)
+    assert first["error"]
+    assert src.issue_description("jesdi/alpha", 99) == first
+    assert gh.calls == 1
+
+
+def test_cold_rank_timeout_starts_ttl_window_after_failure(tmp_path):
+    clock = FakeClock()
+
+    class TimeoutGH:
+        calls = 0
+
+        def rank_rows(self, repositories):
+            self.calls += 1
+            clock.t += 120
+            raise TimeoutError("gh timed out")
+
+    gh = TimeoutGH()
+    _, src = make_sources(tmp_path, github=gh, clock=clock)
+    first = src.rank_rows([make_repository()])
+    assert first[0] == [] and first[2] is True
+    assert src.rank_rows([make_repository()]) == first
+    assert gh.calls == 1

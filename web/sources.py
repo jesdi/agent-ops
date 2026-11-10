@@ -146,7 +146,7 @@ class Sources:
             # as a stale entry (never a blank queue if a cache ever existed).
             entry = {"rows": cached["rows"] if cached else [],
                      "as_of": cached["as_of"] if cached else _iso(now),
-                     "fetched_at": now, "stale": True}
+                     "fetched_at": self._clock(), "stale": True}
             self._rank_cache[key] = entry
             return entry["rows"], entry["as_of"], True
         self._rank_cache[key] = {
@@ -171,6 +171,7 @@ class Sources:
                     "url": str(d.get("url") or ""),
                     "fetched_at": _iso(now), "error": ""}
             ttl = DESCRIPTION_TTL_SECONDS
+            cache_at = now
         except Exception as exc:
             if cached and not cached["data"]["error"]:
                 data, ttl = cached["data"], DESCRIPTION_TTL_SECONDS
@@ -178,7 +179,8 @@ class Sources:
                 data = {"title": "", "body": "", "url": "",
                         "fetched_at": _iso(now), "error": str(exc) or type(exc).__name__}
                 ttl = DESCRIPTION_RETRY_SECONDS
-        self._desc_cache[key] = {"data": data, "at": now, "ttl": ttl}
+            cache_at = self._clock()
+        self._desc_cache[key] = {"data": data, "at": cache_at, "ttl": ttl}
         return data
 
     def usage(self, routed: Collection[str]) -> dict[str, ProviderUsage]:
