@@ -21,8 +21,8 @@ Root cause, three links in `dispatcher/usage_providers.py`, each correct alone:
 3. `fetch_provider` deliberately never caches an `unavailable` reading ("an outage never masks
    a recovery"), so `MIN_POLL_SECONDS` (180 s) never spaces retries after a failure.
 
-Nothing in the chain remembers a 429, so nothing spaces the retries. The fix records the 429 in
-a cooldown marker that the adapter checks before it makes any request. Caching failures in
+Nothing in the chain remembers a 429, so nothing spaces the retries. The fix records the 429 per token in
+a cooldown marker that the adapter checks before it requests with that token. Caching failures in
 `fetch_provider` stays out: that design is correct and kept.
 
 ## For whom
@@ -33,8 +33,9 @@ the usage gate unable to admit work.
 
 ## Goal
 
-After an OAuth 429, `AnthropicUsage.fetch` makes no further usage request until a cooldown
-(the `Retry-After` header, or 300 s by default, capped at 3600 s) has passed. Every other
+After an OAuth 429, `AnthropicUsage.fetch` makes no further usage request with that token
+until a cooldown (the `Retry-After` header, or 300 s by default, capped at 3600 s) has passed;
+the read falls through to the next token as today. Every other
 failure keeps today's behaviour.
 
 ## Non-goals
