@@ -6,6 +6,11 @@ sessions to a finished PR.
 
 ## Language
 
+**Frontend Node version**:
+Node 24 is the supported version for local frontend work and the `frontend` and
+`e2e` CI jobs. `frontend/.node-version` gives version managers the major version;
+`frontend/package.json` sets the `>=24` engine floor. CI alone pins pnpm 10.
+
 **Box**:
 The dedicated VPS that runs the dispatcher and all sessions. There is exactly one.
 _Avoid_: server, host, VPS (in prose — "box" everywhere)
