@@ -1,8 +1,8 @@
 """Installation tokens a container mounts as its gh config.
 
 A token directory is 0700 and holds hosts.yml (0600), with a token narrowed
-to the container's repository; a task's also holds a copy of the host's
-commit-signing key (triage never commits). It is mounted read-only at
+to the container's repository; a task's also holds copies of the host's
+commit-signing key and its allowed-signers file (triage never commits). It is mounted read-only at
 /root/.config/gh in place of the host's own gh config. This module owns that
 file's format, where the directories live under the state dir, and the mint.
 The token's expiry is dispatcher state, kept outside the mounted directory.
@@ -34,6 +34,7 @@ TOKENS = "tokens"            # state_dir/tokens/<task_key>: a task's mounted dir
 EXPIRY = "token-expiry"      # state_dir/token-expiry/<task_key>: its token's expires_at
 TRIAGE = "triage-tokens"     # state_dir/triage-tokens/triage-*: a triage run's directory
 SIGNING_KEY = "agent-ops-signing-key"   # the commit-signing key a task's directory carries
+ALLOWED_SIGNERS = "allowed-signers"     # its trust file, without which %G? reads N, not G
 
 
 def _atomic(path: Path, text: str) -> None:
@@ -67,11 +68,13 @@ def issue(access: github_app.Access, state_dir, key: str, repo: str) -> str:
     directory = task_dir(state_dir, key)
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     write(directory, token)
-    # ~/.gitconfig (mounted as is) signs with /root/.config/gh/SIGNING_KEY,
-    # inside this mount; re-copied at each mint, so a rotated key lands within REFRESH.
-    signing = Path.home() / ".config" / "gh" / SIGNING_KEY
-    if signing.is_file():
-        _atomic(directory / SIGNING_KEY, signing.read_text())
+    # The session image signs with /root/.config/gh/SIGNING_KEY and trusts
+    # /root/.config/gh/ALLOWED_SIGNERS, both inside this mount; re-copied at
+    # each mint, so a rotated key lands within REFRESH.
+    for name in (SIGNING_KEY, ALLOWED_SIGNERS):
+        source = Path.home() / ".config" / "gh" / name
+        if source.is_file():
+            _atomic(directory / name, source.read_text())
     expiry = Path(state_dir) / EXPIRY / key
     expiry.parent.mkdir(parents=True, exist_ok=True)
     _atomic(expiry, token.expires_at.isoformat())
