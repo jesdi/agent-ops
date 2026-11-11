@@ -2525,10 +2525,8 @@ def _apply_retry_intent(cfg: Config, issue: int) -> None:
         qp = failures.quarantine_path(cfg.state_dir, repository.name, issue)
         if not qp.exists():
             continue
-        try:
-            fp = json.loads(qp.read_text()).get("fingerprint")
-        except (json.JSONDecodeError, OSError):
-            fp = None
+        rec = failures.read_quarantine(qp)
+        fp = rec.get("fingerprint") if isinstance(rec, dict) else None
         if fp:
             failures.fingerprint_path(cfg.state_dir, fp).unlink(missing_ok=True)
         qp.unlink(missing_ok=True)

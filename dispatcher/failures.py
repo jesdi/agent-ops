@@ -160,6 +160,26 @@ def write_quarantine(state_dir: str | Path, repository_name: str, issue: int,
     }, indent=2))
 
 
+# What read_quarantine returns for a record it has no object for.
+GONE = "gone"              # deleted before the read: blocks nothing
+UNREADABLE = "unreadable"  # unreadable bytes or not a JSON object: blocks
+
+
+def read_quarantine(p: Path) -> dict | str:
+    """The record's JSON object, GONE or UNREADABLE. Never raises.
+
+    The one reader for check_quarantine, the retry intent and the console,
+    so the three cannot disagree. A torn write is invalid UTF-8, a
+    ValueError like invalid JSON; `null` or a list is not a record."""
+    try:
+        rec = json.loads(p.read_text())
+    except FileNotFoundError:
+        return GONE
+    except (OSError, ValueError):
+        return UNREADABLE
+    return rec if isinstance(rec, dict) else UNREADABLE
+
+
 def check_quarantine(state_dir: str | Path, github, repository_name: str,
                      issue: int) -> bool:
     """True = still quarantined (skip the candidate). Deleting the record
@@ -168,10 +188,11 @@ def check_quarantine(state_dir: str | Path, github, repository_name: str,
     p = quarantine_path(state_dir, repository_name, issue)
     if not p.exists():
         return False
-    try:
-        rec = json.loads(p.read_text())
-    except (json.JSONDecodeError, OSError):
-        return True  # unreadable record: stay blocked; a human deletes it
+    rec = read_quarantine(p)
+    if rec is GONE:
+        return False
+    if rec is UNREADABLE:
+        return True  # stay blocked; Retry or a human deletes it
     if not rec.get("blocker_issue"):
         print(f"[warn] quarantine {p.name} has no blocker issue; "
               f"delete the record to retry", file=sys.stderr)
