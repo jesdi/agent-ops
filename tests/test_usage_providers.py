@@ -609,16 +609,6 @@ def serve(monkeypatch, answers):
     return asked
 
 
-def watch_ccusage(monkeypatch, result=None):
-    calls = []
-    monkeypatch.setattr(up, "_ccusage_json", lambda: calls.append(1) or result)
-    return calls
-
-
-SESSION_BLOCK = {"blocks": [
-    {"isActive": True, "projection": {"remainingMinutes": 45}, "percentUsed": 62.0}]}
-
-
 def one_token(tmp_path, monkeypatch, token="tok-a"):
     """`token` as the only candidate: no env token, one credentials file."""
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
@@ -731,13 +721,11 @@ def test_openai_ignores_the_status_and_writes_no_marker(tmp_path, monkeypatch):
     assert not up.cooldown_path(tmp_path, "openai").exists()
 
 
-def test_a_429_writes_a_digest_keyed_marker_and_skips_ccusage(tmp_path, monkeypatch):
+def test_a_429_writes_a_digest_keyed_marker(tmp_path, monkeypatch):
     adapter = one_token(tmp_path, monkeypatch, "tok-a")
     serve(monkeypatch, {"tok-a": rate_limited()})
-    ccusage = watch_ccusage(monkeypatch, SESSION_BLOCK)
     u = adapter.fetch(tmp_path, now=lambda: 1000)
     assert u.source == "unavailable"
-    assert ccusage == []
     assert marker(tmp_path) == {token_key("tok-a"): 1300}
     assert "tok-a" not in marker_file(tmp_path).read_text()
 
@@ -755,37 +743,33 @@ def test_a_429_falls_through_to_the_next_token_and_the_next_pass_skips_it(tmp_pa
     assert asked == ["tok-host"]
 
 
-def test_every_token_cooling_makes_no_request_and_no_ccusage(tmp_path, monkeypatch):
+def test_every_token_cooling_makes_no_request(tmp_path, monkeypatch):
     adapter = two_stores(tmp_path, monkeypatch)
     put_marker(tmp_path, {token_key("tok-home"): 1300, token_key("tok-host"): 1300})
     asked = serve(monkeypatch, {"tok-home": oauth_response(), "tok-host": oauth_response()})
-    ccusage = watch_ccusage(monkeypatch, SESSION_BLOCK)
     u = adapter.fetch(tmp_path, now=lambda: 1000)
     assert u.source == "unavailable"
-    assert asked == [] and ccusage == []
+    assert asked == []
 
 
-def test_a_429_beside_another_failure_still_runs_ccusage(tmp_path, monkeypatch):
+def test_a_429_beside_another_failure_is_unavailable(tmp_path, monkeypatch):
     adapter = one_token(tmp_path, monkeypatch, "tok-store")
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok-env")
     asked = serve(monkeypatch, {"tok-env": rate_limited(),
                                 "tok-store": up.UsageFetchError("x", status=403)})
-    ccusage = watch_ccusage(monkeypatch, SESSION_BLOCK)
     u = adapter.fetch(tmp_path, now=lambda: 1000)
-    assert u.source == "ccusage"
+    assert u.source == "unavailable"
     assert asked == ["tok-env", "tok-store"]
-    assert ccusage == [1]
     assert marker(tmp_path) == {token_key("tok-env"): 1300}
 
 
-def test_no_candidate_token_still_runs_ccusage(tmp_path, monkeypatch):
+def test_no_candidate_token_is_unavailable(tmp_path, monkeypatch):
     monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
     monkeypatch.setattr(up, "HOST_CREDENTIALS", str(tmp_path / "absent.json"))
     asked = serve(monkeypatch, {})
-    ccusage = watch_ccusage(monkeypatch, SESSION_BLOCK)
     u = up.AnthropicUsage().fetch(tmp_path, now=lambda: 1000)
-    assert u.source == "ccusage"
-    assert asked == [] and ccusage == [1]
+    assert u.source == "unavailable"
+    assert asked == []
     assert not marker_file(tmp_path).exists()
 
 
@@ -821,7 +805,6 @@ def test_the_cooldown_length_gates_the_next_requests(
         tmp_path, monkeypatch, retry_after, until, probes):
     adapters = {"anthropic": one_token(tmp_path, monkeypatch, "tok-a")}
     asked = serve(monkeypatch, {"tok-a": rate_limited(retry_after)})
-    watch_ccusage(monkeypatch)
     first = up.fetch_provider("anthropic", tmp_path, now=lambda: 1000, adapters=adapters)
     assert first.source == "unavailable" and len(asked) == 1
     assert marker(tmp_path) == {token_key("tok-a"): until}
@@ -835,11 +818,10 @@ def test_the_cooldown_length_gates_the_next_requests(
 def test_other_failures_write_no_marker_and_retry_at_once(tmp_path, monkeypatch, status):
     adapters = {"anthropic": one_token(tmp_path, monkeypatch, "tok-a")}
     asked = serve(monkeypatch, {"tok-a": up.UsageFetchError("x", status=status)})
-    ccusage = watch_ccusage(monkeypatch)
     for at in (1000, 1005):
         u = up.fetch_provider("anthropic", tmp_path, now=lambda: at, adapters=adapters)
         assert u.source == "unavailable"
-    assert len(asked) == 2 and len(ccusage) == 2
+    assert len(asked) == 2
     assert not marker_file(tmp_path).exists()
 
 
@@ -872,7 +854,6 @@ def test_the_gate_boundaries(tmp_path, monkeypatch, until, blocks):
     adapter = one_token(tmp_path, monkeypatch, "tok-a")
     put_marker(tmp_path, {token_key("tok-a"): until})
     asked = serve(monkeypatch, {"tok-a": oauth_response()})
-    watch_ccusage(monkeypatch)
     u = adapter.fetch(tmp_path, now=lambda: 1000)
     assert asked == ([] if blocks else ["tok-a"])
     assert u.source == ("unavailable" if blocks else "oauth")
