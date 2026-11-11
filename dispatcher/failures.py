@@ -201,7 +201,7 @@ def check_quarantine(state_dir: str | Path, github, repository_name: str,
     file manually force-retries; closing the blocker issue deletes it here,
     making the candidate claimable in the same pass."""
     p = quarantine_path(state_dir, repository_name, issue)
-    rec = read_quarantine(p) if p.exists() else GONE
+    rec = read_quarantine(p)
     if rec is GONE:
         return False
     if rec is UNREADABLE:
