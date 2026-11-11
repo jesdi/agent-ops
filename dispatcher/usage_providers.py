@@ -260,12 +260,16 @@ def _untrusted(cp: Path) -> Path:
         "agent-ops-usage-untrusted-" + hashlib.sha1(str(cp).encode()).hexdigest())
 
 
+# Last resort when even the marker cannot be written: this process alone skips cp.
+_poisoned: set[Path] = set()
+
+
 def _cached(cp: Path, at: float) -> ProviderUsage | None:
     """The cached reading if it is fresh and usable; None is a miss. A file
     this unit cannot read, or cannot parse, is a miss, never a raise. So is
     a readable reading with no windows (written before readings failed
     closed): served, it would admit every model until it aged out."""
-    if _untrusted(cp).exists():
+    if cp in _poisoned or _untrusted(cp).exists():
         return None
     try:
         cached = json.loads(cp.read_text())
@@ -302,6 +306,7 @@ def fetch_provider(name: str, state_dir: str | Path, *,
         try:
             write_json_atomic(cp, {"fetched_at": at, "usage": usage_to_json(u)})
             _untrusted(cp).unlink(missing_ok=True)
+            _poisoned.discard(cp)
         except OSError:
             # The cache is an optimisation: lose it, keep the reading.
             log.warning("usage cache write failed for %r", name, exc_info=True)
@@ -314,6 +319,7 @@ def fetch_provider(name: str, state_dir: str | Path, *,
                     try:  # last resort: a marker every reader skips
                         _untrusted(cp).touch()
                     except OSError:
+                        _poisoned.add(cp)
                         log.warning("usage cache marker failed for %r", name, exc_info=True)
     return u
 
