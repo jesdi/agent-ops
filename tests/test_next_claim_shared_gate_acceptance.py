@@ -84,7 +84,8 @@ def test_board_route_skips_a_quarantined_head(tmp_path):
                            for n in (212, 213)], "2026-08-01T12:00:00+00:00", False)
     fake.quarantine = [{"repository": "alpha", "task_issue": 212,
                         "blocker_repo": "alpha", "blocker_issue": 205,
-                        "fingerprint": "", "created_at": ""}]
+                        "fingerprint": "", "created_at": "",
+                        "readable": True}]
     client = TestClient(create_app(make_config(tmp_path), fake))
     nc = client.get("/api/board", headers=HEADERS).json()["next_claim"]
     assert (nc["verdict"], nc["next_issue"]) == ("will-claim", 213)

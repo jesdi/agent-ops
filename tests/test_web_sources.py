@@ -485,14 +485,11 @@ def _quarantine(tmp_path, name, **rec):
     (d / name).write_text(json.dumps(rec))
 
 
-def test_quarantine_entries_skip_an_unreadable_record(tmp_path, src):
-    """A torn write_text leaves invalid UTF-8, whose read_text raises
-    UnicodeDecodeError — a ValueError, NOT an OSError. The old
-    (JSONDecodeError, OSError) guard missed it and 500'd the route. Valid
-    JSON that is not an object (null, a list) has the same effect via
-    rec.get -> AttributeError. Neither may raise, and neither may reach
-    /api/failures: with no readable body every field would be blank and the
-    row would be indistinguishable from a real entry."""
+def test_quarantine_entries_list_an_unreadable_record_as_unreadable(tmp_path, src):
+    """A torn write (invalid UTF-8), JSON that is not an object (null, a
+    list) or text that is not JSON leaves a record nobody can read, and its
+    issue stays blocked: it is listed, keyed by its filename and marked
+    unreadable, never skipped and never raised."""
     d = tmp_path / "quarantine"
     d.mkdir(parents=True, exist_ok=True)
     (d / "alpha-73.json").write_bytes(b'{"blocker_issue": \xff\xfe}')
@@ -500,7 +497,10 @@ def test_quarantine_entries_skip_an_unreadable_record(tmp_path, src):
     (d / "alpha-75.json").write_text("[1, 2]")
     _quarantine(tmp_path, "alpha-76.json", task_issue=76, blocker_repo="r",
                 blocker_issue=1, fingerprint="f", created_at="c")
-    assert [e["task_issue"] for e in src.quarantine_entries()] == [76]
+    entries = sorted(src.quarantine_entries(), key=lambda e: e["task_issue"])
+    assert [(e["repository"], e["task_issue"], e["readable"])
+            for e in entries] == [("alpha", 73, False), ("alpha", 74, False),
+                                  ("alpha", 75, False), ("alpha", 76, True)]
 
 
 def test_quarantine_key_comes_from_the_filename_not_the_body(tmp_path, src):
