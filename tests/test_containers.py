@@ -29,7 +29,7 @@ def test_session_cmd_mounts_worktree_clone_and_claude_home(tmp_path: Path, monke
     wt, clone = make_worktree(tmp_path)
     cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5",
                                  "--continue 'hi'", clone=clone, gh_config=TOKENS)
-    assert "podman run --rm -it --name task-42 " in cmd
+    assert "podman run --rm --init -it --name task-42 " in cmd
     assert "--memory 2g --cpus 2" in cmd
     assert f"-v {wt}:{wt}" in cmd and f"-w {wt}" in cmd
     assert f"-v {clone}:{clone}" in cmd
@@ -167,7 +167,7 @@ def test_session_cmd_resolves_claude_token_at_spawn_via_wrapper(
     cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5",
                                  "P", gh_config=TOKENS)
     wrapper = "/opt/infra/token-wrapper"
-    assert cmd.startswith(f"{wrapper} podman run --rm -it --name task-42 ")
+    assert cmd.startswith(f"{wrapper} podman run --rm --init -it --name task-42 ")
     assert "-e CLAUDE_CODE_OAUTH_TOKEN " in cmd
     assert "claude-token.env" not in cmd
 
@@ -437,3 +437,20 @@ def test_session_cmd_refuses_to_run_without_a_token_directory(tmp_path, monkeypa
     with pytest.raises(ValueError, match="token directory"):
         containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5", "P",
                                clone=clone, gh_config=gh_config)
+
+
+def test_every_container_runs_an_init_that_reaps_orphans(tmp_path: Path, monkeypatch):
+    """Codex as PID 1 never reaps orphaned shells: agent-ops#77's review
+    container collected 2021 zombies, hit podman's 2048 pids limit, and its
+    session hung for 12h on a failed fork. `--init` puts a reaper at PID 1."""
+    monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path / "state"))
+    wt, clone = make_worktree(tmp_path)
+    session = containers.session_cmd("task-42", wt, "2g", "2", "openai/gpt-6-sol",
+                                     "P", clone=clone, gh_config=TOKENS)
+    assert "podman run --rm --init -it " in session
+    triage = containers.triage_cmd("triage-o-r", "/repos/r", "/state/triage", "1500m", "2",
+                                   "openai/gpt-6-sol", "/triage/p.md", gh_config=TOKENS)
+    setup = containers.setup_cmd("task-42-setup", wt, "true", clone)
+    for argv in (triage, setup):
+        i = argv.index("podman")
+        assert argv[i:i + 4] == ["podman", "run", "--rm", "--init"]
