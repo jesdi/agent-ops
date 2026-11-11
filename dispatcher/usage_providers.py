@@ -172,11 +172,21 @@ def _live_cooldowns(path: Path, at: float) -> dict[str, float]:
         entries = json.loads(path.read_text())
     except (OSError, ValueError):
         return {}
-    if not isinstance(entries, dict):
-        return {}
-    return {k: u for k, u in entries.items()
-            if isinstance(u, (int, float)) and not isinstance(u, bool)
-            and at < u <= at + MAX_COOLDOWN_SECONDS}
+    return {k: u for k, u in entries.items() if _gates(u, at)} if isinstance(entries, dict) else {}
+
+
+def _gates(until: object, at: float) -> bool:
+    return (isinstance(until, (int, float)) and not isinstance(until, bool)
+            and at < until <= at + MAX_COOLDOWN_SECONDS)
+
+
+def _start_cooldown(marker: Path, cooling: dict[str, float], key: str, at: float,
+                    err: UsageFetchError) -> None:
+    cooling[key] = at + min(err.retry_after or RATE_LIMIT_COOLDOWN_SECONDS, MAX_COOLDOWN_SECONDS)
+    try:
+        write_json_atomic(marker, cooling)
+    except OSError:
+        log.exception("cannot record the usage cooldown in %s", marker)
 
 
 class AnthropicUsage:
@@ -191,36 +201,37 @@ class AnthropicUsage:
         The box's long-lived setup-token is not read from 1P here: the usage
         endpoint rejects it (403 as of 2026-09-23), and each read spent the
         1Password account's daily budget (1000 reads)."""
-        candidates = [t for t in dict.fromkeys((
-            os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"),
-            *map(_read_token, _credential_stores(state_dir, self._credentials_path)),
-        )) if t]
         at = now()
         marker = cooldown_path(state_dir, self.name)
         cooling = _live_cooldowns(marker, at)
-        for token in candidates:
+        for token in self._candidates(state_dir):
             key = _token_key(token)
             if key in cooling:
                 continue
-            try:
-                windows = parse_anthropic(_http_get_json(
-                    USAGE_URL, {"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT}))
-            except UsageFetchError as e:
-                if e.status == 429:
-                    cooling[key] = at + min(e.retry_after or RATE_LIMIT_COOLDOWN_SECONDS,
-                                            MAX_COOLDOWN_SECONDS)
-                    try:
-                        write_json_atomic(marker, cooling)
-                    except OSError:
-                        log.exception("cannot record the usage cooldown in %s", marker)
-                continue  # next token; the other store's token may be live
-            except (KeyError, ValueError, TypeError):
-                continue
             # A reading with no windows would admit every model: fail closed
             # exactly like a rejected token.
+            windows = self._windows(token, lambda e: _start_cooldown(marker, cooling, key, at, e))
             if windows:
                 return ProviderUsage(self.name, "oauth", at, windows)
         return unavailable(self.name, at)
+
+    def _candidates(self, state_dir: Path) -> list[str]:
+        return [t for t in dict.fromkeys((
+            os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"),
+            *map(_read_token, _credential_stores(state_dir, self._credentials_path)),
+        )) if t]
+
+    @staticmethod
+    def _windows(token: str, on_429: Callable[[UsageFetchError], None]) -> tuple[Window, ...]:
+        try:
+            return parse_anthropic(_http_get_json(
+                USAGE_URL, {"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT}))
+        except UsageFetchError as e:
+            if e.status == 429:
+                on_429(e)
+        except (KeyError, ValueError, TypeError):
+            pass
+        return ()  # next token; the other store's token may be live
 
 
 # ---- OpenAI (Codex) adapter -------------------------------------------------
