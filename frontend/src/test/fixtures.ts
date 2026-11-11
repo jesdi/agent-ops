@@ -98,6 +98,7 @@ export const usage: UsageView = {
     minutes_to_reset: 7320, binding: weekAll,
   },
   priority: { mode: 'auto', options: ['auto', 'anthropic'], first: 'anthropic', pinned: [] },
+  auth_dark: null,
 }
 
 export const usageUnavailable: UsageView = {
@@ -107,6 +108,7 @@ export const usageUnavailable: UsageView = {
     note: 'anthropic: usage unavailable', minutes_to_reset: 0, binding: null,
   },
   priority: { mode: 'auto', options: ['auto', 'anthropic'], first: 'anthropic', pinned: [] },
+  auth_dark: null,
 }
 
 export const usageCcusage: UsageView = {
@@ -117,6 +119,7 @@ export const usageCcusage: UsageView = {
     minutes_to_reset: 45, binding: ccusageSession,
   },
   priority: { mode: 'auto', options: ['auto', 'anthropic'], first: 'anthropic', pinned: [] },
+  auth_dark: null,
 }
 
 export const taskDetail: TaskDetail = {
@@ -178,6 +181,7 @@ export const usageRouted: UsageView = {
   ],
   gate: usage.gate,
   priority: { mode: 'auto', options: ['auto', 'anthropic', 'openai'], first: 'anthropic', pinned: [] },
+  auth_dark: null,
 }
 
 // Pinned tracks (ticket 03).
