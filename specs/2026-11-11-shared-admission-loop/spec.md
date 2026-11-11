@@ -2,7 +2,8 @@
 
 ## Requirements
 
-1. A single generator in `dispatcher/main.py` (working name `_admitted`)
+1. A single generator in `dispatcher/main.py` (working name `_admissions`; `_admitted` is
+   already taken by the admit wrapper of `_choose_launch`)
    takes `cfg`, `deps`, a predicate `wants(task) -> bool` and a launch chooser
    `choose(repository, task) -> (launch | None, why: str)`, and yields, one at
    a time, `(repository, task, launch, gh_config)` for every task it admits.
@@ -55,7 +56,7 @@
     unmodified, apart from tests that assert the old slot behaviour that
     requirement 5 replaces (none is known; any such change is named in the
     PR).
-11. `make check` passes.
+11. `make gate` passes.
 
 ## Scenarios
 
@@ -118,7 +119,9 @@
 - **Given** capacity 3, task `portfolio_eval#1` holding slot 0, and a woken
   task `portfolio_eval#3` recording `slot=2`
 - **When** `_resume_woken` runs
-- **Then** `portfolio_eval#3` resumes in slot 2
+- **Then** `portfolio_eval#3` resumes in slot 2; likewise a pr-open feedback
+  task recording `slot=2` that nobody else holds is spawned by
+  `_spawn_feedback` in slot 2 (today it would take slot 1)
 
 ### Scenario: violation — a recorded slot another task holds is replaced
 
@@ -153,7 +156,17 @@
   `_task_token` that returns `None`
 - **When** `_resume_woken` runs
 - **Then** the task is not resumed, keeps `park=wake`, and gets no
-  `wake-blocked` event
+  `wake-blocked` event; the same under `_spawn_feedback` for a feedback
+  task, which keeps `feedback_pending=True`
+
+### Scenario: a task woken during the iteration waits for the next pass
+
+- **Given** capacity 3 and one woken task `portfolio_eval#3`, whose resume
+  action saves another task `factorial#42` with `park=wake`
+- **When** `_resume_woken` runs
+- **Then** only `portfolio_eval#3` is resumed; `factorial#42` keeps
+  `park=wake` and gets no `wake-blocked` event (the candidate list was read
+  when iteration started)
 
 ### Scenario: a resume crash fails only that task
 
@@ -177,9 +190,10 @@
 - **Given** the refactored `dispatcher/main.py`
 - **When** it is read
 - **Then** `_box_free`, `allocate_slot`, `_mark_wake_blocked`,
-  `_park_stranded`, `_task_token` and `_oldest_first` are each called once
-  across the shared generator, `_resume_woken` and `_spawn_feedback` (inside
-  the generator), and `make check` passes
+  `_park_stranded`, `_task_token` and `_oldest_first` are called only
+  inside the shared generator, never in `_resume_woken` or
+  `_spawn_feedback` (`_mark_wake_blocked` keeps one call per refusal
+  reason), and `make gate` passes
 
 ## Out of scope
 
