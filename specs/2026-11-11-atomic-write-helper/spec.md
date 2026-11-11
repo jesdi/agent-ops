@@ -78,7 +78,9 @@ Source: issue #149 (design rewritten in the 2026-11-05 triage). Operator answer 
 6. Each of the twelve sites in the table writes byte-identical output to before for the same input,
    with mode 0644.
 7. No fixed-name temp file remains in `dispatcher/`:
-   `git grep -nE 'with_suffix\("\.tmp"\)|\+ "\.tmp"|\.tmp"\)' -- 'dispatcher/*.py'` finds nothing.
+   `git grep -nE 'with_suffix\("\.tmp"\)|\+ "\.tmp"|\.tmp"\)' -- 'dispatcher/*.py'` finds no
+   fixed-name temp file: its only match is the `mkstemp(..., suffix=".tmp")` line inside
+   `state.write_atomic` (a random name, which the pattern also matches today).
    The only temp-file code left is `state.write_atomic`, `workspace.write_worktree_file` and the
    out-of-scope `task_tokens` writer.
 8. Behaviour that the sites keep: `main._write_heartbeat` still swallows an `OSError` with its
@@ -111,6 +113,11 @@ Source: issue #149 (design rewritten in the 2026-11-05 triage). Operator answer 
 - **When** `write_atomic(tmp_path / "f", "x")`
 - **Then** `stat(f).st_mode & 0o777 == 0o644`
 
+### Scenario: replacing a file of another mode (R2)
+- **Given** `tmp_path/f` exists with mode `0o600`
+- **When** `write_atomic(tmp_path / "f", "x")`
+- **Then** `stat(f).st_mode & 0o777 == 0o644`
+
 ### Scenario: failed rename (R3)
 - **Given** `tmp_path/f` holds `old`, and `os.replace` is patched to raise `OSError("disk full")`
 - **When** `write_atomic(tmp_path / "f", "new")`
@@ -118,6 +125,11 @@ Source: issue #149 (design rewritten in the 2026-11-05 triage). Operator answer 
 
 ### Scenario: failed write (R3)
 - **Given** `tmp_path/f` holds `old`, and writing to the temp file raises `OSError` (for example `os.fdopen` patched to return a file whose `write` raises)
+- **When** `write_atomic(tmp_path / "f", "new")`
+- **Then** `OSError` is raised, `f` still reads `old`, and the directory holds only `f`
+
+### Scenario: failed chmod (R3)
+- **Given** `tmp_path/f` holds `old`, and `os.chmod` is patched to raise `OSError`
 - **When** `write_atomic(tmp_path / "f", "new")`
 - **Then** `OSError` is raised, `f` still reads `old`, and the directory holds only `f`
 
@@ -147,7 +159,7 @@ Source: issue #149 (design rewritten in the 2026-11-05 triage). Operator answer 
 ### Scenario: sites keep their bytes (R6)
 - **Given** each site in the table, called through its public function with a fixed input (for example `triage.save_cursors(d, {"z": "…", "a": "…"})`, `execution_overrides.save(...)`, `messages.mark_delivered(...)`, `task_artifacts._copy_content(dest, b"\x00raw")`)
 - **When** the site writes
-- **Then** the file's bytes equal the format in the table (compact / `indent=2` / `sort_keys=True` / newline-terminated JSONL / raw bytes) exactly as computed before the change, the mode is 0644, and no `*.tmp` file is left in the directory
+- **Then** the file's bytes equal the format in the table (compact / `indent=2` / `sort_keys=True` / newline-terminated JSONL / raw bytes) exactly as computed before the change, the mode is 0644 even with the process umask at `0o077`, and no `*.tmp` file is left in the directory
 
 ### Scenario: dotted repository in mark_background (R6)
 - **Given** a repository `owner/repo.name`
@@ -156,10 +168,10 @@ Source: issue #149 (design rewritten in the 2026-11-05 triage). Operator answer 
 
 ### Scenario: no fixed temp names left (R7)
 - **When** the acceptance `git grep` from R7 runs over `dispatcher/*.py`
-- **Then** it prints nothing (exit status 1)
+- **Then** it prints exactly one line, the `mkstemp` call inside `state.write_atomic` in `dispatcher/state.py`
 
 ### Scenario: heartbeat still never raises (R8)
-- **Given** `write_atomic` (as seen from `main`) raises `OSError`
+- **Given** `pass.json` in the state dir cannot be written (for example a directory sits at that path, so the rename raises `OSError`)
 - **When** `_write_heartbeat(cfg, started_at)` runs
 - **Then** it returns normally and prints `[warn] heartbeat write failed:` to stderr
 
@@ -167,6 +179,11 @@ Source: issue #149 (design rewritten in the 2026-11-05 triage). Operator answer 
 - **Given** `task_artifacts._write(path, value)` has run once
 - **When** it runs again with an equal `value` and `os.replace` is spied
 - **Then** `os.replace` is not called and the file's mtime is unchanged
+
+### Scenario: artifact index that changed is rewritten (R8)
+- **Given** `task_artifacts._write(path, {"a": 1})` has run once
+- **When** it runs again with `{"a": 2}`
+- **Then** the file's bytes equal `json.dumps({"a": 2}, indent=2, sort_keys=True)`, its mode is 0644, and no temp file is left
 
 ### Scenario: worktree writer untouched (R9)
 - **When** the existing `tests/test_workspace.py` symlink and temp-file tests run
