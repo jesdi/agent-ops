@@ -180,37 +180,39 @@ def read_quarantine(p: Path) -> dict | str:
     return rec if isinstance(rec, dict) else UNREADABLE
 
 
+def _blocker_open(name: str, github, rec: dict) -> bool:
+    """True unless the record's blocker issue is known to be closed."""
+    if not rec.get("blocker_issue"):
+        print(f"[warn] quarantine {name} has no blocker issue; "
+              f"delete the record to retry", file=sys.stderr)
+        return True
+    try:
+        state = github.issue_state(rec["blocker_repo"], rec["blocker_issue"])
+    except Exception as exc:
+        print(f"[warn] issue_state failed for {name}: {exc} — "
+              f"treating as still blocked", file=sys.stderr)
+        return True
+    return str(state).upper() == "OPEN"
+
+
 def check_quarantine(state_dir: str | Path, github, repository_name: str,
                      issue: int) -> bool:
     """True = still quarantined (skip the candidate). Deleting the record
     file manually force-retries; closing the blocker issue deletes it here,
     making the candidate claimable in the same pass."""
     p = quarantine_path(state_dir, repository_name, issue)
-    if not p.exists():
-        return False
-    rec = read_quarantine(p)
+    rec = read_quarantine(p) if p.exists() else GONE
     if rec is GONE:
         return False
     if rec is UNREADABLE:
         return True  # stay blocked; Retry or a human deletes it
-    if not rec.get("blocker_issue"):
-        print(f"[warn] quarantine {p.name} has no blocker issue; "
-              f"delete the record to retry", file=sys.stderr)
-        return True
-    try:
-        state = github.issue_state(rec["blocker_repo"], rec["blocker_issue"])
-    except Exception as exc:
-        print(f"[warn] issue_state failed for {p.name}: {exc} — "
-              f"treating as still blocked", file=sys.stderr)
-        return True
-    if str(state).upper() == "OPEN":
+    if _blocker_open(p.name, github, rec):
         return True
     # Blocker closed: clear the fingerprint marker too, or a human closing
     # the issue without fixing the cause silently loops forever — the
     # marker still dedupes, so report_failure files nothing and pings
     # nothing next time the same failure recurs.
-    fp = rec.get("fingerprint")
-    if fp:
-        fingerprint_path(state_dir, fp).unlink(missing_ok=True)
+    if rec.get("fingerprint"):
+        fingerprint_path(state_dir, rec["fingerprint"]).unlink(missing_ok=True)
     p.unlink(missing_ok=True)
     return False

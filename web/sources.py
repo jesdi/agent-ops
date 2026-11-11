@@ -53,6 +53,29 @@ _QUARANTINE_DEFAULTS = {"task_issue": 0, "blocker_repo": "", "blocker_issue": 0,
                         "fingerprint": "", "created_at": ""}
 
 
+def _quarantine_entry(p: Path) -> dict | None:
+    """One quarantine_entries row, or None for a record that blocks nothing
+    or whose fields have the wrong types."""
+    repository, keyed_issue = (state.parse_task_key(p.stem)
+                               or (p.stem.rsplit("-", 1)[0], None))
+    d = failures.read_quarantine(p)
+    readable = isinstance(d, dict)
+    if d is failures.GONE or (not readable and keyed_issue is None):
+        return None
+    # Blank defaults keep FailuresView's model valid for a readable record
+    # that is missing a field, and for an unreadable one.
+    entry = {**_QUARANTINE_DEFAULTS, **(d if readable else {})}
+    # A wrong-typed field would 500 FailuresView or reach GitHub; skip
+    # like an unreadable record. bool is an int subclass: reject it.
+    if not all(type(entry[k]) is type(default)
+               for k, default in _QUARANTINE_DEFAULTS.items()):
+        return None
+    entry.update(repository=repository, readable=readable)
+    if keyed_issue is not None:
+        entry["task_issue"] = keyed_issue
+    return entry
+
+
 class Sources:
     def __init__(self, state_dir: str, sessions, github,
                  clock: Callable[[], float] = time.time,
@@ -223,31 +246,8 @@ class Sources:
         This route may never 500.
         """
         root = self.state_dir / "quarantine"
-        entries = []
-        for p in sorted(root.glob("*.json")) if root.exists() else []:
-            parsed = state.parse_task_key(p.stem)
-            repository, keyed_issue = parsed if parsed else ("", None)
-            d = failures.read_quarantine(p)
-            if d is failures.GONE:
-                continue
-            readable = isinstance(d, dict)
-            if not readable and keyed_issue is None:
-                continue
-            # Blank defaults keep FailuresView's model valid for a readable
-            # record that is missing a field, and for an unreadable one.
-            entry = {**_QUARANTINE_DEFAULTS, **(d if readable else {}),
-                     "readable": readable}
-            # A wrong-typed field would 500 FailuresView or reach GitHub; skip
-            # like an unreadable record. bool is an int subclass: reject it.
-            if not all(type(entry[k]) is type(default)
-                       for k, default in _QUARANTINE_DEFAULTS.items()):
-                continue
-            entry["repository"] = (repository if keyed_issue is not None
-                                   else p.stem.rsplit("-", 1)[0])
-            if keyed_issue is not None:
-                entry["task_issue"] = keyed_issue
-            entries.append(entry)
-        return entries
+        paths = sorted(root.glob("*.json")) if root.exists() else []
+        return [e for e in map(_quarantine_entry, paths) if e is not None]
 
     def fingerprint_entries(self) -> list[dict]:
         root = self.state_dir / "failures"
