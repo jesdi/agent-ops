@@ -235,6 +235,7 @@ class BoardView(BoardSnapshot):
     # The ranking behind Queued's ghosts failed and a cached one is shown.
     queue_stale: bool
     next_claim: NextClaimView
+    usage: UsageView | None = None
 
 
 def task_card(t: TaskState, *, model: str,
@@ -381,6 +382,7 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                 max_open: int = sys.maxsize,
                 quarantined: Collection[tuple[str, int]] | None = None,
                 pinned_tracks: dict[tuple[str, int], str] | None = None,
+                usage: UsageView | None = None,
                 ) -> BoardView:
     # Key on (repository, issue) so alpha#73 does not hide beta#73. Issue numbers
     # are per-repo; bare numbers would wrongly suppress cross-repository candidates
@@ -401,7 +403,7 @@ def build_board(tasks: list[TaskState], *, capacity: int,
     return BoardView(
         columns=snapshot.columns, capacity=snapshot.capacity,
         median_cycle_seconds=snapshot.median_cycle_seconds,
-        queue_stale=queue_stale,
+        queue_stale=queue_stale, usage=usage,
         next_claim=next_claim(heartbeat, now=now, tasks=tasks,
                               capacity=max(0, capacity - onboarding_running), gate=gate,
                               queues=queues,
@@ -589,7 +591,7 @@ class UsageView(BaseModel):
     providers: list[ProviderUsageView]
     gate: GateView
     priority: PriorityView
-    auth_dark: AuthDarkView | None = None
+    auth_dark: AuthDarkView | None  # no default: the generated type stays required
 
 
 CLOSE_HEADROOM = 0.08
@@ -648,7 +650,7 @@ def usage_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
             mode=mode, options=[priority.AUTO, *sorted(routed)],
             first=ranked[0].provider if ranked else "",
             pinned=list(pinned)),
-        auth_dark=AuthDarkView(since=auth_dark_since) if auth_dark_since else None)
+        auth_dark=None if auth_dark_since is None else AuthDarkView(since=auth_dark_since))
 
 
 class QuarantineEntry(BaseModel):

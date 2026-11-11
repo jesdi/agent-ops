@@ -347,7 +347,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
             events=sources.events_tail(EVENTS_SCAN_LIMIT),
             heartbeat=sources.pass_heartbeat(),
             now=now,
-            gate=usage.gate,
+            gate=usage.gate, usage=usage,
             queues=queues, queue_stale=stale_any,
             # One session-layer probe for both signals (cf. dispatcher run_pass).
             claims_paused=claims_paused, triage_running=triage_running,

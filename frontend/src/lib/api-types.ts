@@ -656,6 +656,7 @@ export interface components {
             next_claim: components["schemas"]["NextClaimView"];
             /** Queue Stale */
             queue_stale: boolean;
+            usage?: components["schemas"]["UsageView"] | null;
         };
         /** BoostReq */
         BoostReq: {
@@ -1510,7 +1511,7 @@ export interface components {
         };
         /** UsageView */
         UsageView: {
-            auth_dark?: components["schemas"]["AuthDarkView"] | null;
+            auth_dark: components["schemas"]["AuthDarkView"] | null;
             gate: components["schemas"]["GateView"];
             priority: components["schemas"]["PriorityView"];
             /** Providers */
