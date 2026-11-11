@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from dispatcher import failures
 from dispatcher.failures import FailureReport
 
@@ -277,3 +279,21 @@ def test_issue_state_error_treated_as_blocked(tmp_path, capsys):
     gh = StateGitHub(raises=True)
     assert failures.check_quarantine(tmp_path, gh, "portfolio_eval", 192) is True
     assert "still blocked" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("raw", [b'{"a": \xff}', b"null", b"[1, 2]", b"3",
+                                 b'"s"', b"{not json"])
+def test_read_quarantine_reports_an_unreadable_record(tmp_path, raw):
+    p = tmp_path / "alpha-1.json"
+    p.write_bytes(raw)
+    assert failures.read_quarantine(p) is failures.UNREADABLE
+
+
+def test_read_quarantine_reports_a_missing_record_as_gone(tmp_path):
+    assert failures.read_quarantine(tmp_path / "alpha-1.json") is failures.GONE
+
+
+def test_read_quarantine_returns_any_object(tmp_path):
+    p = tmp_path / "alpha-1.json"
+    p.write_text("{}")
+    assert failures.read_quarantine(p) == {}
