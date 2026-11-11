@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import time
@@ -565,3 +566,332 @@ def test_openai_never_writes_auth_json(tmp_path, monkeypatch):
 
 def test_openai_adapter_is_registered():
     assert isinstance(up.ADAPTERS["openai"], up.OpenAIUsage)
+
+
+# ---- #1: a 429 cools down that token, and the read falls through ------------
+
+def token_key(token):
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+
+
+def marker_file(tmp_path):
+    return up.cooldown_path(tmp_path, "anthropic")
+
+
+def put_marker(tmp_path, content):
+    p = marker_file(tmp_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content if isinstance(content, str) else json.dumps(content))
+
+
+def marker(tmp_path):
+    return json.loads(marker_file(tmp_path).read_text())
+
+
+def rate_limited(retry_after=None):
+    return up.UsageFetchError("x", status=429, retry_after=retry_after)
+
+
+def serve(monkeypatch, answers):
+    """_http_get_json answering per bearer token: an exception is raised,
+    anything else returned. Returns the list of tokens asked, in order."""
+    asked = []
+
+    def fake_get(url, headers):
+        token = headers["Authorization"].removeprefix("Bearer ")
+        asked.append(token)
+        answer = answers[token]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(up, "_http_get_json", fake_get)
+    return asked
+
+
+def watch_ccusage(monkeypatch, result=None):
+    calls = []
+    monkeypatch.setattr(up, "_ccusage_json", lambda: calls.append(1) or result)
+    return calls
+
+
+SESSION_BLOCK = {"blocks": [
+    {"isActive": True, "projection": {"remainingMinutes": 45}, "percentUsed": 62.0}]}
+
+
+def one_token(tmp_path, monkeypatch, token="tok-a"):
+    """`token` as the only candidate: no env token, one credentials file."""
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    store = tmp_path / "only-credentials.json"
+    store.write_text(json.dumps({"claudeAiOauth": {"accessToken": token}}))
+    return up.AnthropicUsage(credentials_path=store)
+
+
+def two_stores(tmp_path, monkeypatch, home="tok-home", host="tok-host"):
+    """The claude-home store then the host store, as AnthropicUsage() reads them."""
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    home_store = tmp_path / "claude-home" / ".credentials.json"
+    home_store.parent.mkdir()
+    home_store.write_text(json.dumps({"claudeAiOauth": {"accessToken": home}}))
+    host_store = tmp_path / "host-credentials.json"
+    host_store.write_text(json.dumps({"claudeAiOauth": {"accessToken": host}}))
+    monkeypatch.setattr(up, "HOST_CREDENTIALS", str(host_store))
+    return up.AnthropicUsage()
+
+
+def http_error(status, headers=None):
+    import email.message
+    import urllib.error
+    hdrs = email.message.Message()
+    for k, v in (headers or {}).items():
+        hdrs[k] = v
+    return urllib.error.HTTPError("https://x", status, "msg", hdrs, None)
+
+
+def get_json_raising(monkeypatch, exc):
+    def urlopen(req, timeout):
+        raise exc
+    monkeypatch.setattr(up.urllib.request, "urlopen", urlopen)
+    return up._http_get_json("https://x", {})
+
+
+def test_the_cooldown_constants():
+    assert up.RATE_LIMIT_COOLDOWN_SECONDS == 300
+    assert up.MAX_COOLDOWN_SECONDS == 3600
+
+
+def test_the_marker_is_a_different_file_from_the_cache(tmp_path):
+    assert up.cooldown_path(tmp_path, "anthropic") == tmp_path / "usage" / "anthropic.cooldown.json"
+    assert up.cooldown_path(tmp_path, "anthropic") != up.cache_path(tmp_path, "anthropic")
+
+
+def test_a_usage_fetch_error_built_from_a_message_has_no_status():
+    e = up.UsageFetchError("x")
+    assert (e.status, e.retry_after) == (None, None)
+
+
+def test_http_get_json_keeps_the_status_and_retry_after(monkeypatch):
+    with pytest.raises(up.UsageFetchError) as caught:
+        get_json_raising(monkeypatch, http_error(429, {"Retry-After": "90"}))
+    assert (caught.value.status, caught.value.retry_after) == (429, 90)
+
+
+def test_retry_after_zero_is_a_valid_value(monkeypatch):
+    with pytest.raises(up.UsageFetchError) as caught:
+        get_json_raising(monkeypatch, http_error(429, {"Retry-After": "0"}))
+    assert (caught.value.status, caught.value.retry_after) == (429, 0)
+
+
+@pytest.mark.parametrize("headers", [
+    {"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}, {"Retry-After": "-5"},
+    {"Retry-After": "abc"}, {"Retry-After": "²"}, {}, None])
+def test_an_unusable_retry_after_reads_as_none_but_keeps_the_status(monkeypatch, headers):
+    exc = http_error(429, headers or {})
+    if headers is None:
+        exc.hdrs = None
+    with pytest.raises(up.UsageFetchError) as caught:
+        get_json_raising(monkeypatch, exc)
+    assert (caught.value.status, caught.value.retry_after) == (429, None)
+
+
+@pytest.mark.parametrize("make", [
+    lambda: __import__("urllib.error").error.URLError("down"),
+    lambda: TimeoutError("timed out")])
+def test_a_transport_failure_carries_no_status(monkeypatch, make):
+    with pytest.raises(up.UsageFetchError) as caught:
+        get_json_raising(monkeypatch, make())
+    assert (caught.value.status, caught.value.retry_after) == (None, None)
+
+
+def test_a_non_json_body_carries_no_status(monkeypatch):
+    class Body:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return b"<html>"
+
+    monkeypatch.setattr(up.urllib.request, "urlopen", lambda req, timeout: Body())
+    with pytest.raises(up.UsageFetchError) as caught:
+        up._http_get_json("https://x", {})
+    assert (caught.value.status, caught.value.retry_after) == (None, None)
+
+
+def test_openai_ignores_the_status_and_writes_no_marker(tmp_path, monkeypatch):
+    codex_auth(tmp_path)
+    requests = []
+
+    def fake_get(url, headers):
+        requests.append(url)
+        raise rate_limited()
+
+    monkeypatch.setattr(up, "_http_get_json", fake_get)
+    first = up.OpenAIUsage().fetch(tmp_path, now=lambda: 1000)
+    second = up.OpenAIUsage().fetch(tmp_path, now=lambda: 1005)
+    assert (first.source, second.source) == ("unavailable", "unavailable")
+    assert len(requests) == 2
+    assert not up.cooldown_path(tmp_path, "openai").exists()
+
+
+def test_a_429_writes_a_digest_keyed_marker_and_skips_ccusage(tmp_path, monkeypatch):
+    adapter = one_token(tmp_path, monkeypatch, "tok-a")
+    serve(monkeypatch, {"tok-a": rate_limited()})
+    ccusage = watch_ccusage(monkeypatch, SESSION_BLOCK)
+    u = adapter.fetch(tmp_path, now=lambda: 1000)
+    assert u.source == "unavailable"
+    assert ccusage == []
+    assert marker(tmp_path) == {token_key("tok-a"): 1300}
+    assert "tok-a" not in marker_file(tmp_path).read_text()
+
+
+def test_a_429_falls_through_to_the_next_token_and_the_next_pass_skips_it(tmp_path, monkeypatch):
+    adapter = two_stores(tmp_path, monkeypatch)
+    asked = serve(monkeypatch, {"tok-home": rate_limited(), "tok-host": oauth_response()})
+    first = adapter.fetch(tmp_path, now=lambda: 1000)
+    assert first.source == "oauth"
+    assert asked == ["tok-home", "tok-host"]
+    assert marker(tmp_path) == {token_key("tok-home"): 1300}
+    asked.clear()
+    second = adapter.fetch(tmp_path, now=lambda: 1005)
+    assert second.source == "oauth"
+    assert asked == ["tok-host"]
+
+
+def test_every_token_cooling_makes_no_request_and_no_ccusage(tmp_path, monkeypatch):
+    adapter = two_stores(tmp_path, monkeypatch)
+    put_marker(tmp_path, {token_key("tok-home"): 1300, token_key("tok-host"): 1300})
+    asked = serve(monkeypatch, {"tok-home": oauth_response(), "tok-host": oauth_response()})
+    ccusage = watch_ccusage(monkeypatch, SESSION_BLOCK)
+    u = adapter.fetch(tmp_path, now=lambda: 1000)
+    assert u.source == "unavailable"
+    assert asked == [] and ccusage == []
+
+
+def test_a_429_beside_another_failure_still_runs_ccusage(tmp_path, monkeypatch):
+    adapter = one_token(tmp_path, monkeypatch, "tok-store")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "tok-env")
+    asked = serve(monkeypatch, {"tok-env": rate_limited(),
+                                "tok-store": up.UsageFetchError("x", status=403)})
+    ccusage = watch_ccusage(monkeypatch, SESSION_BLOCK)
+    u = adapter.fetch(tmp_path, now=lambda: 1000)
+    assert u.source == "ccusage"
+    assert asked == ["tok-env", "tok-store"]
+    assert ccusage == [1]
+    assert marker(tmp_path) == {token_key("tok-env"): 1300}
+
+
+def test_no_candidate_token_still_runs_ccusage(tmp_path, monkeypatch):
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.setattr(up, "HOST_CREDENTIALS", str(tmp_path / "absent.json"))
+    asked = serve(monkeypatch, {})
+    ccusage = watch_ccusage(monkeypatch, SESSION_BLOCK)
+    u = up.AnthropicUsage().fetch(tmp_path, now=lambda: 1000)
+    assert u.source == "ccusage"
+    assert asked == [] and ccusage == [1]
+    assert not marker_file(tmp_path).exists()
+
+
+def test_a_failed_marker_write_still_falls_through(tmp_path, monkeypatch):
+    adapter = two_stores(tmp_path, monkeypatch)
+    asked = serve(monkeypatch, {"tok-home": rate_limited(), "tok-host": oauth_response()})
+
+    def unwritable(path, data):
+        raise OSError("read-only state dir")
+
+    monkeypatch.setattr(up, "write_json_atomic", unwritable)
+    u = adapter.fetch(tmp_path, now=lambda: 1000)
+    assert u.source == "oauth"
+    assert asked == ["tok-home", "tok-host"]
+
+
+def test_a_429_keeps_live_entries_and_prunes_dead_ones(tmp_path, monkeypatch):
+    adapter = two_stores(tmp_path, monkeypatch, home="tok-a", host="tok-b")
+    put_marker(tmp_path, {token_key("tok-b"): 1200, token_key("rotated"): 900,
+                          token_key("forged"): 5000})
+    serve(monkeypatch, {"tok-a": rate_limited(), "tok-b": oauth_response()})
+    adapter.fetch(tmp_path, now=lambda: 1000)
+    assert marker(tmp_path) == {token_key("tok-a"): 1300, token_key("tok-b"): 1200}
+
+
+@pytest.mark.parametrize("retry_after, until, probes", [
+    (None, 1300, [(1060, 1), (1300, 2)]),
+    (120, 1120, [(1119, 1), (1121, 2)]),
+    (999999, 4600, [(4599, 1), (4601, 2)]),
+    (0, 1300, [(1299, 1), (1301, 2)]),
+])
+def test_the_cooldown_length_gates_the_next_requests(
+        tmp_path, monkeypatch, retry_after, until, probes):
+    adapters = {"anthropic": one_token(tmp_path, monkeypatch, "tok-a")}
+    asked = serve(monkeypatch, {"tok-a": rate_limited(retry_after)})
+    watch_ccusage(monkeypatch)
+    first = up.fetch_provider("anthropic", tmp_path, now=lambda: 1000, adapters=adapters)
+    assert first.source == "unavailable" and len(asked) == 1
+    assert marker(tmp_path) == {token_key("tok-a"): until}
+    for at, requests_so_far in probes:
+        u = up.fetch_provider("anthropic", tmp_path, now=lambda: at, adapters=adapters)
+        assert u.source == "unavailable"
+        assert len(asked) == requests_so_far
+
+
+@pytest.mark.parametrize("status", [403, 500, None])
+def test_other_failures_write_no_marker_and_retry_at_once(tmp_path, monkeypatch, status):
+    adapters = {"anthropic": one_token(tmp_path, monkeypatch, "tok-a")}
+    asked = serve(monkeypatch, {"tok-a": up.UsageFetchError("x", status=status)})
+    ccusage = watch_ccusage(monkeypatch)
+    for at in (1000, 1005):
+        u = up.fetch_provider("anthropic", tmp_path, now=lambda: at, adapters=adapters)
+        assert u.source == "unavailable"
+    assert len(asked) == 2 and len(ccusage) == 2
+    assert not marker_file(tmp_path).exists()
+
+
+@pytest.mark.parametrize("content", [
+    "not json", "{}", "[]", '{"until": 1100}',
+    {token_key("tok-a"): "soon"}, {token_key("tok-a"): None}, {token_key("tok-a"): True}],
+    ids=["not-json", "empty-object", "list", "older-shape", "soon", "null", "true"])
+def test_a_malformed_marker_does_not_block(tmp_path, monkeypatch, content):
+    adapter = one_token(tmp_path, monkeypatch, "tok-a")
+    put_marker(tmp_path, content)
+    asked = serve(monkeypatch, {"tok-a": oauth_response()})
+    u = adapter.fetch(tmp_path, now=lambda: 1000)
+    assert u.source == "oauth" and asked == ["tok-a"]
+
+
+def test_a_marker_path_that_is_a_directory_does_not_block(tmp_path, monkeypatch):
+    adapter = one_token(tmp_path, monkeypatch, "tok-a")
+    marker_file(tmp_path).mkdir(parents=True)
+    asked = serve(monkeypatch, {"tok-a": oauth_response()})
+    u = adapter.fetch(tmp_path, now=lambda: 1000)
+    assert u.source == "oauth" and asked == ["tok-a"]
+
+
+@pytest.mark.parametrize("until, blocks", [
+    (1000, False),          # expired: at < until is false
+    (1000 + 3600, True),    # the cap itself still blocks
+    (1000 + 3601, False),   # past the cap: a clock step or a forged entry
+])
+def test_the_gate_boundaries(tmp_path, monkeypatch, until, blocks):
+    adapter = one_token(tmp_path, monkeypatch, "tok-a")
+    put_marker(tmp_path, {token_key("tok-a"): until})
+    asked = serve(monkeypatch, {"tok-a": oauth_response()})
+    watch_ccusage(monkeypatch)
+    u = adapter.fetch(tmp_path, now=lambda: 1000)
+    assert asked == ([] if blocks else ["tok-a"])
+    assert u.source == ("unavailable" if blocks else "oauth")
+
+
+def test_a_fresh_cached_reading_is_served_during_a_cooldown(tmp_path, monkeypatch):
+    adapters = {"anthropic": one_token(tmp_path, monkeypatch, "tok-a")}
+    asked = serve(monkeypatch, {"tok-a": oauth_response()})
+    assert up.fetch_provider("anthropic", tmp_path, now=lambda: 1000,
+                             adapters=adapters).source == "oauth"
+    put_marker(tmp_path, {token_key("tok-a"): 1300})
+    u = up.fetch_provider("anthropic", tmp_path, now=lambda: 1100, adapters=adapters)
+    assert u.source == "oauth"
+    assert asked == ["tok-a"]
+
+
+def test_a_successful_reading_leaves_the_marker_in_place(tmp_path, monkeypatch):
+    adapter = two_stores(tmp_path, monkeypatch)
+    put_marker(tmp_path, {token_key("tok-home"): 1300})
+    serve(monkeypatch, {"tok-host": oauth_response()})
+    assert adapter.fetch(tmp_path, now=lambda: 1000).source == "oauth"
+    assert marker(tmp_path) == {token_key("tok-home"): 1300}
