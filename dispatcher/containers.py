@@ -133,7 +133,7 @@ def session_cmd(name: str, worktree: str, memory: str, cpus: str, model: str,
     except OSError:
         pass
     return (
-        f"{shlex.join([*_wrapper(), 'podman'])} run --rm -it --name {shlex.quote(name)} "
+        f"{shlex.join([*_wrapper(), 'podman'])} run --rm --init -it --name {shlex.quote(name)} "
         f"--memory {shlex.quote(memory)} --cpus {shlex.quote(cpus)} "
         f"{shlex.join(_runtime_args(runtime) + extra)} "
         # The Stop hook fires inside the container and resolves waitd's
@@ -189,7 +189,7 @@ def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
                             bare_model_id(model), effort)
     return [
         *_wrapper(),
-        "podman", "run", "--rm", "--name", name,
+        "podman", "run", "--rm", "--init", "--name", name,
         "--memory", memory, "--cpus", cpus,
         *_runtime_args(runtime),
         "-v", f"{clone}:{clone}:ro", "-w", clone,
@@ -205,7 +205,7 @@ def setup_cmd(name: str, worktree: str, setup: str, clone: str) -> list[str]:
     `setup`, like gate_cmd and verify_cmd, is a shell line run by `sh -c` in
     the container. `clone` is the repository's configured clone path."""
     return [
-        "podman", "run", "--rm", "--name", name,
+        "podman", "run", "--rm", "--init", "--name", name,
         "-v", f"{worktree}:{worktree}", "-w", worktree,
         "-v", f"{clone}:{clone}",
         "-v", "agent-ops-npm-cache:/root/.npm",
