@@ -4,6 +4,7 @@ arithmetic lives in usage.py. Research feeding the Anthropic adapter:
 portfolio_eval#155; payload verified 2026-09-13 (tests/fixtures)."""
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -24,11 +25,20 @@ USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 # Mandatory per community findings: requests without this UA get 429'd.
 USER_AGENT = "claude-code/2.0.0"
 MIN_POLL_SECONDS = 180
+# A 429 without a usable Retry-After cools that token this long; no cooldown
+# runs longer than the cap, so a bad header or a clock step cannot lock a
+# provider out for long.
+RATE_LIMIT_COOLDOWN_SECONDS = 300
+MAX_COOLDOWN_SECONDS = 3600
 HOST_CREDENTIALS = "~/.claude/.credentials.json"
 
 
 class UsageFetchError(Exception):
-    pass
+    def __init__(self, message: str = "", *, status: int | None = None,
+                 retry_after: float | None = None):
+        super().__init__(message)
+        self.status = status
+        self.retry_after = retry_after
 
 
 class UsageAdapter(Protocol):
@@ -104,11 +114,21 @@ def parse_anthropic(payload: dict) -> tuple[Window, ...]:
 
 # ---- Anthropic adapter ----------------------------------------------------
 
+def _retry_after(headers) -> int | None:
+    """Retry-After as whole seconds; an HTTP-date or anything else is None.
+    str.isdigit also accepts '²', which int() rejects, so ASCII is checked."""
+    value = (headers.get("Retry-After") if headers is not None else None) or ""
+    return int(value) if value.isascii() and value.isdigit() else None
+
+
 def _http_get_json(url: str, headers: dict) -> dict:
     req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
             return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        raise UsageFetchError(str(e), status=e.code,
+                              retry_after=_retry_after(e.headers)) from e
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
         raise UsageFetchError(str(e)) from e
 
@@ -136,6 +156,29 @@ def _credential_stores(state_dir: str | Path,
     return [Path(state_dir) / "claude-home" / ".credentials.json", HOST_CREDENTIALS]
 
 
+def cooldown_path(state_dir: str | Path, provider: str) -> Path:
+    return Path(state_dir) / "usage" / f"{provider}.cooldown.json"
+
+
+def _token_key(token: str) -> str:
+    # One-way: the marker is readable by other units, so no raw token lands in it.
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+
+
+def _live_cooldowns(path: Path, at: float) -> dict[str, float]:
+    """The marker's entries that still gate. A file or entry of unexpected
+    shape gates nothing, never raises."""
+    try:
+        entries = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(entries, dict):
+        return {}
+    return {k: u for k, u in entries.items()
+            if isinstance(u, (int, float)) and not isinstance(u, bool)
+            and at < u <= at + MAX_COOLDOWN_SECONDS}
+
+
 class AnthropicUsage:
     name = "anthropic"
 
@@ -153,12 +196,26 @@ class AnthropicUsage:
             *map(_read_token, _credential_stores(state_dir, self._credentials_path)),
         )) if t]
         at = now()
+        marker = cooldown_path(state_dir, self.name)
+        cooling = _live_cooldowns(marker, at)
         for token in candidates:
+            key = _token_key(token)
+            if key in cooling:
+                continue
             try:
                 windows = parse_anthropic(_http_get_json(
                     USAGE_URL, {"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT}))
-            except (UsageFetchError, KeyError, ValueError, TypeError):
-                continue  # next token; the cache spaces passes ≥180s apart
+            except UsageFetchError as e:
+                if e.status == 429:
+                    cooling[key] = at + min(e.retry_after or RATE_LIMIT_COOLDOWN_SECONDS,
+                                            MAX_COOLDOWN_SECONDS)
+                    try:
+                        write_json_atomic(marker, cooling)
+                    except OSError:
+                        log.exception("cannot record the usage cooldown in %s", marker)
+                continue  # next token; the other store's token may be live
+            except (KeyError, ValueError, TypeError):
+                continue
             # A reading with no windows would admit every model: fail closed
             # exactly like a rejected token.
             if windows:
