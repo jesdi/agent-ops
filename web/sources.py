@@ -264,8 +264,11 @@ class Sources:
             return since if isinstance(since, str) else _iso(path.stat().st_mtime)
         except FileNotFoundError:
             return None
-        except OSError:
-            return _iso(path.stat().st_mtime) if path.exists() else None
+        except OSError:  # unreadable: still dark, by mtime, unless it vanished
+            try:
+                return _iso(path.stat().st_mtime)
+            except OSError:
+                return None
 
     def quarantine_entries(self) -> list[dict]:
         """Every quarantine record, for /api/failures, the retry route's "is
