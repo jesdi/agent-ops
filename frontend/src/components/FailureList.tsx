@@ -32,20 +32,29 @@ export function FailureList({ failures, onRetry, errors = {}, busy = new Set() }
               aria-label={`${q.repository}#${q.task_issue}`}
               className="flex flex-wrap items-center gap-2 rounded border border-border bg-surface-raised p-3 text-sm"
             >
-              <span className="font-mono text-xs">{q.fingerprint}</span>
-              <span className="text-ink-muted">
-                {q.repository} task #{q.task_issue} → blocker #{q.blocker_issue} ({q.blocker_repo})
-              </span>
-              {q.blocker_open === true && (
-                <span className={chip.failed}>blocker open</span>
+              {q.readable ? (
+                <>
+                  <span className="font-mono text-xs">{q.fingerprint}</span>
+                  <span className="text-ink-muted">
+                    {q.repository} task #{q.task_issue} → blocker #{q.blocker_issue} ({q.blocker_repo})
+                  </span>
+                  {q.blocker_open === true && (
+                    <span className={chip.failed}>blocker open</span>
+                  )}
+                  {q.blocker_open === false && (
+                    <span className={chip.neutral}>blocker closed</span>
+                  )}
+                  {q.blocker_open === null && (
+                    <span className={chip.neutral}>blocker state unknown</span>
+                  )}
+                  <span className="text-xs text-ink-muted">{relativeTime(q.created_at)}</span>
+                </>
+              ) : (
+                <>
+                  <span className="font-mono text-xs">{q.repository}#{q.task_issue}</span>
+                  <span className={chip.failed}>quarantine record unreadable — still blocking</span>
+                </>
               )}
-              {q.blocker_open === false && (
-                <span className={chip.neutral}>blocker closed</span>
-              )}
-              {q.blocker_open === null && (
-                <span className={chip.neutral}>blocker state unknown</span>
-              )}
-              <span className="text-xs text-ink-muted">{relativeTime(q.created_at)}</span>
               <button
                 type="button"
                 className="ml-auto rounded border px-2 py-0.5 text-xs disabled:opacity-50"
