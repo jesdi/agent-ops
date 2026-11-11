@@ -203,8 +203,8 @@ def test_console_hides_codex_without_a_readable_login(tmp_path, monkeypatch):
 
 def test_board_survives_an_unwritable_usage_cache(tmp_path, monkeypatch):
     """#80: an OSError writing usage/<provider>.json costs the cache, not
-    /api/usage. A plain file where the usage/ dir belongs makes every cache
-    write fail, even as root; the reading itself is still served."""
+    the board or /api/usage. A plain file where the usage/ dir belongs makes
+    every cache write fail, even as root; the reading itself is still served."""
     from fastapi.testclient import TestClient
     from dispatcher import usage_providers
     from tests.usagefakes import session_usage

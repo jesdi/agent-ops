@@ -9,8 +9,9 @@ socket, the dispatcher pass and triage are all covered by one guard.
 ## Requirements
 
 1. `GET /api/board` answers 200 when the usage cache cannot be written, and
-   its `usage.providers` carries the reading the adapter just returned
-   (source and windows), not `unavailable`.
+   `GET /api/usage` carries the reading the adapter just returned in
+   `providers` (source and windows), not `unavailable`. The board response
+   has no `usage` field.
 2. `fetch_provider` catches an `OSError` raised while writing
    `usage/<provider>.json` and returns the adapter's reading unchanged; it
    never raises for a cache write failure. Callers outside the web
@@ -32,9 +33,9 @@ socket, the dispatcher pass and triage are all covered by one guard.
   `not a directory` (so every cache write raises `OSError`, even as root),
   and an Anthropic adapter that returns a session reading at 0.42 used with
   source `oauth`
-- **When** the operator calls `GET /api/board`
-- **Then** the response status is 200 (today: 500)
-- **And** `usage.providers` holds `anthropic` with source `oauth`
+- **When** the operator calls `GET /api/board` and `GET /api/usage`
+- **Then** both response statuses are 200 (`/api/board` previously returned 500)
+- **And** `/api/usage` `providers` holds `anthropic` with source `oauth`
 - **And** the `usage` file still contains `not a directory`
 
 Test: `tests/test_web_sources.py::test_board_survives_an_unwritable_usage_cache`
