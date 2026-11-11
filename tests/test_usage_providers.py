@@ -607,3 +607,45 @@ def test_cache_does_not_depend_on_the_host_temp_directory(tmp_path, monkeypatch)
     assert fake.calls == 1
 
 
+def test_failed_refresh_does_not_restore_an_older_cache(tmp_path, monkeypatch):
+    up.fetch_provider("anthropic", tmp_path, now=lambda: 1005.0,
+                      adapters={"anthropic": FakeUsage(session_usage(0.10))})
+
+    def deny_replace(src, dst):
+        raise OSError("read-only filesystem")
+
+    monkeypatch.setattr(up.os, "replace", deny_replace)
+    fake = FakeUsage(session_usage(0.42))
+    # A backward clock step makes the old cache a miss at 1000. The next
+    # call would consider it fresh again if the failed refresh leaves it.
+    up.fetch_provider("anthropic", tmp_path, now=lambda: 1000.0,
+                      adapters={"anthropic": fake})
+    u = up.fetch_provider("anthropic", tmp_path, now=lambda: 1010.0,
+                          adapters={"anthropic": fake})
+    assert fake.calls == 2
+    assert u.windows[0].used == 0.42
+
+
+def test_failed_refresh_refetches_when_old_cache_cannot_be_removed(tmp_path, monkeypatch):
+    up.fetch_provider("anthropic", tmp_path, now=lambda: 1005.0,
+                      adapters={"anthropic": FakeUsage(session_usage(0.10))})
+    cache = up.cache_path(tmp_path, "anthropic")
+    real_unlink = up.Path.unlink
+
+    def deny_replace(src, dst):
+        raise OSError("read-only filesystem")
+
+    def deny_cache_unlink(self, *args, **kwargs):
+        if self == cache:
+            raise PermissionError("read-only filesystem")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(up.os, "replace", deny_replace)
+    monkeypatch.setattr(up.Path, "unlink", deny_cache_unlink)
+    fake = FakeUsage(session_usage(0.42))
+    up.fetch_provider("anthropic", tmp_path, now=lambda: 1000.0,
+                      adapters={"anthropic": fake})
+    u = up.fetch_provider("anthropic", tmp_path, now=lambda: 1010.0,
+                          adapters={"anthropic": fake})
+    assert fake.calls == 2
+    assert u.windows[0].used == 0.42
