@@ -219,8 +219,10 @@ def test_board_survives_an_unwritable_usage_cache(tmp_path, monkeypatch):
     (tmp_path / "usage").write_text("not a directory")
     cfg, src = make_sources(tmp_path)
     with TestClient(create_app(cfg, src), raise_server_exceptions=False) as client:
+        board = client.get("/api/board", headers=HEADERS)
         resp = client.get("/api/usage", headers=HEADERS)
         again = client.get("/api/usage", headers=HEADERS)
+    assert board.status_code == 200
     assert resp.status_code == 200
     assert again.status_code == 200
     providers = {p["provider"]: p for p in resp.json()["providers"]}

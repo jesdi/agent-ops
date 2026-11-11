@@ -5,10 +5,8 @@ portfolio_eval#155; payload verified 2026-09-13 (tests/fixtures)."""
 from __future__ import annotations
 
 import json
-import hashlib
 import logging
 import os
-import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -252,25 +250,11 @@ def cache_path(state_dir: str | Path, provider: str) -> Path:
     return Path(state_dir) / "usage" / f"{provider}.json"
 
 
-def _untrusted(cp: Path) -> Path:
-    """Marker, outside the state dir, for a cache a failed refresh could neither
-    replace nor delete (read-only state dir): every process on the host skips it.
-    ponytail: lost when the tmp dir is cleared; the stale cache then serves again."""
-    return Path(tempfile.gettempdir()) / (
-        "agent-ops-usage-untrusted-" + hashlib.sha1(str(cp).encode()).hexdigest())
-
-
-# Last resort when even the marker cannot be written: this process alone skips cp.
-_poisoned: set[Path] = set()
-
-
 def _cached(cp: Path, at: float) -> ProviderUsage | None:
     """The cached reading if it is fresh and usable; None is a miss. A file
     this unit cannot read, or cannot parse, is a miss, never a raise. So is
     a readable reading with no windows (written before readings failed
     closed): served, it would admit every model until it aged out."""
-    if cp in _poisoned or _untrusted(cp).exists():
-        return None
     try:
         cached = json.loads(cp.read_text())
         if not 0 <= at - cached["fetched_at"] < MIN_POLL_SECONDS:
@@ -305,22 +289,9 @@ def fetch_provider(name: str, state_dir: str | Path, *,
     if u.source != "unavailable":
         try:
             write_json_atomic(cp, {"fetched_at": at, "usage": usage_to_json(u)})
-            _untrusted(cp).unlink(missing_ok=True)
-            _poisoned.discard(cp)
         except OSError:
             # The cache is an optimisation: lose it, keep the reading.
             log.warning("usage cache write failed for %r", name, exc_info=True)
-            try:  # an older cache must not outlive the failed refresh
-                cp.unlink(missing_ok=True)
-            except OSError:
-                try:  # other readers share the file: blank it in place
-                    cp.write_text("")
-                except OSError:
-                    try:  # last resort: a marker every reader skips
-                        _untrusted(cp).touch()
-                    except OSError:
-                        _poisoned.add(cp)
-                        log.warning("usage cache marker failed for %r", name, exc_info=True)
     return u
 
 

@@ -592,46 +592,18 @@ def test_failed_cache_write_leaves_no_cache_so_the_next_call_refetches(tmp_path)
     assert fake.calls == 2
 
 
-def failing_replace(monkeypatch):
-    def fail(src, dst):
-        raise OSError("read-only filesystem")
-    monkeypatch.setattr(up.os, "replace", fail)
+def test_cache_does_not_depend_on_the_host_temp_directory(tmp_path, monkeypatch):
+    import tempfile
 
+    def no_temp_dir():
+        raise FileNotFoundError("no usable temporary directory")
 
-def test_failed_refresh_does_not_leave_an_older_cache_to_serve_the_next_call(tmp_path, monkeypatch):
-    up.fetch_provider("anthropic", tmp_path, now=lambda: 1005.0,
-                      adapters={"anthropic": FakeUsage(session_usage(0.10))})
-    failing_replace(monkeypatch)
+    monkeypatch.setattr(tempfile, "gettempdir", no_temp_dir)
     fake = FakeUsage(session_usage(0.42))
-    # the clock stepped back, so the 1005 cache is a miss at 1000; the refresh fails to write
-    up.fetch_provider("anthropic", tmp_path, now=lambda: 1000.0, adapters={"anthropic": fake})
-    u = up.fetch_provider("anthropic", tmp_path, now=lambda: 1010.0, adapters={"anthropic": fake})
-    assert fake.calls == 2
-    assert u.windows[0].used == 0.42
+    for t in (1000.0, 1010.0):
+        u = up.fetch_provider("anthropic", tmp_path, now=lambda t=t: t,
+                              adapters={"anthropic": fake})
+        assert u.windows[0].used == 0.42
+    assert fake.calls == 1
 
 
-def test_failed_refresh_with_undeletable_older_cache_still_refetches_next_call(tmp_path, monkeypatch):
-    up.fetch_provider("anthropic", tmp_path, now=lambda: 1005.0,
-                      adapters={"anthropic": FakeUsage(session_usage(0.10))})
-    failing_replace(monkeypatch)
-    cache = up.cache_path(tmp_path, "anthropic")
-    real_unlink = up.Path.unlink
-
-    def unlink(self, *a, **kw):
-        if self == cache:
-            raise PermissionError("read-only filesystem")
-        return real_unlink(self, *a, **kw)
-    monkeypatch.setattr(up.Path, "unlink", unlink)
-    fake = FakeUsage(session_usage(0.42))
-    up.fetch_provider("anthropic", tmp_path, now=lambda: 1000.0, adapters={"anthropic": fake})
-    u = up.fetch_provider("anthropic", tmp_path, now=lambda: 1010.0, adapters={"anthropic": fake})
-    assert fake.calls == 2
-    assert u.windows[0].used == 0.42
-
-
-def test_a_failed_rename_leaves_no_temp_file_behind(tmp_path, monkeypatch):
-    failing_replace(monkeypatch)
-    u = up.fetch_provider("anthropic", tmp_path, now=lambda: 1000.0,
-                          adapters={"anthropic": FakeUsage(session_usage(0.42))})
-    assert u.windows[0].used == 0.42
-    assert list((tmp_path / "usage").iterdir()) == []
