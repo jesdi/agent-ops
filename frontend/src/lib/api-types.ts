@@ -633,6 +633,11 @@ export interface components {
             /** Items */
             items: components["schemas"]["ArtifactView"][];
         };
+        /** AuthDarkView */
+        AuthDarkView: {
+            /** Since */
+            since: string;
+        };
         /** BoardSnapshot */
         BoardSnapshot: {
             capacity: components["schemas"]["CapacityView"];
@@ -1505,6 +1510,7 @@ export interface components {
         };
         /** UsageView */
         UsageView: {
+            auth_dark?: components["schemas"]["AuthDarkView"] | null;
             gate: components["schemas"]["GateView"];
             priority: components["schemas"]["PriorityView"];
             /** Providers */
