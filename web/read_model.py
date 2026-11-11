@@ -583,10 +583,15 @@ class PriorityView(BaseModel):
     pinned: list[str] = []  # the tracks the mode does not apply to, in policy order
 
 
+class AuthDarkView(BaseModel):
+    since: str  # ISO timestamp the login went dark
+
+
 class UsageView(BaseModel):
     providers: list[ProviderUsageView]
     gate: GateView
     priority: PriorityView
+    auth_dark: AuthDarkView | None = None
 
 
 CLOSE_HEADROOM = 0.08
@@ -649,7 +654,8 @@ def usage_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
                pace: PaceConfig, default_model: str, mode: str,
                routed: Collection[str],
                pinned: Collection[str] = (),
-               order: Order | None = None) -> UsageView:
+               order: Order | None = None,
+               auth_dark_since: str | None = None) -> UsageView:
     """Every provider's windows, sorted by provider name, one gate (the
     verdict for the policy default model), and what the priority `mode` is
     doing over the `routed` providers, minus the `pinned` tracks it never
@@ -663,7 +669,8 @@ def usage_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
         providers=_usage_provider_views(usages, now, pace),
         gate=_usage_gate_view(verdict, default_model, now, pace),
         priority=_usage_priority_view(usages, now, pace, mode, routed, pinned,
-                                      order))
+                                      order),
+        auth_dark=AuthDarkView(since=auth_dark_since) if auth_dark_since else None)
 
 
 class QuarantineEntry(BaseModel):

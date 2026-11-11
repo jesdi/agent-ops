@@ -392,7 +392,8 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
             reading.usages, now=reading.now, pace=reading.config.pace,
             default_model=reading.config.models.gate_entry().model_id,
             mode=reading.mode, routed=routed_providers(reading.config),
-            pinned=reading.config.models.pinned, order=reading.order)
+            pinned=reading.config.models.pinned, order=reading.order,
+            auth_dark_since=sources.auth_dark_since())
 
     @app.get("/api/board", response_model=read_model.BoardView)
     def board(op: Operator = Depends(current_operator)):
