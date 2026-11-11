@@ -739,3 +739,21 @@ def test_board_and_retry_tolerate_a_malformed_record(tmp_path):
     r = client.post("/api/task/alpha/73/retry", headers=HEADERS, json={})
     assert r.status_code == 404
     assert "issue alpha/73 is not quarantined" in r.text
+
+
+AUTH_DARK_SINCE = "2026-11-05T10:00:00+00:00"
+
+
+def _write_marker(tmp_path):
+    (tmp_path / "auth-dark").write_text(
+        json.dumps({"since": AUTH_DARK_SINCE, "alerted": False}))
+
+
+def test_api_usage_auth_dark_follows_the_marker(tmp_path):
+    fake = FakeSources(tmp_path)
+    client = TestClient(create_app(make_config(tmp_path), fake))
+    assert client.get("/api/usage", headers=HEADERS).json()["auth_dark"] is None
+    _write_marker(tmp_path)
+    assert client.get("/api/usage", headers=HEADERS).json()["auth_dark"] == {
+        "since": AUTH_DARK_SINCE}
+

@@ -775,3 +775,81 @@ def test_description_failure_does_not_overwrite_overlapping_success(
     assert first["title"] == "new" and first["error"] == ""
     assert src.issue_description(*key) == first
     assert gh.view_calls == 3
+
+
+# --- auth-dark marker (usage banner ticket 01) ---
+
+SINCE = "2026-11-05T10:00:00+00:00"
+MARKER_TS = 1_700_000_000.0
+MARKER_MTIME = "2023-11-14T22:13:20+00:00"  # MARKER_TS in UTC
+
+
+def _marker(tmp_path, body):
+    path = tmp_path / "auth-dark"
+    path.write_text(body if isinstance(body, str) else json.dumps(body))
+    return path
+
+
+def test_auth_dark_since_none_without_marker(tmp_path):
+    _, src = make_sources(tmp_path)
+    assert src.auth_dark_since() is None
+
+
+@pytest.mark.parametrize("marker", [
+    {"since": SINCE, "alerted": False},
+    {"since": SINCE, "alerted": True, "last_alert": "2026-11-05T18:30:00+00:00"},
+])
+def test_auth_dark_since_returns_since_as_written(tmp_path, marker):
+    _marker(tmp_path, marker)
+    _, src = make_sources(tmp_path)
+    assert src.auth_dark_since() == SINCE
+
+
+@pytest.mark.parametrize("body", ["not json", "[1, 2]", '{"alerted": true}'])
+def test_auth_dark_since_unreadable_marker_reports_mtime(tmp_path, body):
+    import os
+    from datetime import datetime
+    path = _marker(tmp_path, body)
+    os.utime(path, (MARKER_TS, MARKER_TS))
+    _, src = make_sources(tmp_path)
+    since = src.auth_dark_since()
+    assert datetime.fromisoformat(since)
+    assert since == MARKER_MTIME
+
+
+def test_auth_dark_since_marker_deleted_mid_read_is_none(tmp_path, monkeypatch):
+    import builtins
+    from pathlib import Path
+    _marker(tmp_path, {"since": SINCE, "alerted": False})
+    _, src = make_sources(tmp_path)
+
+    def vanish(real):
+        def read(target, *a, **kw):
+            if str(target).endswith("auth-dark"):
+                raise FileNotFoundError(target)
+            return real(target, *a, **kw)
+        return read
+
+    # whichever way the marker is read, the file is gone by then
+    monkeypatch.setattr(builtins, "open", vanish(builtins.open))
+    for name in ("open", "read_text", "read_bytes"):
+        monkeypatch.setattr(Path, name, vanish(getattr(Path, name)))
+    assert src.auth_dark_since() is None
+
+
+def test_usage_digest_follows_the_marker_life(tmp_path):
+    _, src = make_sources(tmp_path)
+
+    def usage_digest():
+        return json.loads(src.state_fingerprint())["usage"]
+
+    d0 = usage_digest()
+    path = _marker(tmp_path, {"since": SINCE, "alerted": False})
+    d1 = usage_digest()
+    path.write_text(json.dumps({"since": SINCE, "alerted": True,
+                                "last_alert": "2026-11-05T10:30:00+00:00"}))
+    d2 = usage_digest()
+    path.unlink()
+    d3 = usage_digest()
+    assert len({d0, d1, d2}) == 3
+    assert d3 == d0

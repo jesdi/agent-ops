@@ -104,6 +104,11 @@ class FakeSources:
     def usage(self, routed=()):
         return self.usages
 
+    def auth_dark_since(self):
+        if self.state_dir is None:
+            return None
+        return Sources.auth_dark_since(self)
+
     def execution_override(self, repository, issue):
         stored = self.execution_overrides.get((repository, issue))
         return stored and execution_overrides.ExecutionOverride(*stored)

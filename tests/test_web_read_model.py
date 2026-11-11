@@ -1112,3 +1112,18 @@ def test_next_claim_counts_and_caps_per_project():
                    queues=queues, projects=projects,
                    last_claimed={"gamma": "2026-08-01T09:00:00+00:00"})
     assert (v.verdict, v.next_repository, v.next_issue) == ("will-claim", "beta", 5)
+
+
+def test_usage_view_carries_auth_dark_since():
+    view = usage_view({"anthropic": session_usage(0.5, now=NOW)}, now=NOW,
+                      pace=PACE, default_model=DEFAULT, mode="auto",
+                      routed={"anthropic"},
+                      auth_dark_since="2026-11-05T10:00:00+00:00")
+    assert view.auth_dark.since == "2026-11-05T10:00:00+00:00"
+
+
+def test_usage_view_without_auth_dark_since_has_none():
+    view = usage_view({"anthropic": session_usage(0.5, now=NOW)}, now=NOW,
+                      pace=PACE, default_model=DEFAULT, mode="auto",
+                      routed={"anthropic"})
+    assert view.auth_dark is None
