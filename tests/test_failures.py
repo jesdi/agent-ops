@@ -273,6 +273,15 @@ def test_zero_blocker_stays_quarantined_without_gh_call(tmp_path, capsys):
     assert "delete the record to retry" in capsys.readouterr().err
 
 
+def test_symlink_loop_record_stays_quarantined(tmp_path):
+    """exists() hides ELOOP as False; the record must still block."""
+    p = failures.quarantine_path(tmp_path, "portfolio_eval", 192)
+    p.parent.mkdir(parents=True)
+    p.symlink_to(p)
+    assert failures.check_quarantine(
+        tmp_path, StateGitHub(), "portfolio_eval", 192) is True
+
+
 def test_issue_state_error_treated_as_blocked(tmp_path, capsys):
     failures.write_quarantine(tmp_path, "portfolio_eval", 192,
                               "jesdi/agent-ops", 501, "abc")
