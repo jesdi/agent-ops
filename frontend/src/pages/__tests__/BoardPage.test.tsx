@@ -655,3 +655,25 @@ test('phone header: one summary line with capacity and the next-claim verdict', 
   await userEvent.click(summary)
   expect(summary).toHaveAttribute('aria-expanded', 'true')
 })
+
+describe('usage banner', () => {
+  const authDark: UsageView = { ...usageUnavailable, auth_dark: { since: '2026-11-05T10:00:00+00:00' } }
+
+  it('auth-dark-banner is the first child of the page column, before the board header', async () => {
+    server.use(http.get('/api/usage', () => HttpResponse.json(authDark)))
+    renderWithProviders(<BoardPage />)
+    const alert = await screen.findByTestId('auth-dark-banner')
+    expect(alert.parentElement!.firstElementChild).toBe(alert)
+    const header = await screen.findByTestId('next-claim')
+    expect(alert.compareDocumentPosition(header) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('the banner shares the header\'s usage query: /api/usage is requested once', async () => {
+    let requests = 0
+    server.use(http.get('/api/usage', () => { requests += 1; return HttpResponse.json(authDark) }))
+    renderWithProviders(<BoardPage />)
+    await screen.findByTestId('auth-dark-banner')
+    await screen.findByTestId('next-claim')
+    expect(requests).toBe(1)
+  })
+})
