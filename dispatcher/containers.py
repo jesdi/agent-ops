@@ -200,12 +200,17 @@ def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
     ]
 
 
+# Host-side and podman-side bound of one setup run, in seconds (issue #17).
+SETUP_TIMEOUT = 1800
+
+
 def setup_cmd(name: str, worktree: str, setup: str, clone: str) -> list[str]:
     """One-shot provisioning container. The host runs argv, never a shell line;
     `setup`, like gate_cmd and verify_cmd, is a shell line run by `sh -c` in
     the container. `clone` is the repository's configured clone path."""
     return [
         "podman", "run", "--rm", "--init", "--name", name,
+        "--timeout", str(SETUP_TIMEOUT),
         "-v", f"{worktree}:{worktree}", "-w", worktree,
         "-v", f"{clone}:{clone}",
         "-v", "agent-ops-npm-cache:/root/.npm",
