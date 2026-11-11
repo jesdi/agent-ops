@@ -53,11 +53,15 @@ _QUARANTINE_DEFAULTS = {"task_issue": 0, "blocker_repo": "", "blocker_issue": 0,
                         "fingerprint": "", "created_at": ""}
 
 
+def _quarantine_key(p: Path) -> tuple[str, int | None]:
+    """(repository, issue) from the filename; issue None if it does not parse."""
+    return state.parse_task_key(p.stem) or (p.stem.rsplit("-", 1)[0], None)
+
+
 def _quarantine_entry(p: Path) -> dict | None:
     """One quarantine_entries row, or None for a record that blocks nothing
     or whose fields have the wrong types."""
-    repository, keyed_issue = (state.parse_task_key(p.stem)
-                               or (p.stem.rsplit("-", 1)[0], None))
+    repository, keyed_issue = _quarantine_key(p)
     d = failures.read_quarantine(p)
     readable = isinstance(d, dict)
     if d is failures.GONE or (not readable and keyed_issue is None):

@@ -208,11 +208,15 @@ def check_quarantine(state_dir: str | Path, github, repository_name: str,
         return True  # stay blocked; Retry or a human deletes it
     if _blocker_open(p.name, github, rec):
         return True
-    # Blocker closed: clear the fingerprint marker too, or a human closing
-    # the issue without fixing the cause silently loops forever — the
-    # marker still dedupes, so report_failure files nothing and pings
-    # nothing next time the same failure recurs.
+    _clear_quarantine(state_dir, p, rec)
+    return False
+
+
+def _clear_quarantine(state_dir: str | Path, p: Path, rec: dict) -> None:
+    """Blocker closed: clear the fingerprint marker too, or a human closing
+    the issue without fixing the cause silently loops forever — the marker
+    still dedupes, so report_failure files nothing and pings nothing next
+    time the same failure recurs."""
     if rec.get("fingerprint"):
         fingerprint_path(state_dir, rec["fingerprint"]).unlink(missing_ok=True)
     p.unlink(missing_ok=True)
-    return False
