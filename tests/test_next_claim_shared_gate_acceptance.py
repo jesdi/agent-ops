@@ -121,7 +121,8 @@ def test_board_route_ignores_a_record_when_the_fresh_verdict_is_empty(tmp_path):
                            for n in (212, 213)], "2026-08-01T12:00:00+00:00", False)
     fake.quarantine = [{"repository": "alpha", "task_issue": 212,
                         "blocker_repo": "alpha", "blocker_issue": 205,
-                        "fingerprint": "", "created_at": ""}]
+                        "fingerprint": "", "created_at": "",
+                        "readable": True}]
     fake.quarantine_verdict_result = frozenset()
     client = TestClient(create_app(make_config(tmp_path), fake))
     nc = client.get("/api/board", headers=HEADERS).json()["next_claim"]

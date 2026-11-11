@@ -1,10 +1,11 @@
-import { screen, waitFor, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { server } from '../../test/msw-server'
 import { defaultHandlers } from '../../test/handlers'
 import { renderWithProviders } from '../../test/render'
 import { FailuresPage } from '../FailuresPage'
+import { FailureList } from '../../components/FailureList'
 
 beforeEach(() => server.use(...defaultHandlers))
 
@@ -25,7 +26,7 @@ it('blocker_open null renders "blocker state unknown"', async () => {
         quarantined: [{
           repository: 'widget', task_issue: 38, blocker_repo: 'jesdi/widget',
           blocker_issue: 39, fingerprint: 'f', created_at: '2026-07-24T22:10:00Z',
-          blocker_open: null,
+          blocker_open: null, readable: true,
         }],
         fingerprints: [],
       }),
@@ -44,7 +45,7 @@ it('blocker_open false renders "blocker closed" and not "blocker state unknown"'
         quarantined: [{
           repository: 'widget', task_issue: 38, blocker_repo: 'jesdi/widget',
           blocker_issue: 39, fingerprint: 'f', created_at: '2026-07-24T22:10:00Z',
-          blocker_open: false,
+          blocker_open: false, readable: true,
         }],
         fingerprints: [],
       }),
@@ -102,12 +103,12 @@ const twoQuarantined = {
     {
       repository: 'widget', task_issue: 38, blocker_repo: 'jesdi/widget',
       blocker_issue: 39, fingerprint: 'f1', created_at: '2026-07-24T22:10:00Z',
-      blocker_open: true,
+      blocker_open: true, readable: true,
     },
     {
       repository: 'gadget', task_issue: 38, blocker_repo: 'jesdi/gadget',
       blocker_issue: 40, fingerprint: 'f2', created_at: '2026-07-24T22:10:00Z',
-      blocker_open: true,
+      blocker_open: true, readable: true,
     },
   ],
   fingerprints: [],
@@ -218,4 +219,76 @@ it('a failed retry re-enables its button and shows its error only in its row', a
   expect(screen.getAllByTestId('retry-error-38')).toHaveLength(1)
   expect(widget).toBeEnabled()
   expect(gadget).toBeEnabled()
+})
+
+// #87: a quarantine record nobody can read still blocks its task, so it is
+// listed explicitly, never as a row of blank or zero values.
+const UNREADABLE = 'quarantine record unreadable — still blocking'
+
+const unreadableOnly = {
+  quarantined: [{
+    repository: 'widget', task_issue: 40, readable: false, blocker_repo: '',
+    blocker_issue: 0, fingerprint: '', created_at: '', blocker_open: null,
+  }],
+  fingerprints: [],
+}
+
+it('an unreadable record renders as an explicit row with a Retry button', async () => {
+  server.use(http.get('/api/failures', () => HttpResponse.json(unreadableOnly)))
+  renderWithProviders(<FailuresPage />)
+  const row = await screen.findByRole('group', { name: 'widget#40' })
+  expect(row).toHaveTextContent(UNREADABLE)
+  expect(within(row).getByRole('button', { name: 'Retry' })).toBeEnabled()
+  expect(row).not.toHaveTextContent('blocker #0')
+  expect(row).not.toHaveTextContent('blocker state unknown')
+  expect(row).not.toHaveTextContent(/ago|just now/)
+})
+
+it('Retry on an unreadable row calls onRetry with its task and is disabled while busy', async () => {
+  const onRetry = vi.fn()
+  const { rerender } = render(<FailureList failures={unreadableOnly} onRetry={onRetry} />)
+  const row = screen.getByRole('group', { name: 'widget#40' })
+  expect(row).toHaveTextContent(UNREADABLE)
+  await userEvent.click(within(row).getByRole('button', { name: 'Retry' }))
+  expect(onRetry).toHaveBeenCalledWith('widget', 40)
+  rerender(<FailureList failures={unreadableOnly} onRetry={onRetry} busy={new Set(['widget#40'])} />)
+  expect(within(screen.getByRole('group', { name: 'widget#40' })).getByRole('button', { name: 'Retry' })).toBeDisabled()
+})
+
+it('retrying an unreadable row posts its intent, disables it in flight and shows its error in the row', async () => {
+  const g = gate()
+  let posted = false
+  server.use(
+    http.get('/api/failures', () => HttpResponse.json(unreadableOnly)),
+    http.post('/api/task/widget/40/retry', async () => {
+      posted = true
+      await g.held
+      return HttpResponse.json(
+        { detail: 'issue widget/40 is not quarantined' }, { status: 404 },
+      )
+    }),
+  )
+  renderWithProviders(<FailuresPage />)
+  const row = await screen.findByRole('group', { name: 'widget#40' })
+  expect(row).toHaveTextContent(UNREADABLE)
+  const retry = within(row).getByRole('button', { name: 'Retry' })
+  await userEvent.click(retry)
+  await waitFor(() => expect(retry).toBeDisabled())
+  expect(posted).toBe(true)
+  g.release()
+  await waitFor(() =>
+    expect(within(row).getByText('issue widget/40 is not quarantined')).toBeInTheDocument(),
+  )
+  expect(retry).toBeEnabled()
+})
+
+it('the default fixtures render the readable row as before beside the unreadable one', async () => {
+  renderWithProviders(<FailuresPage />)
+  const readable = await screen.findByRole('group', { name: 'widget#38' })
+  await waitFor(() => expect(readable).toHaveTextContent('pytest::test_auth_flow'))
+  expect(readable).toHaveTextContent('blocker #39 (jesdi/widget)')
+  expect(within(readable).getByText('blocker open')).toBeInTheDocument()
+  expect(readable).toHaveTextContent(/\d+[smhd] ago|just now/)
+  expect(readable).not.toHaveTextContent(/unreadable/)
+  expect(screen.getByRole('group', { name: 'widget#40' })).toHaveTextContent(UNREADABLE)
 })

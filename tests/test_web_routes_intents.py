@@ -177,7 +177,8 @@ def test_retry_validates_against_quarantine_not_tasks(tmp_path):
     # issue 12 has no task-12.json but IS quarantined -> allowed
     fake.quarantine = [{"repository": "alpha", "task_issue": 12,
                         "blocker_repo": "r", "blocker_issue": 1,
-                        "fingerprint": "f", "created_at": "c"}]
+                        "fingerprint": "f", "created_at": "c",
+                        "readable": True}]
     assert client.post("/api/task/alpha/12/retry", headers=HEADERS,
                        json={}).status_code == 202
     # issue 7 has a task but no quarantine record -> 404 for retry

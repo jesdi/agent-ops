@@ -262,7 +262,8 @@ def test_failures_joins_blocker_state(tmp_path):
     fake.quarantine = [{"repository": "alpha", "task_issue": 7,
                         "blocker_repo": "jesdi/agent-ops",
                         "blocker_issue": 31, "fingerprint": "abc",
-                        "created_at": "2026-07-25T09:05:00"}]
+                        "created_at": "2026-07-25T09:05:00",
+                        "readable": True}]
     fake.fingerprints = [{"fingerprint": "abc", "repo": "jesdi/alpha",
                           "issue": 4, "when": "2026-07-25T09:00:00"}]
     fake.open_issues[("jesdi/agent-ops", 31)] = True
@@ -275,7 +276,8 @@ def test_failures_blocker_unknown_is_null(tmp_path):
     fake, client = rig(tmp_path)
     fake.quarantine = [{"repository": "alpha", "task_issue": 7,
                         "blocker_repo": "r", "blocker_issue": 1,
-                        "fingerprint": "f", "created_at": "c"}]
+                        "fingerprint": "f", "created_at": "c",
+                        "readable": True}]
     body = client.get("/api/failures", headers=HEADERS).json()
     assert body["quarantined"][0]["blocker_open"] is None
 
@@ -537,13 +539,12 @@ def test_description_resolves_each_repositories_own_repo(tmp_path):
     assert b.json()["title"] == "beta-73"
 
 
-def test_failures_degrades_to_200_on_corrupt_quarantine_record(tmp_path):
+def test_failures_lists_a_corrupt_quarantine_record_as_unreadable(tmp_path):
     """A torn quarantine record (invalid UTF-8 -> UnicodeDecodeError, a
     ValueError not an OSError) must not 500 /api/failures. Real Sources so
     the guard in sources.py is what is exercised, mirroring the corrupt-
-    events test above. The unreadable records are SKIPPED, not surfaced: a
-    row with every field blank is indistinguishable from a real entry, and
-    the console's rule is never a blank, always an explicit state."""
+    events test above. The unreadable records still block their issues, so
+    they are listed, explicitly marked unreadable rather than blank."""
     from web.sources import Sources
     cfg = make_config(tmp_path)
     (tmp_path / "quarantine").mkdir(parents=True, exist_ok=True)
@@ -563,7 +564,10 @@ def test_failures_degrades_to_200_on_corrupt_quarantine_record(tmp_path):
                                                  _NullGitHub())))
     resp = client2.get("/api/failures", headers=HEADERS)
     assert resp.status_code == 200
-    assert [q["task_issue"] for q in resp.json()["quarantined"]] == [75]
+    rows = sorted(resp.json()["quarantined"], key=lambda q: q["task_issue"])
+    assert [(q["task_issue"], q["readable"], q["blocker_open"])
+            for q in rows] == [(73, False, None), (74, False, None),
+                               (75, True, None)]
 
 
 def test_failures_degrades_to_200_on_wrong_typed_quarantine_record(tmp_path):
