@@ -464,9 +464,18 @@ def create_workspace(repository: Repository, issue: int, base: str = "main",
             cwd=repository.clone_path, env=env)
         _mark_provisioned(wt)
     if repository.setup_cmd:
-        _sh(containers.setup_cmd(f"task-{repository.name}-{issue}-setup", wt,
-                                 repository.setup_cmd, repository.clone_path),
-            cwd=wt, timeout=1800, log=Path(wt) / ".agent" / "setup.log")
+        name = f"task-{repository.name}-{issue}-setup"
+        try:
+            _sh(containers.setup_cmd(name, wt, repository.setup_cmd, repository.clone_path),
+                cwd=wt, timeout=containers.SETUP_TIMEOUT,
+                log=Path(wt) / ".agent" / "setup.log")
+        except subprocess.TimeoutExpired:
+            # Killing the podman client leaves the container running and its
+            # name taken; free it so a retry can start setup again (#17).
+            with suppress(OSError, subprocess.SubprocessError):
+                subprocess.run(["podman", "rm", "-f", name],
+                               capture_output=True, timeout=60)
+            raise
 
     write_task_identity(wt, issue, repository.name, branch)
 
