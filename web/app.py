@@ -519,7 +519,10 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
     # (the socket's file permissions are the boundary) and no other route.
     usage_app = FastAPI(title="agent-ops usage socket", openapi_url=None,
                         docs_url=None, redoc_url=None)
-    usage_app.get("/usage", response_model=read_model.UsageView)(_current_usage)
+    # `/usage` is the socket's established path; `/api/usage` is the same view
+    # under the TCP path, so one client URL works over both.
+    for path in ("/usage", "/api/usage"):
+        usage_app.get(path, response_model=read_model.UsageView)(_current_usage)
     app.state.usage_app = usage_app
 
     @app.post("/api/priority")
