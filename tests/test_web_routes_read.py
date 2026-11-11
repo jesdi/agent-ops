@@ -757,3 +757,11 @@ def test_api_usage_auth_dark_follows_the_marker(tmp_path):
     assert client.get("/api/usage", headers=HEADERS).json()["auth_dark"] == {
         "since": AUTH_DARK_SINCE}
 
+
+
+def test_api_board_usage_auth_dark_follows_the_marker(tmp_path):
+    fake = FakeSources(tmp_path)
+    client = TestClient(create_app(make_config(tmp_path), fake))
+    _write_marker(tmp_path)
+    body = client.get("/api/board", headers=HEADERS).json()
+    assert body["usage"]["auth_dark"] == {"since": AUTH_DARK_SINCE}
