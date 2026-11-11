@@ -241,6 +241,7 @@ it('two provider groups render side by side; the spawn chip shows once, on the g
     // Sonnet draws on no Fable window, so the gate is open despite it
     gate: { model: 'claude-sonnet-4-6', provider: 'anthropic', admitted: true,
       note: 'anthropic: no usage windows reported', minutes_to_reset: 0, binding: null },
+    auth_dark: null,
   }
   server.use(http.get('/api/usage', () => HttpResponse.json(twoProviders)))
   renderWithProviders(<BoardPage />)
