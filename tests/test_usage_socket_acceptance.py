@@ -180,3 +180,11 @@ def test_no_socket_configured_creates_none_and_tcp_unchanged(console):
     finally:
         c.stop()
         shutil.rmtree(work, ignore_errors=True)
+
+
+def test_socket_usage_carries_auth_dark_like_tcp(console):
+    (console.state / "auth-dark").write_text(
+        '{"since": "2026-11-05T10:00:00+00:00", "alerted": false}')
+    expected = {"since": "2026-11-05T10:00:00+00:00"}
+    assert console.uds("GET", "/usage").json()["auth_dark"] == expected
+    assert console.tcp("GET", "/api/usage").json()["auth_dark"] == expected
