@@ -2667,6 +2667,21 @@ def test_retry_intent_clears_quarantine_and_fingerprint(tmp_path, monkeypatch):
     assert gh.claimed == [42], "cleared before _claim_new → claimable same pass"
 
 
+def test_retry_intent_clears_a_symlink_loop_record(tmp_path, monkeypatch):
+    """exists() hides ELOOP as False; retry must still unlink the record."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    qp = failures.quarantine_path(c.state_dir, "portfolio_eval", 42)
+    qp.parent.mkdir(parents=True, exist_ok=True)
+    qp.symlink_to(qp)
+    intents_mod.write_intent(c.state_dir, "retry", "portfolio_eval", 42, {}, "op", 1)
+    gh = FakeGitHub([Candidate(42, "Retry me", "u42")])
+    main.run_pass(c, deps(gh, FakeSessions()))
+    assert not qp.is_symlink()
+    assert gh.claimed == [42]
+
+
 def test_resume_intent_wakes_with_default_text(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
