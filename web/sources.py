@@ -12,8 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Collection, Literal
 
-from dispatcher import (claims, eventlog, execution_overrides, messages as msgq,
-                        onboard, onboarding_sessions, priority, queue_ops, state, task_artifacts, triage)
+from dispatcher import (claims, eventlog, execution_overrides, failures,
+                        messages as msgq, onboard, onboarding_sessions, priority, queue_ops, state, task_artifacts, triage)
 from dispatcher.usage import ProviderUsage
 from dispatcher.usage_providers import ADAPTERS, fetch_provider
 from dispatcher.config import Repository
@@ -206,8 +206,8 @@ class Sources:
                 if p in routed or u.source != "unavailable"}
 
     def quarantine_entries(self) -> list[dict]:
-        """Every readable quarantine record, for /api/failures and the retry
-        route's "is this issue quarantined?" check.
+        """Every quarantine record, for /api/failures, the retry route's "is
+        this issue quarantined?" check and the board's claim forecast.
 
         Keyed the way failures.check_quarantine keys them: by FILENAME
         (`{repository}-{issue}.json`), which is the only thing a lookup can match,
@@ -215,31 +215,28 @@ class Sources:
         key that /api/task/{issue}/retry validates against. Names that do not
         fit the scheme fall back to the body's task_issue.
 
-        A record whose body is unreadable, or is valid JSON that is not an
-        object, is SKIPPED. Every field would be blank and the row would be
-        indistinguishable from a real entry — the console's constraint is
-        never a blank, always an explicit state, and a row that says nothing
-        is worse than no row. The board's claim forecast skips these heads.
-
-        The read is guarded with (OSError, ValueError), not
-        (json.JSONDecodeError, OSError): a torn write_text yields invalid UTF-8
-        and raises UnicodeDecodeError, a ValueError — the same widening
-        pass_heartbeat and events_tail already carry. This route may never 500.
+        Read through failures.read_quarantine, the dispatcher's own reader.
+        An unreadable record still blocks its issue, so it is listed with
+        `readable: False` and blank fields (blocker_issue 0: no blocker
+        lookup) — unless its name does not parse, then nothing keys it and
+        it blocks nothing. A record gone by its read is not listed.
+        This route may never 500.
         """
         root = self.state_dir / "quarantine"
         entries = []
         for p in sorted(root.glob("*.json")) if root.exists() else []:
             parsed = state.parse_task_key(p.stem)
             repository, keyed_issue = parsed if parsed else ("", None)
-            try:
-                d = json.loads(p.read_text())
-            except (OSError, ValueError):
+            d = failures.read_quarantine(p)
+            if d is failures.GONE:
                 continue
-            if not isinstance(d, dict):
-                continue  # null / a list: rec.get() would raise downstream
+            readable = isinstance(d, dict)
+            if not readable and keyed_issue is None:
+                continue
             # Blank defaults keep FailuresView's model valid for a readable
-            # record that is missing a field.
-            entry = {**_QUARANTINE_DEFAULTS, **d}
+            # record that is missing a field, and for an unreadable one.
+            entry = {**_QUARANTINE_DEFAULTS, **(d if readable else {}),
+                     "readable": readable}
             # A wrong-typed field would 500 FailuresView or reach GitHub; skip
             # like an unreadable record. bool is an int subclass: reject it.
             if not all(type(entry[k]) is type(default)

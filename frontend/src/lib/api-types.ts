@@ -1231,6 +1231,8 @@ export interface components {
             created_at: string;
             /** Fingerprint */
             fingerprint: string;
+            /** Readable */
+            readable: boolean;
             /** Repository */
             repository: string;
             /** Task Issue */

@@ -652,6 +652,7 @@ class QuarantineEntry(BaseModel):
     fingerprint: str
     created_at: str
     blocker_open: bool | None
+    readable: bool
 
 
 class FingerprintEntry(BaseModel):
