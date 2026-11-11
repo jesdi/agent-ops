@@ -319,7 +319,8 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         return read_model.usage_view(
             usages, now=now, pace=boot.pace,
             default_model=live.models.gate_entry().model_id,
-            mode=mode, routed=routed_providers(live), pinned=live.models.pinned)
+            mode=mode, routed=routed_providers(live), pinned=live.models.pinned,
+            auth_dark_since=sources.auth_dark_since())
 
     @app.get("/api/board", response_model=read_model.BoardView)
     def board(op: Operator = Depends(current_operator)):

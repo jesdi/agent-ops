@@ -205,6 +205,23 @@ class Sources:
         return {p: u for p, u in usages.items()
                 if p in routed or u.source != "unavailable"}
 
+    def auth_dark_since(self) -> str | None:
+        """When the dispatcher's `auth-dark` marker says the login went dark,
+        None when it is absent. Read-only: only the dispatcher writes or
+        deletes it. A marker that parses to no `since` still reports dark,
+        with its mtime; one deleted mid-read reads as absent."""
+        path = self.state_dir / "auth-dark"
+        try:
+            try:
+                since = json.loads(path.read_text()).get("since")
+            except (ValueError, AttributeError):  # bad JSON, not an object
+                since = None
+            return since if isinstance(since, str) else _iso(path.stat().st_mtime)
+        except FileNotFoundError:
+            return None
+        except OSError:
+            return _iso(path.stat().st_mtime) if path.exists() else None
+
     def quarantine_entries(self) -> list[dict]:
         """Every readable quarantine record, for /api/failures and the retry
         route's "is this issue quarantined?" check.
@@ -414,7 +431,7 @@ class Sources:
             + list((root / "artifacts").glob("*/index.json"))
             + [root / "pass.json", mode])
         usage = digest(sorted((root / "usage").glob("*.json"))
-                       + [root / "budget-stalled", mode])
+                       + [root / "budget-stalled", root / "auth-dark", mode])
         failures = digest(
             (list((root / "failures").iterdir())
              if (root / "failures").exists() else [])
