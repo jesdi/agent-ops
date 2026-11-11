@@ -62,6 +62,8 @@ def test_retry_route_accepts_an_unreadable_record(tmp_path):
 def test_dispatcher_keeps_blocking_an_unreadable_record(tmp_path, issue):
     _state(tmp_path)
     assert failures.check_quarantine(tmp_path, _NullGitHub(), "alpha", issue) is True
+    record = failures.quarantine_path(tmp_path, "alpha", issue)
+    assert record.read_bytes() == UNREADABLE[issue]
 
 
 # --- the shared reader: a record gone by its read blocks nothing ------------
