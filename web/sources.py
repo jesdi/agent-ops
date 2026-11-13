@@ -225,9 +225,12 @@ class Sources:
         absent."""
         path = self.state_dir / "auth-dark"
         try:
-            return _marker_since(path) or _iso(path.stat().st_mtime)
+            since = _marker_since(path)
+            return since if since is not None else _iso(path.stat().st_mtime)
         except FileNotFoundError:
             return None
+        except OSError:  # the marker is there but its metadata is not readable
+            return _iso(time.time())
 
     def quarantine_entries(self) -> list[dict]:
         """Every readable quarantine record, for /api/failures and the retry
