@@ -12,7 +12,9 @@ from enum import Enum
 from dispatcher.state import (PARK_CI, PARK_HUMAN, PARK_LOGIN,
                               PARK_WAKE, WHY_ACCESS, WHY_BAD_SIGNAL, WHY_CONFIG,
                               WHY_DECISION, WHY_LOOP_CAP, WHY_OPERATOR,
-                              WHY_STALLED, Stage, TaskState, implement_done)
+                              WHY_STALLED, AnswersRequest, OperatorRequest,
+                              PlanApprovalRequest, Stage, TaskState,
+                              implement_done)
 
 
 class Kind(str, Enum):
@@ -54,6 +56,29 @@ class Status:
 def attention(kind: str) -> str:
     """The cause of a parked-pr task woken by its PR."""
     return f"attention({kind})"
+
+
+_OCCUPYING = frozenset({Kind.RUNNING, Kind.HELD_PLAN_APPROVAL, Kind.HELD_LOGIN})
+
+
+def occupies(status: Status) -> bool:
+    """Does a task in `status` hold a slot and a capacity unit?"""
+    return status.kind in _OCCUPYING
+
+
+def operator_request(t: TaskState) -> OperatorRequest | None:
+    """What the operator is asked for, derived from the status."""
+    return _request(legacy_view(t)[1])
+
+
+def _request(status: Status) -> OperatorRequest | None:
+    if status.kind is Kind.WAKING:
+        return _request(status.origin) if status.origin else None
+    if status.kind in (Kind.HELD_PLAN_APPROVAL, Kind.PARKED_REVIEW):
+        return PlanApprovalRequest(path=status.path, fingerprint=status.fingerprint)
+    if status.kind is Kind.PARKED_ANSWERS:
+        return AnswersRequest(path=status.path, fingerprint=status.fingerprint)
+    return None
 
 
 _RETIRED_STAGES = {Stage.BLOCKED: Stage.IMPLEMENT, Stage.STALLED_ON_BUDGET: Stage.SPEC}

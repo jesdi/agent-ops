@@ -1,7 +1,8 @@
 """dispatcher/lifecycle.py: the task lifecycle table (#132, ADR 0014)."""
 import pytest
 
-from dispatcher.lifecycle import Kind, Status, legacy_view
+from dispatcher.lifecycle import (Kind, Status, legacy_view, occupies,
+                                  operator_request)
 from dispatcher.state import (AnswersRequest, PlanApprovalRequest, Stage,
                               TaskState)
 
@@ -93,3 +94,28 @@ def test_a_shape_the_table_does_not_classify_is_refused(shape):
     with pytest.raises(ValueError):
         legacy_view(task(**shape))
 
+
+
+@pytest.mark.parametrize("kind", list(Kind))
+def test_occupies_exactly_running_and_held(kind):
+    assert occupies(Status(kind)) is (kind in {
+        Kind.RUNNING, Kind.HELD_PLAN_APPROVAL, Kind.HELD_LOGIN})
+
+
+@pytest.mark.parametrize("shape, asked", [
+    (dict(stage=S.AWAITING_PLAN_REVIEW, operator_request=PLAN), PLAN),
+    (dict(stage=S.AWAITING_PLAN_REVIEW, park="awaiting-review", operator_request=PLAN), PLAN),
+    (dict(stage=S.SPEC, park="parked", operator_request=ANSWERS), ANSWERS),
+    (dict(stage=S.SPEC, park="unpark-requested", operator_request=ANSWERS), ANSWERS),
+    (dict(stage=S.AWAITING_PLAN_REVIEW, park="unpark-requested", operator_request=PLAN),
+     PLAN),
+    (dict(park="unpark-requested", crashed_stage="implement"), None),
+    (dict(stage=S.QUEUED, unlaunched=True), None),
+    (dict(park="parked", park_reason="decision"), None),
+    (dict(), None),
+    (dict(stage=S.DONE, pr_number=88), None),
+])
+def test_operator_request_is_derived_from_the_status(shape, asked):
+    got = operator_request(task(**shape))
+    assert (got, getattr(got, "fingerprint", None)) == (
+        asked, getattr(asked, "fingerprint", None))
