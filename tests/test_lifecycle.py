@@ -349,7 +349,7 @@ def test_ci_and_access_wake_their_parks():
 
 def test_a_failed_task_ranked_again_wakes_in_place():
     got = decide(At(S.REVIEW, failed("task-crash")), Event(E.CANDIDATE_RANKED))
-    assert got.status == waking(failed("task-crash"), "ranked")
+    assert got == Transition(waking(failed("task-crash"), "ranked"), S.REVIEW, (ResetRounds(),))
 
 
 @pytest.mark.parametrize("at", [At(S.PLAN, Status(Kind.CANCELED)),

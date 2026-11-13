@@ -548,7 +548,8 @@ TABLE: tuple[Row, ...] = tuple([
         actions=(SweepTombstone(),)),
     Row(K.FAILED, E.CANDIDATE_RANKED, K.FAILED, guard=unknown_at_queued, build=_stay,
         actions=(SweepTombstone(),)),
-    Row(K.FAILED, E.CANDIDATE_RANKED, K.WAKING, build=_wake("ranked")),
+    # as op-resume, with no override to set
+    Row(K.FAILED, E.CANDIDATE_RANKED, K.WAKING, build=_wake("ranked"), actions=(ResetRounds(),)),
     Row(K.CANCELED, E.CANDIDATE_RANKED, K.CANCELED, actions=(SweepTombstone(),)),
     Row(K.DONE, E.CANDIDATE_RANKED, Reject("the task is done")),
     *_rows(_LIVE, [E.CANDIDATE_RANKED], Ignore("the issue has a live task")),
