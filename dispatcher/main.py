@@ -62,8 +62,8 @@ from dispatcher.sessions import Sessions
 from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_POKES, NO_SLOT, PARK_CI,
                               PARK_HUMAN,
                               PARK_LOGIN, PARK_REVIEW, PARK_WAKE, WAKE_BLOCKED_PREFIX,
-                              WHY_ACCESS, WHY_CONFIG, WHY_DECISION, WHY_LOOP_CAP, WHY_OPERATOR,
-                              RESPAWNABLE_STAGES, AnswersRequest, Stage, StageSignal, TaskState, active, allocate_slot,
+                              WHY_ACCESS, WHY_DECISION, WHY_LOOP_CAP, WHY_OPERATOR,
+                              RESPAWNABLE_STAGES, Stage, StageSignal, TaskState, active, allocate_slot,
                               clear_session, clear_turn_markers, delete, has_waiting,
                               holds_slot, launch_entries, load,
                               load_all, max_slots,
@@ -949,39 +949,21 @@ def _answers_page(task: TaskState, artifact: str) -> tuple[str, str] | None:
     return wt_rel, fingerprint
 
 
-def _answers_request(task: TaskState, artifact: str) -> AnswersRequest | None:
-    """The request for the answers page a park names (_answers_page).
-    Answers of an earlier revision are dropped."""
-    page = _answers_page(task, artifact)
-    if page is None:
-        return None
-    request = AnswersRequest(path=page[0], fingerprint=page[1])
-    answers.discard_stale(task.worktree, request.kind, request.fingerprint)
-    return request
-
-
 def _with_tail(note: str, tail: str) -> str:
     """A park question with the session's last screen under it."""
     return (note + ("\n\n" + tail if tail else "")).strip() or "(no detail)"
 
 
-def _asked(task: TaskState, is_answers: bool) -> bool:
-    """TaskState.asked after this park: once a spec or plan session asked."""
-    return task.asked or (is_answers and task.stage in (Stage.SPEC, Stage.PLAN))
-
-
 def _park_for_input(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
-                    note: str, artifact: str = "",
-                    is_answers: bool = False,
-                    reason: str = WHY_DECISION) -> None:
+                    note: str, reason: str = WHY_DECISION) -> None:
+    """The park of the events the table does not take yet: an unreached
+    repository (access) and the operator's park intent (ticket 08). A
+    session's own parks, answers included, are the table's."""
     tail = deps.sessions.capture_tail(task.repository, task.issue)
     login = relogin.classify_login(tail)
     if login is not None and _park_for_login(cfg, deps, repository, task, note,
                                              tail, login):
         return
-    answers_request = _answers_request(task, artifact)
-    if is_answers and answers_request is None:
-        note = (note + "\n\n[malformed awaiting-answers: no usable artifact path]").strip()
     msg_id = deps.notifier.send(
         "parked_question", issue=task.issue, title=task.title,
         url=_url(repository, task.issue), repository=repository.name,
@@ -989,12 +971,10 @@ def _park_for_input(cfg: Config, deps: Deps, repository: Repository, task: TaskS
     _end_session(cfg, deps, task.repository, task.issue)
     # A wake that ends here is over: the wake that follows this park says
     # for itself whether it is an attach, and on which model.
-    parked = park(task, PARK_HUMAN, note=note, msg_id=msg_id, reason=reason,
-                  request=answers_request)
+    parked = park(task, PARK_HUMAN, note=note, msg_id=msg_id, reason=reason)
     save(cfg.state_dir, replace(parked, slot=NO_SLOT,
                                 resume_model_override="",
                                 resume_bypass_usage=False,
-                                asked=_asked(task, is_answers),
                                 updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", repository=repository.name,
                           issue=task.issue, stage=task.stage.value, detail=note)
@@ -2245,8 +2225,18 @@ def _background_view(cfg: Config, deps: Deps, task: TaskState,
 
 def _park_stranded(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
                    why: str) -> None:
-    """Park a task the config strands for `why` (models.stranded)."""
-    _park_for_input(cfg, deps, repository, task, config_note(why), reason=WHY_CONFIG)
+    """Park a waiting task the config strands for `why` (models.stranded):
+    the table's track-unconfigured. A live session at a login prompt is
+    held there instead; the task holds no slot (a wake, a PR feedback
+    round), which held(login) needs, so that hold stays outside the table
+    until the scheduler events move (ticket 09)."""
+    note = config_note(why)
+    tail = deps.sessions.capture_tail(task.repository, task.issue)
+    login = relogin.classify_login(tail)
+    if login is not None and _park_for_login(cfg, deps, repository, task, note, tail, login):
+        return
+    _apply(_Turn(cfg, deps, repository, None, None, False, tail=tail), task,
+           Event(EventType.TRACK_UNCONFIGURED, Stranded(note, login="")))
 
 
 def _drive_task(cfg: Config, deps: Deps, repository: Repository, task: TaskState,

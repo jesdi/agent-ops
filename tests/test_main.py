@@ -5437,7 +5437,7 @@ def test_resumed_gate_task_rearms_approval(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_ordinary_blocked_park_clears_stale_operator_request(tmp_path):
-    """Slice 13: _park_for_input(is_answers=False) clears a stale operator_request.
+    """Slice 13: _park_for_input clears a stale operator_request.
     spec_path and counters must be preserved."""
     c = cfg(tmp_path)
     stale_req = PlanApprovalRequest(".agent/review.html")
@@ -5447,7 +5447,7 @@ def test_ordinary_blocked_park_clears_stale_operator_request(tmp_path):
                    review_rounds=1, gate_rounds=2, e2e_rounds=0, ci_rounds=1)
     task = load(c.state_dir, "portfolio_eval", 42)
     main._park_for_input(c, deps(notifier=FakeNotifier()), c.repositories[0],
-                         task, "blocked by test", is_answers=False)
+                         task, "blocked by test")
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.operator_request is None, (
         f"ordinary park must clear stale request, got {t.operator_request!r}")

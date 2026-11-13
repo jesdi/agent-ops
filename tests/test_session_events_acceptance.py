@@ -555,3 +555,17 @@ def test_a_park_saves_its_commit_then_only_the_message_that_asked(c, monkeypatch
     commit, asked = [t for t in saved if t.issue == 42]
     assert dc_replace(asked, park_msg_id=0) == commit and asked.park_msg_id
     assert d.notifier.sent == ["parked_question"]
+
+
+def test_a_wake_the_config_strands_parks_through_the_table(c):
+    """_park_stranded is track-unconfigured: one transition, the park's
+    question, the slot given back."""
+    from dispatcher.state import PARK_WAKE
+    task(c, park=PARK_WAKE, slot=NO_SLOT, track="renamed")
+    d = deps(FakeGitHub(), FakeSessions())
+    main._park_stranded(c, d, c.repositories[0], load(c.state_dir, T, 42), "track gone")
+    t = load(c.state_dir, T, 42)
+    assert (t.at.status.kind, t.at.status.reason) == (Kind.PARKED_HUMAN, HumanReason.CONFIG)
+    assert transitions(c) == [{"from": "waking", "event": "track-unconfigured",
+                               "to": "parked-human", "stage": "implement"}]
+    assert d.notifier.sent == ["parked_question"] and t.park_msg_id
