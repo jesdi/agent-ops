@@ -67,6 +67,12 @@ def test_unpark_to_running_clears_every_park_field():
     assert fields(t) == fields(make())
 
 
+def test_a_running_session_at_the_gate_is_held_on_its_request():
+    req = PlanApprovalRequest(path="review.html", fingerprint="cd34")
+    t = unpark(make(**STALE), request=req)
+    assert fields(t) == {**fields(make()), "operator_request": req}
+
+
 @pytest.mark.parametrize("stage", [Stage.DONE, Stage.FAILED, Stage.CANCELED])
 def test_end_is_never_parked_and_leaves_no_park_field_behind(stage):
     t = end(make(**STALE, crashed_stage="implement"), stage)

@@ -286,15 +286,16 @@ def park(t: TaskState, kind: str, *, note: str = "", msg_id: int = 0,
                    hold_for_attach=False, operator_request=request)
 
 
-def unpark(t: TaskState, *, waking: bool = False, hold: bool = False) -> TaskState:
+def unpark(t: TaskState, *, waking: bool = False, hold: bool = False,
+           request: "OperatorRequest | None" = None) -> TaskState:
     """t's park lifted. waking: a wake is queued (PARK_WAKE) behind
     admission; the park's question, reason, message, request and crashed
     stage stay as its origin until the launch, and `hold` keeps the session
-    for an attach. Otherwise the session runs again and every park field
-    goes."""
+    for an attach. Otherwise the session runs and every park field goes,
+    bar the plan-approval `request` a session at the gate is held on."""
     if waking:
         return replace(t, park=PARK_WAKE, ci_run_id=0, hold_for_attach=hold)
-    return replace(t, **_NOT_PARKED)
+    return replace(t, **{**_NOT_PARKED, "operator_request": request})
 
 
 def end(t: TaskState, stage: Stage, crashed_stage: str = "") -> TaskState:
