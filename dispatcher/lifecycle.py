@@ -258,10 +258,20 @@ def _without_implement_pick(t: TaskState, stage: Stage) -> TaskState:
     return replace(t, picks={k: v for k, v in t.picks.items() if k != IMPLEMENT_PICK})
 
 
+def at_gate(t: TaskState) -> bool:
+    """Does the plan session run at the review gate? Held there, or reworking
+    the plan with the request disarmed: until the status is stored (ticket 06)
+    the two share the status `running` at `plan` with a session that never
+    waited there, and only the legacy stage tells them apart. The one place
+    that reads it."""
+    return t.stage is Stage.AWAITING_PLAN_REVIEW
+
+
 def _gate_stage(t: TaskState, stage: Stage) -> Stage:
-    """A plan session at the gate, or of a task that waited there, runs there."""
-    at_gate = t.gated or t.stage is Stage.AWAITING_PLAN_REVIEW
-    return Stage.AWAITING_PLAN_REVIEW if stage is Stage.PLAN and at_gate else stage
+    """Where `stage` runs for `t`: a plan session of a task at the gate, or
+    that waited there, runs at the gate."""
+    gated = t.gated or at_gate(t)
+    return Stage.AWAITING_PLAN_REVIEW if stage is Stage.PLAN and gated else stage
 
 
 def _at_stage(t: TaskState, stage: Stage) -> TaskState:

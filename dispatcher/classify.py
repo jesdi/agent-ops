@@ -8,7 +8,7 @@ from typing import Callable, NamedTuple
 
 from dispatcher.artifacts import CheckResult, PlanRevision
 from dispatcher.lifecycle import (Admission, Death, Event, EventType, Gate, Pane, Report,
-                                  Silence, Stranded, Wait)
+                                  Silence, Stranded, Wait, at_gate)
 from dispatcher.loops import (Decision, Loop, ReportedRound, Retry, evaluate, retry_left,
                               unattended_rounds_used)
 from dispatcher.loops import Outcome as Rounds
@@ -132,9 +132,9 @@ def _dead(o: Observation) -> Event | None:
     if o.alive or (o.signal is not None and o.signal.status == "done"):
         return None
     t = o.task
-    at_gate, rounds_used = t.stage is Stage.AWAITING_PLAN_REVIEW, unattended_rounds_used(t)
-    respawn = (Stage.PLAN,) if at_gate and not rounds_used else ()
-    return Event(EventType.SESSION_DIED, Death(at_gate=at_gate, rounds_used=rounds_used,
+    gate, rounds_used = at_gate(t), unattended_rounds_used(t)
+    respawn = (Stage.PLAN,) if gate and not rounds_used else ()
+    return Event(EventType.SESSION_DIED, Death(at_gate=gate, rounds_used=rounds_used,
                                                launches=o.look.launches(respawn)))
 
 
@@ -209,7 +209,7 @@ def _round(o: Observation) -> Decision | None:
 
 def _gate(o: Observation) -> Gate:
     t = o.task
-    return Gate(at=t.stage is Stage.AWAITING_PLAN_REVIEW, gated=t.gated,
+    return Gate(at=at_gate(t), gated=t.gated,
                 rounds_used=unattended_rounds_used(t), respawn_pending=t.gate_respawn_pending,
                 armed=_armed(t.operator_request, o.reads.revision))
 
