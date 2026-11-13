@@ -1172,11 +1172,14 @@ def _poll_pr_or_warn(cfg: Config, deps: Deps, repository: Repository, task: Task
 
 def _react_to_pr(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
                  res: "pr_poll.PollResult", dry_run: bool) -> None:
-    ends = {"merged": _finish_merged_or_warn, "closed": _fail_closed_pr}.get(res.kind)
-    if ends is not None:
-        ends(cfg, deps, repository, task, dry_run)
+    if res.kind == "merged":
+        _finish_merged_or_warn(cfg, deps, repository, task, dry_run)
+    elif res.kind == "closed":
+        _fail_closed_pr(cfg, deps, repository, task)
     elif task.park or task.feedback_pending:
-        return   # parked: only merge/close still matter
+        # Parked: only merge/close still matter. Feedback pending: the round
+        # already queued reads the PR afresh, so new feedback waits for it.
+        return
     elif res.kind == "feedback":
         _pr_feedback(cfg, deps, repository, task, res)
     elif res.kind in ("check-failed", "conflict"):
@@ -1194,9 +1197,11 @@ def _finish_merged_or_warn(cfg: Config, deps: Deps, repository: Repository,
 
 
 def _fail_closed_pr(cfg: Config, deps: Deps, repository: Repository,
-                    task: TaskState, dry_run: bool) -> None:
-    """End the session too: the implement session is still alive at
-    pr-open, and nothing will ever drive this task again (FAILED isn't in
+                    task: TaskState) -> None:
+    """Fail a pr-open task whose PR closed unmerged: unpark it, end its
+    session and send pr_closed once (the task leaves pr-open, so it is not
+    polled again). The session is ended because the implement session is
+    still alive at pr-open, and nothing will ever drive this task again (FAILED isn't in
     IN_FLIGHT_STAGES), so its session and container would otherwise hold
     their memory/cpu reservation until the box reboots. The worktree stays
     for autopsy. A terminal task is never parked (#316)."""
