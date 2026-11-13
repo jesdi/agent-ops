@@ -167,8 +167,10 @@ EVENTS = [Event(e, **facts) for e in EventType for facts in (
 
 
 def undeclared(event_types) -> list[tuple[str, str]]:
-    """Every (status kind, event type) pair with no unguarded row."""
-    declared = {(r.source, r.event) for r in TABLE if r.guard is lifecycle.always}
+    """Every (status kind, event type) pair with no row that decides it
+    whatever the facts: unguarded and at any stage."""
+    declared = {(r.source, r.event) for r in TABLE
+                if r.guard is lifecycle.always and r.move is None}
     return [(k.value, getattr(e, "value", e)) for e in event_types for k in Kind
             if (k, e) not in declared]
 
