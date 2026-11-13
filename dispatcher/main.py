@@ -67,7 +67,7 @@ from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_POKES, NO_SL
                               next_stage, read_background, read_session,
                               read_stage_signal,
                               implement_done, resumable_crash, shown_stage,
-                              save, task_key)
+                              end, park, save, task_key, unpark)
 from dispatcher.workspace import (MissingBaseError, append_worktree_file, create_workspace,
                                   exclude_local_state, remove_workspace,
                                   write_task_identity, write_worktree_file)
@@ -312,7 +312,7 @@ def _wake(cfg: Config, task: TaskState, text: str, hold: bool = False,
           bypass_usage: bool = False) -> None:
     _queue_message(cfg, task.repository, task.issue, text, actor)
     task = loops.reset(task, ResetCause.OPERATOR_WAKE)
-    save(cfg.state_dir, replace(task, park=PARK_WAKE, hold_for_attach=hold,
+    save(cfg.state_dir, replace(unpark(task, waking=True, hold=hold),
                                 resume_model_override=model_override,
                                 resume_bypass_usage=bypass_usage,
                                 updated_at=_now()))
@@ -356,8 +356,7 @@ def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
             # Not written: the next pass reads the old signal and parks again.
             print(f"[warn] stage signal of #{task.issue} not rewritten: {exc}",
                   file=sys.stderr)
-    save(cfg.state_dir, replace(task, park="", park_msg_id=0,
-                                park_note="", updated_at=_now()))
+    save(cfg.state_dir, replace(unpark(task), updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "login-code-injected",
                           repository=task.repository, issue=task.issue,
                           stage=task.stage.value, detail="login code injected")
@@ -716,10 +715,11 @@ def _launch_stage(cfg: Config, deps: Deps, repository: Repository, task: TaskSta
     messages.mark_delivered(cfg.state_dir, task.repository, task.issue, drained)
     # A gated task's plan session runs at the gate, so its `done` is the approval.
     kept = Stage.AWAITING_PLAN_REVIEW if stage is Stage.PLAN and task.gated else stage
-    task = replace(task, stage=kept, spec_path=spec_path or task.spec_path, unlaunched=False,
+    task = replace(unpark(task), stage=kept, spec_path=spec_path or task.spec_path,
+                   unlaunched=False,
                    gate_respawn_pending=(task.gate_respawn_pending
                                          and kept is Stage.AWAITING_PLAN_REVIEW),
-                   operator_request=None, **NO_POKES,
+                   **NO_POKES,
                    updated_at=_now(),
                    picks={**task.picks, pick_key(stage.value): str(entry)},
                    implement_providers=_with_implement_provider(task, stage, entry))
@@ -877,10 +877,9 @@ def _park_for_input(cfg: Config, deps: Deps, repository: Repository, task: TaskS
     _end_session(cfg, deps, task.repository, task.issue)
     # A wake that ends here is over: the wake that follows this park says
     # for itself whether it is an attach, and on which model.
-    save(cfg.state_dir, replace(task, park=PARK_HUMAN, park_msg_id=msg_id,
-                                park_note=note, park_reason=reason,
-                                slot=NO_SLOT, operator_request=answers_request,
-                                hold_for_attach=False,
+    parked = park(task, PARK_HUMAN, note=note, msg_id=msg_id, reason=reason,
+                  request=answers_request)
+    save(cfg.state_dir, replace(parked, slot=NO_SLOT,
                                 resume_model_override="",
                                 resume_bypass_usage=False,
                                 asked=task.asked or (is_answers and task.stage in (Stage.SPEC, Stage.PLAN)),
@@ -897,10 +896,8 @@ def _park_exhausted(cfg: Config, deps: Deps, repository: Repository, task: TaskS
     msg_id = deps.notifier.send(
         "parked_question", issue=task.issue, title=task.title,
         url=_url(repository, task.issue), repository=repository.name, note=note)
-    save(cfg.state_dir, replace(task, park=PARK_HUMAN, park_msg_id=msg_id,
-                                park_note=note, park_reason=WHY_LOOP_CAP,
-                                slot=NO_SLOT, ci_run_id=0, operator_request=None,
-                                updated_at=_now()))
+    parked = park(task, PARK_HUMAN, note=note, msg_id=msg_id, reason=WHY_LOOP_CAP)
+    save(cfg.state_dir, replace(parked, slot=NO_SLOT, updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", repository=repository.name,
                           issue=task.issue, stage=task.stage.value,
                           detail="loop exhausted: " + note)
@@ -958,8 +955,7 @@ def _park_for_login(cfg: Config, deps: Deps, repository: Repository, task: TaskS
     if msg_id == 0:
         return False
     clear_turn_markers(cfg.state_dir, task.repository, task.issue)
-    save(cfg.state_dir, replace(task, park=PARK_LOGIN, park_msg_id=msg_id,
-                                park_note=note, operator_request=None,
+    save(cfg.state_dir, replace(park(task, PARK_LOGIN, note=note, msg_id=msg_id),
                                 **NO_POKES,
                                 updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", repository=repository.name,
@@ -1008,8 +1004,8 @@ def _retry_stage(cfg: Config, deps: Deps, repository: Repository, task: TaskStat
                                    gh_config=gh_config)
     # A rejected plan is no longer on offer: the session's next ready report
     # is checked and armed again.
-    save(cfg.state_dir, replace(loops.spend_retry(task, act.retry),
-                                updated_at=_now(), operator_request=None))
+    save(cfg.state_dir, replace(unpark(loops.spend_retry(task, act.retry)),
+                                updated_at=_now()))
     if act.stage is Stage.PLAN:
         _notify(deps, repository, task, "plan_retry", act.reason)
 
@@ -1017,9 +1013,8 @@ def _retry_stage(cfg: Config, deps: Deps, repository: Repository, task: TaskStat
 def _park_for_ci(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
                  run_id: int) -> None:
     _end_session(cfg, deps, task.repository, task.issue)
-    save(cfg.state_dir, replace(task, park=PARK_CI, ci_run_id=run_id,
-                                slot=NO_SLOT, operator_request=None,
-                                updated_at=_now()))
+    save(cfg.state_dir, replace(park(task, PARK_CI, ci_run_id=run_id),
+                                slot=NO_SLOT, updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", repository=repository.name,
                           issue=task.issue, stage=task.stage.value,
                           detail=f"awaiting CI run {run_id}")
@@ -1057,7 +1052,8 @@ def _spec_note(pub: "spec_publish.PublishResult") -> str:
 
 
 def _park_for_review(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
-                     reason: ReviewPark, dry_run: bool = False) -> None:
+                     reason: ReviewPark, request: PlanApprovalRequest | None,
+                     dry_run: bool = False) -> None:
     """Park a task at the plan gate for a human to read whenever they wake
     up. The only park that also releases the SLOT: the plan stage never used
     the slot's ports and worktrees are per-issue, so resume can take any free
@@ -1083,10 +1079,10 @@ def _park_for_review(cfg: Config, deps: Deps, repository: Repository, task: Task
         issue=task.issue, title=task.title, url=_url(repository, task.issue),
         note=note, repository=repository.name, rounds=task.unattended_rounds)
     _end_session(cfg, deps, task.repository, task.issue)
-    save(cfg.state_dir, replace(
-        task, park=PARK_REVIEW, park_msg_id=msg_id, slot=NO_SLOT, updated_at=_now(),
-        park_note=("plan session stopped at the review gate" if died
-                   else "plan ready for review")))
+    note = ("plan session stopped at the review gate" if died
+            else "plan ready for review")
+    parked = park(task, PARK_REVIEW, note=note, msg_id=msg_id, request=request)
+    save(cfg.state_dir, replace(parked, slot=NO_SLOT, updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", repository=repository.name,
                           issue=task.issue, stage=task.stage.value,
                           detail=reason.value)
@@ -1115,8 +1111,7 @@ def _wake_ci(cfg: Config, deps: Deps, repository: Repository) -> None:
         reply = (f"E2E run {task.ci_run_id} concluded: {conclusion} — "
                  f"fetch logs with: gh run view {task.ci_run_id} --log-failed")
         _queue_message(cfg, task.repository, task.issue, reply, "dispatcher")
-        save(cfg.state_dir, replace(task, park=PARK_WAKE, ci_run_id=0,
-                                    updated_at=_now()))
+        save(cfg.state_dir, replace(unpark(task, waking=True), updated_at=_now()))
 
 
 def _poll_pr(cfg: Config, deps: Deps, repository: Repository, task: TaskState
@@ -1212,9 +1207,7 @@ def _fail_closed_pr(cfg: Config, deps: Deps, repository: Repository,
     their memory/cpu reservation until the box reboots. The worktree stays
     for autopsy. A terminal task is never parked (#316)."""
     _end_session(cfg, deps, task.repository, task.issue)
-    save(cfg.state_dir, replace(task, stage=Stage.FAILED, park="",
-                                operator_request=None,
-                                updated_at=_now()))
+    save(cfg.state_dir, replace(end(task, Stage.FAILED), updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "pr-closed",
                           repository=repository.name, issue=task.issue,
                           stage=Stage.PR_OPEN.value,
@@ -1284,8 +1277,7 @@ def _finish_merged(cfg: Config, deps: Deps, repository: Repository,
         task_artifacts.pin_published(cfg.state_dir, task, repository.repo)
     remove_workspace(repository, task.worktree, task.branch, dry_run=dry_run)
     deps.github.delete_branch(repository, task.branch)
-    save(cfg.state_dir, replace(task, stage=Stage.DONE, park="",
-                                feedback_pending=False, operator_request=None,
+    save(cfg.state_dir, replace(end(task, Stage.DONE), feedback_pending=False,
                                 done_at=_now(), updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "merged", repository=repository.name,
                           issue=task.issue, stage=Stage.DONE.value,
@@ -1371,7 +1363,7 @@ def _wake_reached(cfg: Config, deps: Deps) -> None:
             deps.access.reached([repositories[task.repository].repo])
         except (github_app.AppError, github_app.NoAccess):
             continue   # asked again next pass
-        save(cfg.state_dir, replace(task, park=PARK_WAKE, updated_at=_now()))
+        save(cfg.state_dir, replace(unpark(task, waking=True), updated_at=_now()))
 
 
 def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
@@ -1483,19 +1475,16 @@ def _launch_woken(cfg: Config, deps: Deps, repository: Repository,
         return ""
     if task.stage is Stage.QUEUED:   # claimed, then parked for access before its first launch
         _spawn_stage(cfg, deps, repository,
-                     replace(task, park="", park_msg_id=0, park_note="", park_reason="",
-                             hold_for_attach=False, operator_request=None), launch,
+                     unpark(task), launch,
                      gh_config=gh_config)
         return ""
     if task.stage is Stage.PR_OPEN:
         # No session to continue at pr-open: an operator wake on a parked
         # pr-open task is a fresh address-review round carrying their message.
         task = loops.reset(task, ResetCause.PR_CYCLE_STARTED)
-        task = replace(task, park="", park_msg_id=0, park_note="",
-                       hold_for_attach=False, feedback_pending=False,
+        task = replace(unpark(task), feedback_pending=False,
                        attention="operator", feedback_cursor=_cursor_now(),
-                       resume_model_override="", resume_bypass_usage=False,
-                       operator_request=None)
+                       resume_model_override="", resume_bypass_usage=False)
         _clear_wake_blocked(cfg, task.repository, task.issue)
         _spawn_stage(cfg, deps, repository, task, launch, gh_config=gh_config)
         eventlog.append_event(cfg.state_dir, "resumed", repository=repository.name,
@@ -1509,11 +1498,9 @@ def _launch_woken(cfg: Config, deps: Deps, repository: Repository,
     task, detail = _continue_or_restart(cfg, deps, repository, task, launch,
                                         gh_config=gh_config)
     _clear_wake_blocked(cfg, task.repository, task.issue)
-    save(cfg.state_dir, replace(task, park="", hold_for_attach=False,
-                                park_msg_id=0, park_note="",
+    save(cfg.state_dir, replace(unpark(task),
                                 resume_model_override="",
                                 resume_bypass_usage=False,
-                                operator_request=None,
                                 picks={**task.picks,
                                       pick_key(task.stage.value): str(entry)},
                                 updated_at=_now()))
@@ -1528,8 +1515,7 @@ def _crash_failed(task: TaskState) -> TaskState:
     whose turn failed again, the stage it recorded."""
     stage = next_stage(task)
     crashed = stage if Stage(stage) in RESPAWNABLE_STAGES else ""
-    return replace(task, stage=Stage.FAILED, crashed_stage=crashed, park="",
-                   hold_for_attach=False, operator_request=None,
+    return replace(end(task, Stage.FAILED, crashed_stage=crashed),
                    updated_at=_now())
 
 
@@ -1543,8 +1529,7 @@ def _respawn(cfg: Config, deps: Deps, repository: Repository,
     an attach notice among them."""
     detail = "after crash" if task.crashed_stage else "next launch"
     deps.github.set_status(repository, task.issue, "In progress")
-    task = replace(task, crashed_stage="", park="", park_msg_id=0,
-                   park_note="", hold_for_attach=False,
+    task = replace(unpark(task),
                    resume_model_override="", resume_bypass_usage=False,
                    **loops.crash_resume_fields(task))
     _clear_wake_blocked(cfg, task.repository, task.issue)
@@ -1730,17 +1715,17 @@ def _plan_approval(task: TaskState, artifact: str) -> PlanApprovalRequest:
 def _on_disarm_plan_approval(turn: _Turn, task: TaskState,
                              act: DisarmPlanApproval,
                              launch: Launch | None) -> TaskState:
-    task = replace(task, operator_request=None)
+    task = unpark(task)
     save(turn.cfg.state_dir, task)
     return task
 
 
 def _on_park_for_review(turn: _Turn, task: TaskState, act: ParkForReview,
                         launch: Launch | None) -> None:
-    if act.artifact is not None:
-        task = replace(task, operator_request=_plan_approval(task, act.artifact))
+    request = (task.operator_request if act.artifact is None
+               else _plan_approval(task, act.artifact))
     _park_for_review(turn.cfg, turn.deps, turn.repository, task, act.reason,
-                     dry_run=turn.dry_run)
+                     request, dry_run=turn.dry_run)
 
 
 def _on_park_for_ci(turn: _Turn, task: TaskState, act: ParkForCI,
@@ -1753,19 +1738,26 @@ def _on_retry_stage(turn: _Turn, task: TaskState, act: RetryStage,
     _retry_stage(turn.cfg, turn.deps, turn.repository, task, launch, act)
 
 
-def _stage_extra(task: TaskState, act: SetTaskStage, signal) -> dict:
-    """The fields a stage transition sets besides the stage itself: the PR
-    number a pr-open signal links, or the plan-approval request a finished
-    plan arms. Any other transition drops a request: nothing is left to
-    approve on a task that failed at the gate."""
+def _gate_request(task: TaskState, act: SetTaskStage) -> PlanApprovalRequest | None:
+    """The plan-approval request a finished plan arms. Any other transition
+    drops a request: nothing is left to approve on a task that failed at
+    the gate."""
     if act.stage is Stage.AWAITING_PLAN_REVIEW:
-        extra: dict = {"operator_request": _plan_approval(task, act.artifact),
-                       **loops.gate_fields(task)}
+        return _plan_approval(task, act.artifact)
+    return None
+
+
+def _stage_extra(task: TaskState, act: SetTaskStage, signal) -> dict:
+    """The fields a stage transition sets besides the stage itself and its
+    gate request (_gate_request): the gate's round fields, or the PR number
+    a pr-open signal links."""
+    if act.stage is Stage.AWAITING_PLAN_REVIEW:
+        extra: dict = dict(loops.gate_fields(task))
         if task.stage is Stage.PLAN:
             # The gate phase has retries of its own.
             extra.update(plan_retries=0, plan_slips=0)
         return extra
-    extra = {"operator_request": None}
+    extra = {}
     if act.stage is Stage.PR_OPEN and signal is not None:
         m = re.search(r"/pull/(\d+)", signal.artifact or signal.note or "")
         if m:
@@ -1777,7 +1769,8 @@ def _on_set_task_stage(turn: _Turn, task: TaskState, act: SetTaskStage,
                        launch: Launch | None) -> TaskState:
     cfg = turn.cfg
     clear_turn_markers(cfg.state_dir, task.repository, task.issue)
-    task = replace(task, stage=act.stage, updated_at=_now(),
+    task = replace(unpark(task, request=_gate_request(task, act)),
+                   stage=act.stage, updated_at=_now(),
                    **_stage_extra(task, act, turn.signal))
     save(cfg.state_dir, task)
     if act.stage is Stage.PR_OPEN:
@@ -2370,10 +2363,11 @@ def _wake_for_queued_message(cfg: Config, deps: Deps, task: TaskState) -> None:
         # So it parks now, as the grace park would (session ended, slot
         # freed), and wakes below.
         _end_session(cfg, deps, task.repository, task.issue)
-        task = replace(task, park=PARK_REVIEW, slot=NO_SLOT)
+        task = replace(park(task, PARK_REVIEW, request=task.operator_request),
+                       slot=NO_SLOT)
     if task.park in (PARK_HUMAN, PARK_REVIEW):
         task = loops.reset(task, ResetCause.OPERATOR_WAKE)
-        save(cfg.state_dir, replace(task, park=PARK_WAKE, updated_at=_now()))
+        save(cfg.state_dir, replace(unpark(task, waking=True), updated_at=_now()))
 
 
 def _apply_answers_intent(cfg: Config, deps: Deps, task: TaskState | None,
@@ -2422,9 +2416,7 @@ def _release_killed_task(cfg: Config, deps: Deps, by_name: dict,
         except Exception as exc:
             print(f"[warn] release failed while killing #{issue}: {exc}",
                   file=sys.stderr)
-    save(cfg.state_dir, replace(task, stage=Stage.FAILED, park="",
-                                hold_for_attach=False, operator_request=None,
-                                updated_at=_now()))
+    save(cfg.state_dir, replace(end(task, Stage.FAILED), updated_at=_now()))
 
 
 def _apply_kill_intent(cfg: Config, deps: Deps, by_name: dict,
@@ -2469,9 +2461,8 @@ def _apply_cancel_intent(cfg: Config, deps: Deps, by_name: dict,
     _end_session(cfg, deps, cancel_repository, issue)
     _cancel_board_issue(deps, by_name, cancel_repository, issue)
     if task is not None:
-        save(cfg.state_dir, replace(task, stage=Stage.CANCELED, park="",
-                                    hold_for_attach=False, slot=NO_SLOT,
-                                    operator_request=None, updated_at=_now()))
+        save(cfg.state_dir, replace(end(task, Stage.CANCELED), slot=NO_SLOT,
+                                    updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "canceled", repository=cancel_repository,
                           issue=issue, stage=task.stage.value if task else "",
                           actor=intent.actor, detail="canceled by operator")
