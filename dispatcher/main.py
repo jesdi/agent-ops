@@ -1155,54 +1155,75 @@ def _poll_prs(cfg: Config, deps: Deps, repository: Repository,
     for task in load_all(cfg.state_dir):
         if task.repository != repository.name or task.stage is not Stage.PR_OPEN:
             continue
-        try:
-            polled = _poll_pr(cfg, deps, repository, task)
-            if polled is None:
-                continue
-            task, res = polled
-        except (subprocess.CalledProcessError, OSError, host_auth.HostWait) as exc:
-            print(f"[warn] PR poll failed for #{task.issue}: {exc}",
-                  file=sys.stderr)
-            continue
-        if res.kind == "merged":
-            try:
-                _finish_merged(cfg, deps, repository, task, dry_run)
-            except (subprocess.CalledProcessError,
-                    subprocess.TimeoutExpired, OSError, host_auth.HostWait) as exc:
-                print(f"[warn] _finish_merged failed for #{task.issue}: {exc}",
-                      file=sys.stderr)
-                continue
-        elif res.kind == "closed":
-            # End the session too: the implement session is still alive at
-            # pr-open, and nothing will ever drive this task again (FAILED
-            # isn't in IN_FLIGHT_STAGES), so its session and container
-            # would otherwise hold their memory/cpu reservation until the box
-            # reboots. The worktree stays for autopsy.
-            _end_session(cfg, deps, task.repository, task.issue)
-            save(cfg.state_dir, replace(task, stage=Stage.FAILED, park="",
-                                        operator_request=None,
-                                        updated_at=_now()))
-            eventlog.append_event(cfg.state_dir, "pr-closed",
-                                  repository=repository.name, issue=task.issue,
-                                  stage=Stage.PR_OPEN.value,
-                                  detail=f"PR #{task.pr_number} closed unmerged")
-            _notify(deps, repository, task, "pr_closed",
-                    f"PR #{task.pr_number}. Worktree preserved for autopsy.")
-        elif task.park:
-            continue   # parked: only merge/close still matter
-        elif res.kind == "feedback" and not task.feedback_pending:
-            task = loops.reset(task, ResetCause.PR_CYCLE_STARTED)
-            save(cfg.state_dir, replace(task, feedback_pending=True,
-                                        attention="feedback",
-                                        updated_at=_now()))
-            eventlog.append_event(cfg.state_dir, "pr-feedback",
-                                  repository=repository.name, issue=task.issue,
-                                  stage=Stage.PR_OPEN.value,
-                                  detail=f"newest {res.latest_ts}")
-            _notify(deps, repository, task, "pr_feedback",
-                    f"PR #{task.pr_number}, newest feedback {res.latest_ts}")
-        elif res.kind in ("check-failed", "conflict") and not task.feedback_pending:
-            _pr_attention(cfg, deps, repository, task, res)
+        polled = _poll_pr_or_warn(cfg, deps, repository, task)
+        if polled is not None:
+            _react_to_pr(cfg, deps, repository, *polled, dry_run)
+
+
+def _poll_pr_or_warn(cfg: Config, deps: Deps, repository: Repository, task: TaskState
+                     ) -> "tuple[TaskState, pr_poll.PollResult] | None":
+    try:
+        return _poll_pr(cfg, deps, repository, task)
+    except (subprocess.CalledProcessError, OSError, host_auth.HostWait) as exc:
+        print(f"[warn] PR poll failed for #{task.issue}: {exc}",
+              file=sys.stderr)
+        return None
+
+
+def _react_to_pr(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
+                 res: "pr_poll.PollResult", dry_run: bool) -> None:
+    ends = {"merged": _finish_merged_or_warn, "closed": _fail_closed_pr}.get(res.kind)
+    if ends is not None:
+        ends(cfg, deps, repository, task, dry_run)
+    elif task.park or task.feedback_pending:
+        return   # parked: only merge/close still matter
+    elif res.kind == "feedback":
+        _pr_feedback(cfg, deps, repository, task, res)
+    elif res.kind in ("check-failed", "conflict"):
+        _pr_attention(cfg, deps, repository, task, res)
+
+
+def _finish_merged_or_warn(cfg: Config, deps: Deps, repository: Repository,
+                           task: TaskState, dry_run: bool) -> None:
+    try:
+        _finish_merged(cfg, deps, repository, task, dry_run)
+    except (subprocess.CalledProcessError,
+            subprocess.TimeoutExpired, OSError, host_auth.HostWait) as exc:
+        print(f"[warn] _finish_merged failed for #{task.issue}: {exc}",
+              file=sys.stderr)
+
+
+def _fail_closed_pr(cfg: Config, deps: Deps, repository: Repository,
+                    task: TaskState, dry_run: bool) -> None:
+    """End the session too: the implement session is still alive at
+    pr-open, and nothing will ever drive this task again (FAILED isn't in
+    IN_FLIGHT_STAGES), so its session and container would otherwise hold
+    their memory/cpu reservation until the box reboots. The worktree stays
+    for autopsy. A terminal task is never parked (#316)."""
+    _end_session(cfg, deps, task.repository, task.issue)
+    save(cfg.state_dir, replace(task, stage=Stage.FAILED, park="",
+                                operator_request=None,
+                                updated_at=_now()))
+    eventlog.append_event(cfg.state_dir, "pr-closed",
+                          repository=repository.name, issue=task.issue,
+                          stage=Stage.PR_OPEN.value,
+                          detail=f"PR #{task.pr_number} closed unmerged")
+    _notify(deps, repository, task, "pr_closed",
+            f"PR #{task.pr_number}. Worktree preserved for autopsy.")
+
+
+def _pr_feedback(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
+                 res: "pr_poll.PollResult") -> None:
+    task = loops.reset(task, ResetCause.PR_CYCLE_STARTED)
+    save(cfg.state_dir, replace(task, feedback_pending=True,
+                                attention="feedback",
+                                updated_at=_now()))
+    eventlog.append_event(cfg.state_dir, "pr-feedback",
+                          repository=repository.name, issue=task.issue,
+                          stage=Stage.PR_OPEN.value,
+                          detail=f"newest {res.latest_ts}")
+    _notify(deps, repository, task, "pr_feedback",
+            f"PR #{task.pr_number}, newest feedback {res.latest_ts}")
 
 
 def _pr_attention(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
