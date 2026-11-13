@@ -294,13 +294,14 @@ def test_replacing_stage_launch_clears_the_poke_clock(tmp_path, monkeypatch):
     assert (t.poked_since, t.pokes) == (0.0, 0)
 
 
-# --- the decision table (lifecycle.classify, then decide) -------------------------------
+# --- the decision table (classify, then decide) -----------------------------------------
 
 def _decide(*, waiting=True, idle=30.0, since=0.0, pokes=0, now=1_000_000.0,
             cap=10800, stall_after=600.0, signal="working"):
     """The pass's event for a live review session, and the table's answer;
     None when nothing happened."""
-    from dispatcher.lifecycle import Observation, classify, decide
+    from dispatcher.classify import Observation, classify
+    from dispatcher.lifecycle import decide
     task = TaskState(issue=N, repository=T, stage=Stage.REVIEW, slot=0, worktree="/w",
                      branch="b", title="t", updated_at="", track="standard",
                      poked_since=since, pokes=pokes)

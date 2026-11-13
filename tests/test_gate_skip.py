@@ -10,7 +10,7 @@ import dispatcher.main as main
 from dispatcher import intents as intents_mod
 from dispatcher import spec_publish
 from dispatcher.artifacts import REVIEW_PAGE_MARKER, REVIEW_PAGE_MAX_BYTES, count_open_questions
-from dispatcher.lifecycle import Observation, Reads, _skips_gate
+from dispatcher.classify import Observation, Reads, _skips_gate
 from dispatcher.state import Stage, StageSignal, TaskState, read_stage_signal, save
 
 from tests.test_gate_skip_acceptance import (BRANCH, FOLDER, ISSUE,

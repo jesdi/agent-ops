@@ -12,9 +12,10 @@ import pytest
 
 import dispatcher.main as main
 from dispatcher import eventlog, spec_publish
+from dispatcher.classify import Observation, classify
 from dispatcher.lifecycle import (At, Cause, Event, EventType, FailReason, HumanReason,
-                                  Kind, Observation, Pane, Status, classify, decide,
-                                  legacy_fields, legacy_view, occupies)
+                                  Kind, Pane, Status, decide, legacy_fields, legacy_view,
+                                  occupies)
 from dispatcher.state import (NO_SLOT, BackgroundWait, Stage, StageSignal, TaskState,
                               active, load, load_all, mark_background, mark_waiting,
                               save)

@@ -40,14 +40,14 @@ from dispatcher import implementation_grants, spec_publish, task_artifacts
 from dispatcher import base_line
 from dispatcher.artifacts import (REVIEW_PAGE, TICKETS_DIR, check_spec, check_tickets,
                                   count_open_questions, page_revision, plan_revision)
-from dispatcher.lifecycle import (AcquireSlot, ApplyRound, At,
-                                  BackgroundView, ClearTurnMarkers, EndPokeStretch,
-                                  EndSession, EnterGate, Event, EventType, FailReason,
-                                  Ignore, Kind, LinkPR, MarkAsked, Notify, Observation,
-                                  Pane, Poke, PublishSpec, Reads, RecordBackgroundWait,
-                                  Reject, ReleaseSlot, ReportCrash, ReportTaskCrash,
-                                  RespawnStage, RetryStage, Status, Transition,
-                                  artifact_path, carries, classify, config_note, decide,
+from dispatcher.classify import (BackgroundView, Observation, Reads, artifact_path,
+                                 classify, config_note)
+from dispatcher.lifecycle import (AcquireSlot, ApplyRound, At, ClearTurnMarkers,
+                                  EndPokeStretch, EndSession, EnterGate, Event, EventType,
+                                  FailReason, Ignore, Kind, LinkPR, MarkAsked, Notify, Pane,
+                                  Poke, PublishSpec, RecordBackgroundWait, Reject,
+                                  ReleaseSlot, ReportCrash, ReportTaskCrash, RespawnStage,
+                                  RetryStage, Status, Transition, carries, decide,
                                   legacy_fields, occupies, operator_request)
 from dispatcher.loops import Decision, Outcome, ResetCause
 from dispatcher.models import (Admitted, Entry, ModelPolicy,
