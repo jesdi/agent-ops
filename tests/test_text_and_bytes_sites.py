@@ -103,13 +103,14 @@ def test_an_unchanged_index_is_not_rewritten(tmp_path, monkeypatch):
 
 
 def test_a_changed_index_is_rewritten_sorted_at_0644_and_leaves_no_temp(tmp_path):
-    path = tmp_path / "index.json"
+    path = tmp_path / "idx" / "index.json"
+    path.parent.mkdir()
     task_artifacts._write(path, {"a": 1})
     with umask(0o077):
         task_artifacts._write(path, {"a": 2})
     assert path.read_bytes().decode() == json.dumps({"a": 2}, indent=2, sort_keys=True)
     assert mode(path) == 0o644
-    assert sorted(os.listdir(tmp_path)) == ["index.json"]
+    assert sorted(os.listdir(path.parent)) == ["index.json"]
 
 
 def test_no_fixed_temp_name_is_left_in_dispatcher():
