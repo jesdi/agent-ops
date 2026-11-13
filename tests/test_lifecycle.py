@@ -437,3 +437,13 @@ def test_a_pr_parked_task_ends_with_its_pr_and_notifies(event, status, notice):
     got = decide(At(S.PR_OPEN, PR), Event(event))
     assert (got.status, got.stage) == (status, S.PR_OPEN)
     assert Notify(notice) in got.actions
+
+
+@pytest.mark.parametrize("dropped", [
+    dict(build=lambda f: RUNNING), dict(move=(S.QUEUED, S.SPEC)),
+    dict(actions=(EndSession(),)), dict(derive=(lambda f: EndSession(),)),
+])
+@pytest.mark.parametrize("outcome", [Ignore("no"), Reject("no")])
+def test_a_row_that_decides_nothing_refuses_what_it_would_drop(outcome, dropped):
+    with pytest.raises(ValueError):
+        lifecycle.Row(Kind.RUNNING, E.OP_REPLY, outcome, **dropped)

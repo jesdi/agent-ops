@@ -275,7 +275,7 @@ class Event:
 class Transition:
     status: Status
     stage: Stage
-    actions: tuple = ()
+    actions: tuple[Action, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -365,6 +365,11 @@ class Flush:
 @dataclass(frozen=True)
 class TypeLoginCode:
     code: str
+
+
+Action = (AcquireSlot | ReleaseSlot | EndSession | ContinueSession | RespawnStage
+          | SpawnAddressReview | WakeBlocked | SetResumeOverride | ResetRounds | ReleaseCard
+          | CancelIssue | FinishMerged | SweepTombstone | Flush | TypeLoginCode | Notify)
 
 
 # ---- The table --------------------------------------------------------------
@@ -473,17 +478,25 @@ Outcome = Kind | Ignore | Reject
 @dataclass(frozen=True)
 class Row:
     """(from status kind, event type, named guard, to, stage move, actions).
-    `to` is the status kind a Transition enters, `build` its detail; an
-    Ignore or a Reject row has neither. `move` (from stage, to stage) applies
-    only at its from stage. An action is a value, or a function of the facts
-    that makes one. The first row whose guard passes decides."""
+    `to` is the status kind a Transition enters, `build` its detail. `move`
+    (from stage, to stage) applies only at its from stage. `actions` are
+    fixed; `derive` makes more from the facts, emitted after them. An Ignore
+    or a Reject row has no build, move or actions. The first row whose guard
+    passes decides."""
     source: Kind
     event: EventType
     to: Outcome
     guard: Guard = always
     build: Callable[[Facts], Status] | None = None
     move: tuple[Stage, Stage] | None = None
-    actions: tuple = ()
+    actions: tuple[Action, ...] = ()
+    derive: tuple[Callable[[Facts], Action], ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.to, Kind) and any((self.build, self.move, self.actions,
+                                                   self.derive)):
+            raise ValueError(f"{self.source.value} + {self.event.value}: a row that "
+                             f"decides nothing takes no build, move or actions")
 
     def decides(self, f: Facts) -> bool:
         """Is this the row for `f`, its stage move and guard included?"""
@@ -502,7 +515,6 @@ _WAITS = (K.PARKED_HUMAN, K.PARKED_ANSWERS, K.PARKED_REVIEW, K.PARKED_ACCESS)
 _REQUEST_WAITS = (K.PARKED_ANSWERS, K.PARKED_REVIEW)
 _RESUMABLE_PARKS = _WAITS + (K.PARKED_CI,)
 _PR_POKES = tuple(_PR_ATTENTION)
-_OPERATOR_RESUME = (ResetRounds(), _resume_override)
 _NOT_PARKED = Reject("the task is not parked")
 _ENDED_REJECT = Reject("the task has ended")
 
@@ -529,12 +541,13 @@ TABLE: tuple[Row, ...] = tuple([
 
     # op-resume
     *_rows(_RESUMABLE_PARKS, [E.OP_RESUME], K.WAKING, build=_wake(Cause.RESUME),
-           actions=_OPERATOR_RESUME),
+           actions=(ResetRounds(),), derive=(_resume_override,)),
     Row(K.FAILED, E.OP_RESUME, Reject("reopen the PR on GitHub or re-queue the issue"),
         guard=pr_closed),
     Row(K.FAILED, E.OP_RESUME, Reject("re-queue the issue instead"), guard=unknown_at_queued),
-    Row(K.FAILED, E.OP_RESUME, K.WAKING, build=_wake(Cause.RESUME), actions=_OPERATOR_RESUME),
-    Row(K.WAKING, E.OP_RESUME, K.WAKING, build=_stay, actions=(_resume_override,)),
+    Row(K.FAILED, E.OP_RESUME, K.WAKING, build=_wake(Cause.RESUME), actions=(ResetRounds(),),
+        derive=(_resume_override,)),
+    Row(K.WAKING, E.OP_RESUME, K.WAKING, build=_stay, derive=(_resume_override,)),
     *_rows((K.RUNNING, K.HELD_PLAN_APPROVAL, K.HELD_LOGIN, K.PARKED_PR), [E.OP_RESUME],
            _NOT_PARKED),
     *_rows((K.CANCELED, K.DONE), [E.OP_RESUME], _ENDED_REJECT),
@@ -557,18 +570,18 @@ TABLE: tuple[Row, ...] = tuple([
     # op-login-code: the pane is re-verified by the executor (left_login_prompt).
     Row(K.HELD_LOGIN, E.OP_LOGIN_CODE, Reject("no longer at a login prompt — code not typed"),
         guard=left_login_prompt),
-    Row(K.HELD_LOGIN, E.OP_LOGIN_CODE, K.RUNNING, actions=(_login_code,)),
+    Row(K.HELD_LOGIN, E.OP_LOGIN_CODE, K.RUNNING, derive=(_login_code,)),
     *_rows([k for k in K if k is not K.HELD_LOGIN], [E.OP_LOGIN_CODE],
            Reject("the task is not held at a login prompt")),
 
     # resume-admitted: the launch mode (requirement 11).
     Row(K.WAKING, E.RESUME_ADMITTED, K.WAKING, guard=launch_blocked, build=_stay,
-        actions=(_wake_blocked,)),
+        derive=(_wake_blocked,)),
     Row(K.WAKING, E.RESUME_ADMITTED, K.RUNNING, move=(Stage.PR_OPEN, Stage.ADDRESS_REVIEW),
         actions=(SpawnAddressReview(),)),
     Row(K.WAKING, E.RESUME_ADMITTED, K.RUNNING, move=(Stage.QUEUED, Stage.SPEC),
         actions=(RespawnStage(Stage.SPEC),)),
-    Row(K.WAKING, E.RESUME_ADMITTED, K.RUNNING, guard=respawns, actions=(_respawn_here,)),
+    Row(K.WAKING, E.RESUME_ADMITTED, K.RUNNING, guard=respawns, derive=(_respawn_here,)),
     Row(K.WAKING, E.RESUME_ADMITTED, K.RUNNING, actions=(ContinueSession(),)),
     *_rows([k for k in K if k is not K.WAKING], [E.RESUME_ADMITTED], Ignore("not waking")),
 
@@ -625,7 +638,7 @@ def decide(task: TaskState | At, event: Event) -> Transition | Ignore | Reject:
     if not isinstance(row.to, Kind):
         return row.to
     status = row.build(facts) if row.build else Status(row.to)
-    actions = tuple(a(facts) if callable(a) else a for a in row.actions)
+    actions = row.actions + tuple(d(facts) for d in row.derive)
     return Transition(status, row.move[1] if row.move else at.stage,
                       _with_slot(at.status, status, actions))
 
@@ -634,7 +647,8 @@ def _match(f: Facts) -> Row:
     return next(r for r in TABLE if r.decides(f))
 
 
-def _with_slot(before: Status, after: Status, actions: tuple) -> tuple:
+def _with_slot(before: Status, after: Status,
+               actions: tuple[Action, ...]) -> tuple[Action, ...]:
     """A slot is taken before the launch that needs it, and given back after
     the session ends."""
     if occupies(after) and not occupies(before):
