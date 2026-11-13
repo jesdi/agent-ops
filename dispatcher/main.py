@@ -2001,7 +2001,8 @@ def _working_resumed(turn: _Turn, saved: TaskState, launch: Launch, detail: str)
 
 def _published(turn: _Turn, task: TaskState, act: PublishSpec) -> TaskState:
     """The spec folder committed and pushed before anyone is told; the link
-    (or a local-only warning) rides in the next notice."""
+    (or a local-only warning) rides in the next notice, and the issue's
+    comment is posted after the commit, like every notice."""
     if not task.spec_path:
         return task
     pub = spec_publish.ensure_published(
@@ -2010,7 +2011,7 @@ def _published(turn: _Turn, task: TaskState, act: PublishSpec) -> TaskState:
         artifact=task.spec_path, dry_run=turn.dry_run, auth=turn.deps.github.auth)
     turn.spec_line = _spec_note(pub)
     if act.review and not pub.error:
-        _comment_spec(turn, task, pub.url)
+        turn.after.append(lambda saved: _comment_spec(turn, saved, pub.url))
     return task
 
 

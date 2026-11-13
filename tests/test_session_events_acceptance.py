@@ -502,3 +502,19 @@ def test_classify_asks_for_every_launch_the_rule_may_start(stage, at_gate, statu
             revision=PlanRevision("r.html", "fp2", ""), spec=CheckResult(ok, ""),
             launches=admitted(*_launchable(stage, at_gate, status)))
         decide(at, Event(EventType.SESSION_SIGNAL, detail))
+
+
+def test_the_plan_link_is_posted_only_after_the_gate_entry_commits(c, monkeypatch):
+    """A comment is a notification: never for a transition that did not commit."""
+    from tests.test_main import PLAN_SUMMARY, SPEC_PATH, write_tickets
+    wt = task(c, stage=Stage.PLAN, spec_path=SPEC_PATH)
+    write_tickets(wt, 2)
+    signal(wt, "awaiting-review", stage="plan", artifact=PLAN_SUMMARY, note="plan ready")
+
+    def killed(state_dir, ts):
+        raise _Killed
+    monkeypatch.setattr(main, "save", killed)
+    gh = FakeGitHub()
+    with pytest.raises(_Killed):
+        run(c, FakeSessions(alive={42}), gh)
+    assert gh.comments == []
