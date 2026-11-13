@@ -563,15 +563,17 @@ def test_quarantine_entries_keep_missing_fields_and_extra_keys(tmp_path, src):
             entry["created_at"]) == ("alpha", 95, "r", 0, "", "")
 
 
-def test_quarantine_entries_existing_skips_still_hold(tmp_path, src):
+def test_quarantine_entries_type_check_leaves_unreadable_rows_listed(tmp_path, src):
     d = tmp_path / "quarantine"
     d.mkdir(parents=True, exist_ok=True)
     (d / "alpha-73.json").write_bytes(b"\xff\xfe\xfd")
     (d / "alpha-74.json").write_text("null")
     (d / "alpha-75.json").write_text("[1, 2]")
     _quarantine(tmp_path, "alpha-76.json", **{**_GOOD, "task_issue": 999})
-    entry, = src.quarantine_entries()
-    assert (entry["repository"], entry["task_issue"]) == ("alpha", 76)
+    assert [(e["repository"], e["task_issue"], e["readable"])
+            for e in src.quarantine_entries()] == [
+        ("alpha", 73, False), ("alpha", 74, False), ("alpha", 75, False),
+        ("alpha", 76, True)]
 
 
 # gh-backed caches: rank_rows and issue_description.
