@@ -33,6 +33,18 @@ def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
+def _marker_since(path: Path) -> str | None:
+    """The `since` the marker was written with; None when unreadable or absent
+    from it. A missing file propagates: the marker is gone, not dark."""
+    try:
+        since = json.loads(path.read_text()).get("since")
+    except FileNotFoundError:
+        raise
+    except (OSError, ValueError, AttributeError):  # unreadable, bad JSON, not an object
+        return None
+    return since if isinstance(since, str) else None
+
+
 ArtifactStatus = Literal["published", "local", "expired", "unavailable"]
 
 
@@ -208,22 +220,14 @@ class Sources:
     def auth_dark_since(self) -> str | None:
         """When the dispatcher's `auth-dark` marker says the login went dark,
         None when it is absent. Read-only: only the dispatcher writes or
-        deletes it. A marker that parses to no `since` still reports dark,
-        with its mtime; one deleted mid-read reads as absent."""
+        deletes it. A marker that parses to no `since`, or cannot be read,
+        still reports dark, with its mtime; one deleted mid-read reads as
+        absent."""
         path = self.state_dir / "auth-dark"
         try:
-            try:
-                since = json.loads(path.read_text()).get("since")
-            except (ValueError, AttributeError):  # bad JSON, not an object
-                since = None
-            return since if isinstance(since, str) else _iso(path.stat().st_mtime)
+            return _marker_since(path) or _iso(path.stat().st_mtime)
         except FileNotFoundError:
             return None
-        except OSError:  # unreadable: still dark, by mtime, unless it vanished
-            try:
-                return _iso(path.stat().st_mtime)
-            except OSError:
-                return None
 
     def quarantine_entries(self) -> list[dict]:
         """Every readable quarantine record, for /api/failures and the retry

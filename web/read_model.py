@@ -365,6 +365,25 @@ def build_board_snapshot(tasks: list[TaskState], *, capacity: int,
         median_cycle_seconds=median_cycle_seconds(events))
 
 
+def _ghost_card(project: str, r: dict,
+                admissions: Mapping[tuple[str, int], TaskAdmissionView]) -> GhostCard:
+    return GhostCard(number=r["number"], repository=r["repository"],
+                     project=project, title=r.get("title", ""), url=r.get("url", ""),
+                     score=r.get("score"), boost=int(r.get("boost") or 0),
+                     admission=admissions.get((r["repository"], r["number"])))
+
+
+def _ghost_cards(tasks: list[TaskState], queues: list[tuple[str, list[dict]]],
+                 admissions: Mapping[tuple[str, int], TaskAdmissionView]) -> list[GhostCard]:
+    # Key on (repository, issue) so alpha#73 does not hide beta#73. Issue numbers
+    # are per-repo; bare numbers would wrongly suppress cross-repository candidates
+    # (cf. dispatcher/main.py:223 which acknowledges number collisions).
+    known = {(t.repository, t.issue) for t in tasks}
+    return [_ghost_card(project, r, admissions)
+            for project, rows in queues for r in rows
+            if _is_candidate(r) and (r["repository"], r["number"]) not in known]
+
+
 def build_board(tasks: list[TaskState], *, capacity: int,
                 models: dict[tuple[str, int], str],
                 events: list[dict], heartbeat: dict | None, now: datetime,
@@ -384,17 +403,7 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                 pinned_tracks: dict[tuple[str, int], str] | None = None,
                 usage: UsageView | None = None,
                 ) -> BoardView:
-    # Key on (repository, issue) so alpha#73 does not hide beta#73. Issue numbers
-    # are per-repo; bare numbers would wrongly suppress cross-repository candidates
-    # (cf. dispatcher/main.py:223 which acknowledges number collisions).
-    known = {(t.repository, t.issue) for t in tasks}
-    ghost_admissions = candidate_admissions or {}
-    ghosts = [GhostCard(number=r["number"], repository=r["repository"],
-                        project=project, title=r.get("title", ""), url=r.get("url", ""),
-                        score=r.get("score"), boost=int(r.get("boost") or 0),
-                        admission=ghost_admissions.get((r["repository"], r["number"])))
-              for project, rows in queues for r in rows
-              if _is_candidate(r) and (r["repository"], r["number"]) not in known]
+    ghosts = _ghost_cards(tasks, queues, candidate_admissions or {})
     snapshot = build_board_snapshot(
         tasks, capacity=capacity, models=models, events=events, queues=queues,
         undelivered=undelivered, wake_blocked=wake_blocked,
@@ -619,6 +628,16 @@ def model_admission_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
                               note=verdict_note(verdict, now))
 
 
+def _priority_view(usages: Mapping[str, ProviderUsage], now: datetime,
+                   pace: PaceConfig, mode: str, routed: Collection[str],
+                   pinned: Collection[str]) -> PriorityView:
+    ranked = priority.order(mode, usages, now, pace)(tuple(
+        Entry(p, "") for p in sorted(routed, key=lambda p: (p != "anthropic", p))))
+    return PriorityView(
+        mode=mode, options=[priority.AUTO, *sorted(routed)],
+        first=ranked[0].provider if ranked else "", pinned=list(pinned))
+
+
 def usage_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
                pace: PaceConfig, default_model: str, mode: str,
                routed: Collection[str],
@@ -633,8 +652,6 @@ def usage_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
     differ from the entry a task gets when a model has its own weekly window.
     anthropic is written first, so it wins a tie and the no-pace case."""
     verdict = admits(usages, default_model, now, pace)
-    ranked = priority.order(mode, usages, now, pace)(tuple(
-        Entry(p, "") for p in sorted(routed, key=lambda p: (p != "anthropic", p))))
     binding = _window_view(verdict.binding, now, pace) if verdict.binding else None
     return UsageView(
         providers=[ProviderUsageView(
@@ -646,10 +663,7 @@ def usage_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
                       admitted=verdict.admitted, note=verdict_note(verdict, now),
                       minutes_to_reset=binding.minutes_to_reset if binding else 0.0,
                       binding=binding, reason=verdict.reason),
-        priority=PriorityView(
-            mode=mode, options=[priority.AUTO, *sorted(routed)],
-            first=ranked[0].provider if ranked else "",
-            pinned=list(pinned)),
+        priority=_priority_view(usages, now, pace, mode, routed, pinned),
         auth_dark=None if auth_dark_since is None else AuthDarkView(since=auth_dark_since))
 
 
