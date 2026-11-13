@@ -161,9 +161,6 @@ def test_explicit_makefile_draft_bypasses_default_precedence(tmp_path, box, monk
         {'Makefile': 'gate:\n\t@printf "verified\\n"\n', 'GNUmakefile': 'other:\n\t@true\n'},
         {'gate_cmd': {'value': command, 'reason': 'explicit Makefile target', 'evidence': 'Makefile'}})
     repository = rec.proposal['repositories'][0]
-    # Run under `make test`, an inherited MAKELEVEL makes the child print "Entering directory".
-    for name in ('MAKELEVEL', 'MAKEFLAGS', 'MFLAGS'):
-        monkeypatch.delenv(name, raising=False)
     actual = subprocess.run(['make', '-f', 'Makefile', 'gate'], cwd=repository['clone_path'],
                             capture_output=True, text=True, timeout=10)
     assert actual.returncode == 0
