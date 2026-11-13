@@ -180,25 +180,40 @@ function columnViews(columns: Column[], degraded: QueueDegraded,
   }))
 }
 
-export function BoardPage() {
+/** The full board when it has arrived, else the saved-cards snapshot. */
+function useBoardData() {
   const boardQuery = useTasks()
   const snapshotQuery = useBoardSnapshot(!boardQuery.data)
+  const board = boardQuery.data ?? snapshotQuery.data
+  return { boardQuery, snapshotQuery, board, columns: board?.columns ?? [] }
+}
+
+type Settled = { isPending: boolean; error: Error | null }
+
+function boardLoading(board: unknown, projectPending: boolean, a: Settled, b: Settled) {
+  return projectPending || (!board && (a.isPending || b.isPending))
+}
+
+/** What stands in for the board until it can render. */
+function boardMessage(board: unknown, projectPending: boolean, a: Settled, b: Settled): ReactNode {
+  if (boardLoading(board, projectPending, a, b)) return <p className="p-4 text-ink-muted">loading board…</p>
+  return <p className="p-4 text-failed-fg">board unavailable: {a.error?.message ?? b.error?.message}</p>
+}
+
+export function BoardPage() {
+  const { boardQuery, snapshotQuery, board, columns } = useBoardData()
   const intentsQuery = usePendingIntents()
   const queue = useQueueActions()
   const wontDo = useWontDo()
 
-  const board = boardQuery.data ?? snapshotQuery.data
-  const project = useProjectBoard(board?.columns ?? [])
+  const project = useProjectBoard(columns)
   const views = columnViews(project.columns, queueDegraded(boardQuery.data, queue.queueError), wontDo.propose)
   // Anything occupied stays in the row, so a card can never disappear into
   // the strip.
   const inRow = views.filter((v) => v.count > 0)
   const tabs = useActiveColumn(inRow.map((v) => v.column.key), boardQuery.data !== undefined)
 
-  if (project.pending || (!board && (boardQuery.isPending || snapshotQuery.isPending))) return <p className="p-4 text-ink-muted">loading board…</p>
-  if (!board) {
-    return <p className="p-4 text-failed-fg">board unavailable: {boardQuery.error?.message ?? snapshotQuery.error?.message}</p>
-  }
+  if (!board || project.pending) return boardMessage(board, project.pending, boardQuery, snapshotQuery)
 
   const pendingByKey = pendingIntentsByKey(intentsQuery.data?.intents ?? [])
 

@@ -365,6 +365,25 @@ def build_board_snapshot(tasks: list[TaskState], *, capacity: int,
         median_cycle_seconds=median_cycle_seconds(events))
 
 
+def _ghost_card(project: str, r: dict,
+                admissions: Mapping[tuple[str, int], TaskAdmissionView]) -> GhostCard:
+    return GhostCard(number=r["number"], repository=r["repository"],
+                     project=project, title=r.get("title", ""), url=r.get("url", ""),
+                     score=r.get("score"), boost=int(r.get("boost") or 0),
+                     admission=admissions.get((r["repository"], r["number"])))
+
+
+def _ghost_cards(tasks: list[TaskState], queues: list[tuple[str, list[dict]]],
+                 admissions: Mapping[tuple[str, int], TaskAdmissionView]) -> list[GhostCard]:
+    # Key on (repository, issue) so alpha#73 does not hide beta#73. Issue numbers
+    # are per-repo; bare numbers would wrongly suppress cross-repository candidates
+    # (cf. dispatcher/main.py:223 which acknowledges number collisions).
+    known = {(t.repository, t.issue) for t in tasks}
+    return [_ghost_card(project, r, admissions)
+            for project, rows in queues for r in rows
+            if _is_candidate(r) and (r["repository"], r["number"]) not in known]
+
+
 def build_board(tasks: list[TaskState], *, capacity: int,
                 models: dict[tuple[str, int], str],
                 events: list[dict], heartbeat: dict | None, now: datetime,
@@ -384,17 +403,7 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                 pinned_tracks: dict[tuple[str, int], str] | None = None,
                 usage: UsageView | None = None,
                 ) -> BoardView:
-    # Key on (repository, issue) so alpha#73 does not hide beta#73. Issue numbers
-    # are per-repo; bare numbers would wrongly suppress cross-repository candidates
-    # (cf. dispatcher/main.py:223 which acknowledges number collisions).
-    known = {(t.repository, t.issue) for t in tasks}
-    ghost_admissions = candidate_admissions or {}
-    ghosts = [GhostCard(number=r["number"], repository=r["repository"],
-                        project=project, title=r.get("title", ""), url=r.get("url", ""),
-                        score=r.get("score"), boost=int(r.get("boost") or 0),
-                        admission=ghost_admissions.get((r["repository"], r["number"])))
-              for project, rows in queues for r in rows
-              if _is_candidate(r) and (r["repository"], r["number"]) not in known]
+    ghosts = _ghost_cards(tasks, queues, candidate_admissions or {})
     snapshot = build_board_snapshot(
         tasks, capacity=capacity, models=models, events=events, queues=queues,
         undelivered=undelivered, wake_blocked=wake_blocked,
