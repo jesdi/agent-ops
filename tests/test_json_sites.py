@@ -39,10 +39,64 @@ def task(**kw):
                      title="Add widget", updated_at=STAMP, **kw)
 
 
-def task_bytes(ts):
-    d = dataclasses.asdict(ts)
-    d["stage"] = ts.stage.value
-    return json.dumps(d, indent=2).encode()
+# The task document frozen field by field: a schema, default or order change must
+# be a visible edit here, not follow the production dataclass.
+TASK_JSON = """{
+  "issue": 149,
+  "repository": "portfolio_eval",
+  "stage": "@STAGE@",
+  "slot": 0,
+  "worktree": "/w/task-149",
+  "branch": "agent/task-149",
+  "title": "Add widget",
+  "updated_at": "2026-11-12T10:00:00+00:00",
+  "park": "",
+  "ci_run_id": 0,
+  "park_msg_id": 0,
+  "park_note": "",
+  "park_reason": "",
+  "hold_for_attach": false,
+  "effort": null,
+  "labels": [],
+  "track": "",
+  "base": "main",
+  "implement_providers": [],
+  "picks": {},
+  "spec_retries": 0,
+  "plan_retries": 0,
+  "plan_slips": 0,
+  "unattended_rounds": 0,
+  "gate_respawn_pending": false,
+  "pr_number": 0,
+  "feedback_cursor": "",
+  "feedback_pending": false,
+  "terminal_at": "@TERMINAL@",
+  "done_at": "",
+  "spec_path": "",
+  "ticket_count": 0,
+  "gated": false,
+  "asked": false,
+  "review_rounds": 0,
+  "gate_rounds": 0,
+  "e2e_rounds": 0,
+  "ci_rounds": 0,
+  "check_cursor": "",
+  "conflict_cursor": "",
+  "attention": "",
+  "resume_model_override": "",
+  "resume_bypass_usage": false,
+  "crashed_stage": "",
+  "unlaunched": false,
+  "background_reported": 0.0,
+  "background_seq": 0,
+  "poked_since": 0.0,
+  "pokes": 0,
+  "operator_request": null
+}"""
+
+
+def task_bytes(stage, terminal_at=""):
+    return TASK_JSON.replace("@STAGE@", stage).replace("@TERMINAL@", terminal_at).encode()
 
 
 def record_wait(sd):
@@ -82,14 +136,14 @@ def heartbeat(sd):
 def task_save(sd):
     ts = task()
     state.save(sd, ts)
-    return sd / "task-portfolio_eval-149.json", task_bytes(ts)
+    return sd / "task-portfolio_eval-149.json", task_bytes("implement")
 
 
 def task_archive(sd):
     ts = dataclasses.replace(task(), stage=Stage.DONE, terminal_at=STAMP)
     state.archive(sd, ts)
     return (state.archive_root(sd, ts.repository, ts.issue) / "task.json",
-            task_bytes(ts))
+            task_bytes("done", STAMP))
 
 
 def background(sd):
