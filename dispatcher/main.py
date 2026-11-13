@@ -318,6 +318,23 @@ def _wake(cfg: Config, task: TaskState, text: str, hold: bool = False,
                                 updated_at=_now()))
 
 
+def _signal_working_again(cfg: Config, task: TaskState) -> None:
+    """Rewrite a stopped session's stage signal as `working`, so the pass
+    after a login code does not re-park the session it re-authenticated."""
+    signal = read_stage_signal(task.worktree)
+    if signal is None or signal.status == "working":
+        return
+    by_name = {t.name: t for t in cfg.repositories}
+    model = _display_entry(cfg, by_name.get(task.repository), task)
+    try:
+        write_worktree_file(task.worktree, ".agent", "stage.json", json.dumps(
+            {"stage": task.stage.value, "status": "working", "model": model}))
+    except OSError as exc:
+        # Not written: the next pass reads the old signal and parks again.
+        print(f"[warn] stage signal of #{task.issue} not rewritten: {exc}",
+              file=sys.stderr)
+
+
 def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
                        code: str) -> None:
     """Reply to a login park = the OAuth authorization code. Raw keystrokes
@@ -345,17 +362,7 @@ def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
         return
     deps.sessions.send_text(task.repository, task.issue, code.strip())
     clear_turn_markers(cfg.state_dir, task.repository, task.issue)
-    signal = read_stage_signal(task.worktree)
-    if signal is not None and signal.status != "working":
-        by_name = {t.name: t for t in cfg.repositories}
-        model = _display_entry(cfg, by_name.get(task.repository), task)
-        try:
-            write_worktree_file(task.worktree, ".agent", "stage.json", json.dumps(
-                {"stage": task.stage.value, "status": "working", "model": model}))
-        except OSError as exc:
-            # Not written: the next pass reads the old signal and parks again.
-            print(f"[warn] stage signal of #{task.issue} not rewritten: {exc}",
-                  file=sys.stderr)
+    _signal_working_again(cfg, task)
     save(cfg.state_dir, replace(unpark(task), updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "login-code-injected",
                           repository=task.repository, issue=task.issue,
@@ -680,11 +687,10 @@ def _sync_task_tokens(cfg: Config, deps: Deps) -> None:
         print(f"[warn] task token refresh waits for the next pass: {why}", file=sys.stderr)
 
 
-def _launch_stage(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
-                  launch: Launch, spec_path: str = "",
-                  message: str = "", *, gh_config: str) -> TaskState:
-    stage, entry = launch.stage, launch.entry
-    model = entry.model_id
+def _stage_prompt(cfg: Config, repository: Repository, task: TaskState,
+                  stage: Stage, spec_path: str, message: str) -> tuple[str, list[str]]:
+    """The stage prompt with the caller's message and the queued mail, and
+    the ids of that mail (_drain)."""
     ctx = dict(
         issue_number=task.issue, issue_title=task.title,
         issue_url=_url(repository, task.issue), repo=repository.repo,
@@ -705,6 +711,15 @@ def _launch_stage(cfg: Config, deps: Deps, repository: Repository, task: TaskSta
     block, drained = _drain(cfg, task.repository, task.issue)
     if block:
         prompt = f"{prompt}\n\n{block}\n"
+    return prompt, drained
+
+
+def _launch_stage(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
+                  launch: Launch, spec_path: str = "",
+                  message: str = "", *, gh_config: str) -> TaskState:
+    stage, entry = launch.stage, launch.entry
+    model = entry.model_id
+    prompt, drained = _stage_prompt(cfg, repository, task, stage, spec_path, message)
     _heal_exclude(repository, task)
     _heal_identity(task)
     _write_working(task.worktree, stage, entry)
@@ -839,6 +854,37 @@ def _end_session(cfg: Config, deps: Deps, repository: str, issue: int) -> None:
     clear_turn_markers(cfg.state_dir, repository, issue)
 
 
+def _answers_request(task: TaskState, artifact: str) -> AnswersRequest | None:
+    """The request for the answers page a park names, bound to the page's
+    revision on disk; None without a page, or for one outside the worktree
+    (an unusable reference). Answers of an earlier revision are dropped."""
+    if not artifact:
+        return None
+    p = Path(artifact)
+    resolved = p if p.is_absolute() else Path(task.worktree) / p
+    try:
+        wt_rel = str(resolved.resolve().relative_to(Path(task.worktree).resolve()))
+    except ValueError:
+        return None
+    fingerprint, problem = page_revision(str(resolved))
+    if problem:
+        print(f"[warn] #{task.issue} answers page {wt_rel}: {problem}",
+              file=sys.stderr)
+    request = AnswersRequest(path=wt_rel, fingerprint=fingerprint)
+    answers.discard_stale(task.worktree, request.kind, request.fingerprint)
+    return request
+
+
+def _with_tail(note: str, tail: str) -> str:
+    """A park question with the session's last screen under it."""
+    return (note + ("\n\n" + tail if tail else "")).strip() or "(no detail)"
+
+
+def _asked(task: TaskState, is_answers: bool) -> bool:
+    """TaskState.asked after this park: once a spec or plan session asked."""
+    return task.asked or (is_answers and task.stage in (Stage.SPEC, Stage.PLAN))
+
+
 def _park_for_input(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
                     note: str, artifact: str = "",
                     is_answers: bool = False,
@@ -848,32 +894,13 @@ def _park_for_input(cfg: Config, deps: Deps, repository: Repository, task: TaskS
     if login is not None and _park_for_login(cfg, deps, repository, task, note,
                                              tail, login):
         return
-    resolved = ""
-    if artifact:
-        p = Path(artifact)
-        resolved = str(p if p.is_absolute() else Path(task.worktree) / p)
-    answers_request: AnswersRequest | None = None  # cleared unless valid answers path is resolved below
-    if resolved:
-        wt_abs = Path(task.worktree).resolve()
-        try:
-            wt_rel = str(Path(resolved).resolve().relative_to(wt_abs))
-            fingerprint, problem = page_revision(resolved)
-            if problem:
-                print(f"[warn] #{task.issue} answers page {wt_rel}: {problem}",
-                      file=sys.stderr)
-            answers_request = AnswersRequest(path=wt_rel, fingerprint=fingerprint)
-        except ValueError:
-            # Path escapes the worktree — treat as unusable reference.
-            resolved = ""
-    if answers_request is not None:
-        answers.discard_stale(task.worktree, answers_request.kind,
-                              answers_request.fingerprint)
+    answers_request = _answers_request(task, artifact)
     if is_answers and answers_request is None:
         note = (note + "\n\n[malformed awaiting-answers: no usable artifact path]").strip()
     msg_id = deps.notifier.send(
         "parked_question", issue=task.issue, title=task.title,
         url=_url(repository, task.issue), repository=repository.name,
-        note=(note + ("\n\n" + tail if tail else "")).strip() or "(no detail)")
+        note=_with_tail(note, tail))
     _end_session(cfg, deps, task.repository, task.issue)
     # A wake that ends here is over: the wake that follows this park says
     # for itself whether it is an attach, and on which model.
@@ -882,7 +909,7 @@ def _park_for_input(cfg: Config, deps: Deps, repository: Repository, task: TaskS
     save(cfg.state_dir, replace(parked, slot=NO_SLOT,
                                 resume_model_override="",
                                 resume_bypass_usage=False,
-                                asked=task.asked or (is_answers and task.stage in (Stage.SPEC, Stage.PLAN)),
+                                asked=_asked(task, is_answers),
                                 updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", repository=repository.name,
                           issue=task.issue, stage=task.stage.value, detail=note)
@@ -1090,28 +1117,40 @@ def _park_for_review(cfg: Config, deps: Deps, repository: Repository, task: Task
 
 def _wake_ci(cfg: Config, deps: Deps, repository: Repository) -> None:
     for task in load_all(cfg.state_dir):
-        if task.repository != repository.name or task.park != PARK_CI:
-            continue
-        try:
-            conclusion = deps.github.run_status(repository, task.ci_run_id)
-        except (subprocess.CalledProcessError, OSError, host_auth.HostWait) as exc:
-            print(f"[warn] run_status failed for #{task.issue} run {task.ci_run_id}: {exc}",
-                  file=sys.stderr)
-            continue
-        if not conclusion:
-            continue
-        if conclusion != "success":
-            dec = loops.evaluate(task, loops.FailedRun(f"run {task.ci_run_id} {conclusion}"),
-                                 cfg.loop_caps)
-            task, parked = _apply_loop_decision(
-                cfg, deps, repository, task, dec,
-                park_exhausted=lambda t, note: _park_exhausted(cfg, deps, repository, t, note))
-            if parked:
-                continue
-        reply = (f"E2E run {task.ci_run_id} concluded: {conclusion} — "
-                 f"fetch logs with: gh run view {task.ci_run_id} --log-failed")
-        _queue_message(cfg, task.repository, task.issue, reply, "dispatcher")
-        save(cfg.state_dir, replace(unpark(task, waking=True), updated_at=_now()))
+        if task.repository == repository.name and task.park == PARK_CI:
+            _check_ci_run(cfg, deps, repository, task)
+
+
+def _ci_conclusion(deps: Deps, repository: Repository, task: TaskState) -> str:
+    """The conclusion of the run a task is parked on; "" while it runs, or
+    when GitHub could not say (asked again next pass)."""
+    try:
+        return deps.github.run_status(repository, task.ci_run_id)
+    except (subprocess.CalledProcessError, OSError, host_auth.HostWait) as exc:
+        print(f"[warn] run_status failed for #{task.issue} run {task.ci_run_id}: {exc}",
+              file=sys.stderr)
+        return ""
+
+
+def _check_ci_run(cfg: Config, deps: Deps, repository: Repository,
+                  task: TaskState) -> None:
+    """Wake a CI-parked task once its run concluded. A failed run spends a
+    ci round first, and the last round parks it for the operator instead."""
+    conclusion = _ci_conclusion(deps, repository, task)
+    if not conclusion:
+        return
+    if conclusion != "success":
+        dec = loops.evaluate(task, loops.FailedRun(f"run {task.ci_run_id} {conclusion}"),
+                             cfg.loop_caps)
+        task, parked = _apply_loop_decision(
+            cfg, deps, repository, task, dec,
+            park_exhausted=lambda t, note: _park_exhausted(cfg, deps, repository, t, note))
+        if parked:
+            return
+    reply = (f"E2E run {task.ci_run_id} concluded: {conclusion} — "
+             f"fetch logs with: gh run view {task.ci_run_id} --log-failed")
+    _queue_message(cfg, task.repository, task.issue, reply, "dispatcher")
+    save(cfg.state_dir, replace(unpark(task, waking=True), updated_at=_now()))
 
 
 def _poll_pr(cfg: Config, deps: Deps, repository: Repository, task: TaskState
@@ -1749,20 +1788,27 @@ def _gate_request(task: TaskState, act: SetTaskStage) -> PlanApprovalRequest | N
 
 def _stage_extra(task: TaskState, act: SetTaskStage, signal) -> dict:
     """The fields a stage transition sets besides the stage itself and its
-    gate request (_gate_request): the gate's round fields, or the PR number
-    a pr-open signal links."""
+    gate request (_gate_request)."""
     if act.stage is Stage.AWAITING_PLAN_REVIEW:
-        extra: dict = dict(loops.gate_fields(task))
-        if task.stage is Stage.PLAN:
-            # The gate phase has retries of its own.
-            extra.update(plan_retries=0, plan_slips=0)
-        return extra
-    extra = {}
-    if act.stage is Stage.PR_OPEN and signal is not None:
-        m = re.search(r"/pull/(\d+)", signal.artifact or signal.note or "")
-        if m:
-            extra["pr_number"] = int(m.group(1))
+        return _gate_round_fields(task)
+    return _pr_link(act, signal)
+
+
+def _gate_round_fields(task: TaskState) -> dict:
+    """The gate's round fields; a plan entering the gate starts the gate
+    phase's own retries."""
+    extra = dict(loops.gate_fields(task))
+    if task.stage is Stage.PLAN:
+        extra.update(plan_retries=0, plan_slips=0)
     return extra
+
+
+def _pr_link(act: SetTaskStage, signal) -> dict:
+    """The PR number a pr-open signal links."""
+    if act.stage is not Stage.PR_OPEN or signal is None:
+        return {}
+    m = re.search(r"/pull/(\d+)", signal.artifact or signal.note or "")
+    return {"pr_number": int(m.group(1))} if m else {}
 
 
 def _on_set_task_stage(turn: _Turn, task: TaskState, act: SetTaskStage,
