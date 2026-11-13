@@ -332,6 +332,11 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
             mode=mode, routed=routed_providers(live), pinned=live.models.pinned,
             auth_dark_since=sources.auth_dark_since())
 
+    def _task_admissions(live: Config, tasks, order, usages, now) -> dict:
+        return {(t.repository, t.issue): admission
+                for t in tasks
+                if (admission := _task_admission(live, t, order, usages, now))}
+
     @app.get("/api/board", response_model=read_model.BoardView)
     def board(op: Operator = Depends(current_operator)):
         live = _cfg()
@@ -362,9 +367,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
             undelivered={(t.repository, t.issue): mail.get((t.repository, t.issue), 0)
                         for t in tasks},
             wake_blocked=sources.wake_blocked_issues(),
-            admissions={(t.repository, t.issue): admission
-                        for t in tasks
-                        if (admission := _task_admission(live, t, order, usages, now))},
+            admissions=_task_admissions(live, tasks, order, usages, now),
             candidate_admissions=_candidate_admissions(live, queues, order,
                                                        usages, now),
             projects=repository_projects,
