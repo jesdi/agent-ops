@@ -315,7 +315,7 @@ class Sources:
         try:
             # pending() == request file present OR running — inlined so the
             # running half is the value already probed above.
-            paused = running or triage.load_request(self.state_dir) is not None
+            paused = triage.load_request(self.state_dir) is not None or running
         except Exception:
             paused = running
         return paused, running

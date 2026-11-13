@@ -621,6 +621,25 @@ def test_triage_state_cached_running_true_still_pauses_claims(
     assert len(calls) == 1
 
 
+def test_triage_state_reads_request_file_on_every_call_when_running(
+        tmp_path, monkeypatch):
+    import dispatcher.triage as triage_mod
+    src, clock, calls, _ = _triage_sources(
+        tmp_path, monkeypatch, lambda n: True)
+    reads = []
+
+    def load_request(state_dir):
+        reads.append(state_dir)
+        return None
+
+    monkeypatch.setattr(triage_mod, "load_request", load_request)
+    assert src.triage_state() == (True, True)
+    clock.t += 1
+    assert src.triage_state() == (True, True)
+    assert len(calls) == 1
+    assert reads == [tmp_path, tmp_path]
+
+
 def test_triage_state_cache_follows_the_injected_clock(tmp_path, monkeypatch):
     import time
     src, clock, calls, ttl = _triage_sources(
