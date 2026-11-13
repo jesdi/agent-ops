@@ -36,28 +36,57 @@ class Kind(str, Enum):
     DONE = "done"
 
 
+class HumanReason(str, Enum):
+    """Why a task is parked for the operator (requirement 1)."""
+    DECISION = "decision"
+    STALLED = "stalled"
+    LOOP_CAP = "loop-cap"
+    BAD_SIGNAL = "bad-signal"
+    CONFIG = "config"
+    OPERATOR = "operator"
+
+
+class FailReason(str, Enum):
+    """Why a task failed (requirement 10 guards on it)."""
+    SESSION_CRASH = "session-crash"
+    TASK_CRASH = "task-crash"
+    KILLED = "killed"
+    PR_CLOSED = "pr-closed"
+    ARTIFACT = "artifact"
+    UNKNOWN = "unknown"
+
+
+class Cause(str, Enum):
+    """Why a task wakes (requirement 11); attention(kind) is one value per
+    kind of PR attention."""
+    REPLY = "reply"
+    RESUME = "resume"
+    RANKED = "ranked"
+    CI = "ci"
+    ACCESS = "access"
+    LAUNCH = "launch"
+    NEXT_STAGE = "next-stage"
+    ATTENTION_FEEDBACK = "attention(feedback)"
+    ATTENTION_CHECK_FAILED = "attention(check-failed)"
+    ATTENTION_CONFLICT = "attention(conflict)"
+    ATTENTION_OPERATOR = "attention(operator)"
+
+
 @dataclass(frozen=True)
 class Status:
     """A status kind and its detail; a field a kind does not use stays empty.
-    `reason`: of parked-human (decision | stalled | loop-cap | bad-signal |
-    config | operator) or failed (session-crash | task-crash | killed |
-    pr-closed | artifact | unknown). `path`, `fingerprint`: the page of
-    held-plan-approval, parked-review and parked-answers. `origin`, `cause`:
-    the status a waking task comes from (None for launch and next-stage) and
-    why it wakes."""
+    `reason`: a HumanReason of parked-human, a FailReason of failed. `path`,
+    `fingerprint`: the page of held-plan-approval, parked-review and
+    parked-answers. `origin`, `cause`: the status a waking task comes from
+    (None for launch and next-stage) and why it wakes."""
     kind: Kind
-    reason: str = ""
+    reason: HumanReason | FailReason | None = None
     note: str = ""
     path: str = ""
     fingerprint: str = ""
     run_id: int = 0
     origin: Status | None = None
-    cause: str = ""
-
-
-def attention(kind: str) -> str:
-    """The cause of a parked-pr task woken by its PR."""
-    return f"attention({kind})"
+    cause: Cause | None = None
 
 
 class At(NamedTuple):
@@ -97,9 +126,11 @@ def _request(status: Status) -> OperatorRequest | None:
 
 _RETIRED_STAGES = {Stage.BLOCKED: Stage.IMPLEMENT, Stage.STALLED_ON_BUDGET: Stage.SPEC}
 _ENDED = {Stage.FAILED: Kind.FAILED, Stage.DONE: Kind.DONE, Stage.CANCELED: Kind.CANCELED}
-_HUMAN_REASONS = {WHY_DECISION: "decision", WHY_STALLED: "stalled",
-                  WHY_LOOP_CAP: "loop-cap", WHY_BAD_SIGNAL: "bad-signal",
-                  WHY_CONFIG: "config", WHY_OPERATOR: "operator", "": "operator"}
+# today's park_reason spellings
+_HUMAN_REASONS = {WHY_DECISION: HumanReason.DECISION, WHY_STALLED: HumanReason.STALLED,
+                  WHY_LOOP_CAP: HumanReason.LOOP_CAP, WHY_BAD_SIGNAL: HumanReason.BAD_SIGNAL,
+                  WHY_CONFIG: HumanReason.CONFIG, WHY_OPERATOR: HumanReason.OPERATOR,
+                  "": HumanReason.OPERATOR}
 _REQUEST_PARKS = {"answers": Kind.PARKED_ANSWERS, "plan-approval": Kind.PARKED_REVIEW}
 
 
@@ -122,25 +153,25 @@ def legacy_view(t: TaskState) -> At:
 def _ended(t: TaskState) -> tuple[Stage, Status]:
     """A failed, canceled or done task, whatever park it still carries."""
     if t.stage is Stage.FAILED and t.crashed_stage:
-        return Stage(t.crashed_stage), Status(Kind.FAILED, reason="session-crash")
+        return Stage(t.crashed_stage), Status(Kind.FAILED, reason=FailReason.SESSION_CRASH)
     kind = _ENDED[t.stage]
     stage = Stage.PR_OPEN if t.pr_number else Stage.QUEUED
-    return stage, Status(kind, reason="unknown" if kind is Kind.FAILED else "")
+    return stage, Status(kind, reason=FailReason.UNKNOWN if kind is Kind.FAILED else None)
 
 
 def _retired(t: TaskState) -> tuple[Stage, Status]:
     stage = Stage.PR_OPEN if t.pr_number else _RETIRED_STAGES[t.stage]
     note = f"migrated from legacy {t.stage.value} stage"
-    return stage, Status(Kind.PARKED_HUMAN, reason="operator", note=note)
+    return stage, Status(Kind.PARKED_HUMAN, reason=HumanReason.OPERATOR, note=note)
 
 
 def _woken(t: TaskState) -> Status:
     """A queued wake keeps what it would be still parked: its origin."""
     if t.crashed_stage:
-        return Status(Kind.WAKING, origin=Status(Kind.FAILED, reason="session-crash"),
-                      cause="resume")
+        return Status(Kind.WAKING, origin=Status(Kind.FAILED, reason=FailReason.SESSION_CRASH),
+                      cause=Cause.RESUME)
     origin = _parked(t)
-    cause = "access" if origin.kind is Kind.PARKED_ACCESS else "reply"
+    cause = Cause.ACCESS if origin.kind is Kind.PARKED_ACCESS else Cause.REPLY
     return Status(Kind.WAKING, origin=origin, cause=cause)
 
 
@@ -175,9 +206,9 @@ def _parked_human(t: TaskState) -> Status:
 def _live(t: TaskState) -> tuple[Stage, Status]:
     """A task with no park field set."""
     if t.unlaunched:
-        return Stage.QUEUED, Status(Kind.WAKING, cause="launch")
+        return Stage.QUEUED, Status(Kind.WAKING, cause=Cause.LAUNCH)
     if t.stage is Stage.IMPLEMENT and implement_done(t):
-        return Stage.REVIEW, Status(Kind.WAKING, cause="next-stage")
+        return Stage.REVIEW, Status(Kind.WAKING, cause=Cause.NEXT_STAGE)
     if t.stage is Stage.PR_OPEN:
         return Stage.PR_OPEN, _at_pr(t)
     if t.stage is Stage.AWAITING_PLAN_REVIEW:
@@ -188,7 +219,7 @@ def _live(t: TaskState) -> tuple[Stage, Status]:
 def _at_pr(t: TaskState) -> Status:
     if t.feedback_pending:
         return Status(Kind.WAKING, origin=Status(Kind.PARKED_PR),
-                      cause=attention(t.attention or "feedback"))
+                      cause=Cause(f"attention({t.attention or 'feedback'})"))
     return Status(Kind.PARKED_PR)
 
 
@@ -354,12 +385,12 @@ def always(f: Facts) -> bool:
 
 
 def pr_closed(f: Facts) -> bool:
-    return f.status.reason == "pr-closed"
+    return f.status.reason is FailReason.PR_CLOSED
 
 
 def unknown_at_queued(f: Facts) -> bool:
     """A migrated failure with no known stage."""
-    return f.status.reason == "unknown" and f.stage is Stage.QUEUED
+    return f.status.reason is FailReason.UNKNOWN and f.stage is Stage.QUEUED
 
 
 def ended_this_pass(f: Facts) -> bool:
@@ -385,7 +416,7 @@ def left_login_prompt(f: Facts) -> bool:
     return f.event.left_login_prompt
 
 
-def _wake(cause: str) -> Callable[[Facts], Status]:
+def _wake(cause: Cause) -> Callable[[Facts], Status]:
     return lambda f: Status(Kind.WAKING, origin=f.status, cause=cause)
 
 
@@ -397,26 +428,27 @@ def _review_park(f: Facts) -> Status:
 
 def _wake_through_review(f: Facts) -> Status:
     """The gate session ends: the task passes through parked(review)."""
-    return Status(Kind.WAKING, origin=_review_park(f), cause="reply")
+    return Status(Kind.WAKING, origin=_review_park(f), cause=Cause.REPLY)
 
 
-_PR_ATTENTION = {EventType.PR_FEEDBACK: "feedback", EventType.PR_CHECK_FAILED: "check-failed",
-                 EventType.PR_CONFLICT: "conflict"}
+_PR_ATTENTION = {EventType.PR_FEEDBACK: Cause.ATTENTION_FEEDBACK,
+                 EventType.PR_CHECK_FAILED: Cause.ATTENTION_CHECK_FAILED,
+                 EventType.PR_CONFLICT: Cause.ATTENTION_CONFLICT}
 
 
 def _wake_for_pr(f: Facts) -> Status:
-    return Status(Kind.WAKING, origin=f.status, cause=attention(_PR_ATTENTION[f.event.type]))
+    return Status(Kind.WAKING, origin=f.status, cause=_PR_ATTENTION[f.event.type])
 
 
 def _stay(f: Facts) -> Status:
     return f.status
 
 
-def _human(reason: str, note: str = "") -> Callable[[Facts], Status]:
+def _human(reason: HumanReason, note: str = "") -> Callable[[Facts], Status]:
     return lambda f: Status(Kind.PARKED_HUMAN, reason=reason, note=note)
 
 
-def _failed(reason: str) -> Callable[[Facts], Status]:
+def _failed(reason: FailReason) -> Callable[[Facts], Status]:
     return lambda f: Status(Kind.FAILED, reason=reason)
 
 
@@ -470,14 +502,14 @@ _LIVE = tuple(k for k in K if k not in _ENDS)
 _WAITS = (K.PARKED_HUMAN, K.PARKED_ANSWERS, K.PARKED_REVIEW, K.PARKED_ACCESS)
 _REQUEST_WAITS = (K.PARKED_ANSWERS, K.PARKED_REVIEW)
 _RESUMABLE_PARKS = _WAITS + (K.PARKED_CI,)
-_PR_POKES = (E.PR_FEEDBACK, E.PR_CHECK_FAILED, E.PR_CONFLICT)
+_PR_POKES = tuple(_PR_ATTENTION)
 _OPERATOR_RESUME = (ResetRounds(), _resume_override)
 _NOT_PARKED = Reject("the task is not parked")
 _ENDED_REJECT = Reject("the task has ended")
 
 TABLE: tuple[Row, ...] = tuple([
     # op-reply: the message is queued before decide; a wake delivers it.
-    *_rows(_WAITS, [E.OP_REPLY], K.WAKING, build=_wake("reply"), actions=(ResetRounds(),)),
+    *_rows(_WAITS, [E.OP_REPLY], K.WAKING, build=_wake(Cause.REPLY), actions=(ResetRounds(),)),
     Row(K.HELD_PLAN_APPROVAL, E.OP_REPLY, K.WAKING, build=_wake_through_review,
         actions=(EndSession(), ResetRounds())),
     *_rows((K.RUNNING, K.HELD_LOGIN, K.PARKED_CI, K.PARKED_PR, K.WAKING), [E.OP_REPLY],
@@ -488,7 +520,7 @@ TABLE: tuple[Row, ...] = tuple([
     *_rows((K.CANCELED, K.DONE), [E.OP_REPLY], Ignore("the task has ended")),
 
     # op-answers
-    *_rows(_REQUEST_WAITS, [E.OP_ANSWERS], K.WAKING, build=_wake("reply"),
+    *_rows(_REQUEST_WAITS, [E.OP_ANSWERS], K.WAKING, build=_wake(Cause.REPLY),
            actions=(ResetRounds(),)),
     Row(K.HELD_PLAN_APPROVAL, E.OP_ANSWERS, K.WAKING, build=_wake_through_review,
         actions=(EndSession(), ResetRounds())),
@@ -497,26 +529,26 @@ TABLE: tuple[Row, ...] = tuple([
            [E.OP_ANSWERS], Reject("no open request")),
 
     # op-resume
-    *_rows(_RESUMABLE_PARKS, [E.OP_RESUME], K.WAKING, build=_wake("resume"),
+    *_rows(_RESUMABLE_PARKS, [E.OP_RESUME], K.WAKING, build=_wake(Cause.RESUME),
            actions=_OPERATOR_RESUME),
     Row(K.FAILED, E.OP_RESUME, Reject("reopen the PR on GitHub or re-queue the issue"),
         guard=pr_closed),
     Row(K.FAILED, E.OP_RESUME, Reject("re-queue the issue instead"), guard=unknown_at_queued),
-    Row(K.FAILED, E.OP_RESUME, K.WAKING, build=_wake("resume"), actions=_OPERATOR_RESUME),
+    Row(K.FAILED, E.OP_RESUME, K.WAKING, build=_wake(Cause.RESUME), actions=_OPERATOR_RESUME),
     Row(K.WAKING, E.OP_RESUME, K.WAKING, build=_stay, actions=(_resume_override,)),
     *_rows((K.RUNNING, K.HELD_PLAN_APPROVAL, K.HELD_LOGIN, K.PARKED_PR), [E.OP_RESUME],
            _NOT_PARKED),
     *_rows((K.CANCELED, K.DONE), [E.OP_RESUME], _ENDED_REJECT),
 
     # op-kill, op-cancel, op-park
-    *_rows(_LIVE, [E.OP_KILL], K.FAILED, build=_failed("killed"),
+    *_rows(_LIVE, [E.OP_KILL], K.FAILED, build=_failed(FailReason.KILLED),
            actions=(EndSession(), ReleaseCard())),
     *_rows(_ENDS, [E.OP_KILL], _ENDED_REJECT),
     *_rows(_LIVE + (K.FAILED,), [E.OP_CANCEL], K.CANCELED,
            actions=(EndSession(), CancelIssue())),
     Row(K.CANCELED, E.OP_CANCEL, Ignore("already canceled")),
     Row(K.DONE, E.OP_CANCEL, _ENDED_REJECT),
-    Row(K.RUNNING, E.OP_PARK, K.PARKED_HUMAN, build=_human("operator", "parked by operator"),
+    Row(K.RUNNING, E.OP_PARK, K.PARKED_HUMAN, build=_human(HumanReason.OPERATOR, "parked by operator"),
         actions=(EndSession(),)),
     Row(K.HELD_PLAN_APPROVAL, E.OP_PARK, K.PARKED_REVIEW, build=_review_park,
         actions=(EndSession(),)),
@@ -549,7 +581,7 @@ TABLE: tuple[Row, ...] = tuple([
     Row(K.FAILED, E.CANDIDATE_RANKED, K.FAILED, guard=unknown_at_queued, build=_stay,
         actions=(SweepTombstone(),)),
     # as op-resume, with no override to set
-    Row(K.FAILED, E.CANDIDATE_RANKED, K.WAKING, build=_wake("ranked"), actions=(ResetRounds(),)),
+    Row(K.FAILED, E.CANDIDATE_RANKED, K.WAKING, build=_wake(Cause.RANKED), actions=(ResetRounds(),)),
     Row(K.CANCELED, E.CANDIDATE_RANKED, K.CANCELED, actions=(SweepTombstone(),)),
     Row(K.DONE, E.CANDIDATE_RANKED, Reject("the task is done")),
     *_rows(_LIVE, [E.CANDIDATE_RANKED], Ignore("the issue has a live task")),
@@ -560,11 +592,11 @@ TABLE: tuple[Row, ...] = tuple([
 
     # ci-finished: a failed run spent a ci round (loops) before the event.
     Row(K.PARKED_CI, E.CI_FINISHED, K.PARKED_HUMAN, guard=loop_exhausted,
-        build=_human("loop-cap"), actions=(Notify("parked_question"),)),
-    Row(K.PARKED_CI, E.CI_FINISHED, K.WAKING, build=_wake("ci")),
+        build=_human(HumanReason.LOOP_CAP), actions=(Notify("parked_question"),)),
+    Row(K.PARKED_CI, E.CI_FINISHED, K.WAKING, build=_wake(Cause.CI)),
     *_rows([k for k in K if k is not K.PARKED_CI], [E.CI_FINISHED], Ignore("not waiting for CI")),
 
-    Row(K.PARKED_ACCESS, E.ACCESS_REACHED, K.WAKING, build=_wake("access")),
+    Row(K.PARKED_ACCESS, E.ACCESS_REACHED, K.WAKING, build=_wake(Cause.ACCESS)),
     *_rows([k for k in K if k is not K.PARKED_ACCESS], [E.ACCESS_REACHED],
            Ignore("not waiting for access")),
 
@@ -572,14 +604,14 @@ TABLE: tuple[Row, ...] = tuple([
     Row(K.PARKED_PR, E.PR_FEEDBACK, K.WAKING, build=_wake_for_pr,
         actions=(Notify("pr_feedback"),)),
     *_rows([K.PARKED_PR], (E.PR_CHECK_FAILED, E.PR_CONFLICT), K.PARKED_HUMAN,
-           guard=loop_exhausted, build=_human("loop-cap"), actions=(Notify("parked_question"),)),
+           guard=loop_exhausted, build=_human(HumanReason.LOOP_CAP), actions=(Notify("parked_question"),)),
     *_rows([K.PARKED_PR], (E.PR_CHECK_FAILED, E.PR_CONFLICT), K.WAKING, build=_wake_for_pr,
            actions=(Notify("pr_attention"),)),
     *_rows([k for k in K if k is not K.PARKED_PR], _PR_POKES,
            Ignore("the PR is acted on only while parked on it")),
     *_rows(_LIVE, [E.PR_MERGED], K.DONE, actions=(EndSession(), FinishMerged(),
                                                  Notify("task_done"))),
-    *_rows(_LIVE, [E.PR_CLOSED], K.FAILED, build=_failed("pr-closed"),
+    *_rows(_LIVE, [E.PR_CLOSED], K.FAILED, build=_failed(FailReason.PR_CLOSED),
            actions=(EndSession(), Notify("pr_closed"))),
     *_rows(_ENDS, (E.PR_MERGED, E.PR_CLOSED), Ignore("the task has ended")),
 ])

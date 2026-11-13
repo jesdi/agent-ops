@@ -9,7 +9,8 @@ from unittest import mock
 import pytest
 
 from dispatcher import lifecycle
-from dispatcher.lifecycle import (TABLE, AcquireSlot, At, CancelIssue,
+from dispatcher.lifecycle import (TABLE, AcquireSlot, At, CancelIssue, Cause,
+                                  FailReason, HumanReason,
                                   ContinueSession, EndSession, Event, EventType,
                                   FinishMerged, Ignore, Kind, Reject,
                                   ReleaseCard, ReleaseSlot, ResetRounds,
@@ -33,11 +34,15 @@ def task(stage=Stage.IMPLEMENT, **kw) -> TaskState:
 
 
 def human(reason, note=""):
-    return Status(Kind.PARKED_HUMAN, reason=reason, note=note)
+    return Status(Kind.PARKED_HUMAN, reason=HumanReason(reason), note=note)
+
+
+def failed(reason):
+    return Status(Kind.FAILED, reason=FailReason(reason))
 
 
 def waking(origin, cause):
-    return Status(Kind.WAKING, origin=origin, cause=cause)
+    return Status(Kind.WAKING, origin=origin, cause=Cause(cause))
 
 
 S = Stage
@@ -62,7 +67,7 @@ MIGRATION = [
     (dict(stage=S.PLAN, park="unpark-requested"), S.PLAN,
      waking(human("operator"), "reply")),
     (dict(park="unpark-requested", crashed_stage="implement"), S.IMPLEMENT,
-     waking(Status(Kind.FAILED, reason="session-crash"), "resume")),
+     waking(failed("session-crash"), "resume")),
     (dict(stage=S.SPEC, park="unpark-requested", operator_request=ANSWERS), S.SPEC,
      waking(ANSWERS_PARK, "reply")),
     (dict(stage=S.AWAITING_PLAN_REVIEW, park="unpark-requested", operator_request=PLAN),
@@ -76,12 +81,10 @@ MIGRATION = [
     (dict(stage=S.PR_OPEN), S.PR_OPEN, Status(Kind.PARKED_PR)),
     (dict(stage=S.PR_OPEN, park="parked", park_reason="loop cap"), S.PR_OPEN,
      human("loop-cap")),
-    (dict(stage=S.FAILED, crashed_stage="implement"), S.IMPLEMENT,
-     Status(Kind.FAILED, reason="session-crash")),
-    (dict(stage=S.FAILED, park="parked", pr_number=88), S.PR_OPEN,
-     Status(Kind.FAILED, reason="unknown")),
-    (dict(stage=S.FAILED, pr_number=88), S.PR_OPEN, Status(Kind.FAILED, reason="unknown")),
-    (dict(stage=S.FAILED), S.QUEUED, Status(Kind.FAILED, reason="unknown")),
+    (dict(stage=S.FAILED, crashed_stage="implement"), S.IMPLEMENT, failed("session-crash")),
+    (dict(stage=S.FAILED, park="parked", pr_number=88), S.PR_OPEN, failed("unknown")),
+    (dict(stage=S.FAILED, pr_number=88), S.PR_OPEN, failed("unknown")),
+    (dict(stage=S.FAILED), S.QUEUED, failed("unknown")),
     (dict(stage=S.DONE, pr_number=88), S.PR_OPEN, Status(Kind.DONE)),
     (dict(stage=S.CANCELED), S.QUEUED, Status(Kind.CANCELED)),
     (dict(stage=S.BLOCKED), S.IMPLEMENT,
@@ -142,10 +145,6 @@ RUNNING = Status(Kind.RUNNING)
 GATE = Status(Kind.HELD_PLAN_APPROVAL, path="review.html", fingerprint="cd34")
 LOOP_CAP = human("loop-cap")
 PR = Status(Kind.PARKED_PR)
-
-
-def failed(reason):
-    return Status(Kind.FAILED, reason=reason)
 
 
 # One task per status kind, plus the stages and details the guards read.
@@ -316,7 +315,7 @@ def test_pr_feedback_wakes_an_address_review_round():
 
 def test_an_exhausted_ci_loop_parks_for_the_operator_where_only_merge_and_close_act():
     got = decide(At(S.PR_OPEN, PR), Event(E.PR_CHECK_FAILED, exhausted=True))
-    assert got.status.kind is Kind.PARKED_HUMAN and got.status.reason == "loop-cap"
+    assert got.status.kind is Kind.PARKED_HUMAN and got.status.reason is HumanReason.LOOP_CAP
     at = At(S.PR_OPEN, got.status)
     assert isinstance(decide(at, Event(E.PR_CONFLICT)), Ignore)
     assert decide(at, Event(E.PR_MERGED)).status == Status(Kind.DONE)
@@ -343,7 +342,7 @@ def test_a_merged_pr_finishes_the_task():
 
 def test_ci_and_access_wake_their_parks():
     assert decide(At(S.IMPLEMENT, Status(Kind.PARKED_CI, run_id=991)),
-                  Event(E.CI_FINISHED)).status.cause == "ci"
+                  Event(E.CI_FINISHED)).status.cause is Cause.CI
     assert decide(At(S.QUEUED, Status(Kind.PARKED_ACCESS)), Event(E.ACCESS_REACHED)
                   ).status == waking(Status(Kind.PARKED_ACCESS), "access")
 
