@@ -660,11 +660,25 @@ def read_stage_signal(worktree: str | Path) -> StageSignal | None:
     """The session-written .agent/stage.json, read defensively for the
     dispatcher and the console alike: whatever a model put at that path, the
     answer is a signal or None, never a hang or an exception."""
+    d = read_stage_doc(worktree)
+    return stage_signal(d) if d is not None else None
+
+
+def read_stage_doc(worktree: str | Path) -> dict | None:
+    """.agent/stage.json as a JSON object, None for anything else."""
     raw = read_regular(Path(worktree) / ".agent" / "stage.json", STAGE_SIGNAL_MAX_BYTES)
     if raw is None:
         return None
     try:
         d = json.loads(raw)
+    except (ValueError, RecursionError):
+        return None
+    return d if isinstance(d, dict) else None
+
+
+def stage_signal(d: dict) -> StageSignal | None:
+    """The signal a stage.json object holds, None when it holds none."""
+    try:
         note = d.get("note", "")
         return StageSignal(
             stage=str(d["stage"]),

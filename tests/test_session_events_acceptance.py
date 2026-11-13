@@ -175,7 +175,6 @@ def test_a_dispatcher_killed_between_the_launch_and_the_commit_repeats_the_launc
         run(c, sess)
     t = load(c.state_dir, T, 42)
     assert t.at == At(Stage.SPEC, Status(Kind.RUNNING)) and sess.spawned
-    assert json.loads((wt / ".agent" / "stage.json").read_text())["status"] == "done"
     monkeypatch.setattr(main, "save", real)
     sess.ended.clear()
     run(c, sess)
@@ -183,6 +182,53 @@ def test_a_dispatcher_killed_between_the_launch_and_the_commit_repeats_the_launc
     assert t.at == At(Stage.PLAN, Status(Kind.RUNNING)) and t.spec_path == "spec.md"
     assert sess.ended == [42] and [s[1] for s in sess.spawned] == ["plan", "plan"]
     assert json.loads((wt / ".agent" / "stage.json").read_text())["status"] == "working"
+
+
+class _Killed(BaseException):
+    pass
+
+
+def test_a_dispatcher_killed_after_the_commit_leaves_no_stale_done(c, monkeypatch):
+    """Implement's `done` is gone before review starts: the pass after the
+    kill finds review working, never a `done` that opens PR 0."""
+    wt = task(c, picks={"implement": "anthropic/claude-opus-5"},
+              implement_providers=["anthropic"])
+    signal(wt, "done", note="all tickets")
+    real = main.save
+
+    def killed_after(state_dir, ts):
+        real(state_dir, ts)
+        if ts.issue == 42 and ts.stage is Stage.REVIEW:
+            raise _Killed
+    sess = FakeSessions(alive={42})
+    monkeypatch.setattr(main, "save", killed_after)
+    with pytest.raises(_Killed):
+        run(c, sess)
+    monkeypatch.setattr(main, "save", real)
+    run(c, sess)
+    t = load(c.state_dir, T, 42)
+    assert t.at == At(Stage.REVIEW, Status(Kind.RUNNING)) and t.pr_number == 0
+    assert [s[1] for s in sess.spawned] == ["review"]
+
+
+class _Hasty(FakeSessions):
+    """The new session reports before the pass that launched it is done."""
+    def spawn_stage(self, repository, issue, worktree, *a, **kw):
+        super().spawn_stage(repository, issue, worktree, *a, **kw)
+        signal(Path(worktree), "blocked", stage="review", note="which base?")
+
+
+def test_a_new_session_that_reports_at_once_keeps_its_report(c):
+    wt = task(c, picks={"implement": "anthropic/claude-opus-5"},
+              implement_providers=["anthropic"])
+    signal(wt, "done")
+    sess = _Hasty(alive={42})
+    run(c, sess)
+    assert json.loads((wt / ".agent" / "stage.json").read_text())["status"] == "blocked"
+    run(c, sess)
+    t = load(c.state_dir, T, 42)
+    assert (t.at.stage, t.at.status.kind, t.at.status.note) == (
+        Stage.REVIEW, Kind.PARKED_HUMAN, "which base?")
 
 
 # --- one transition event per applied transition, none for an Ignore --------

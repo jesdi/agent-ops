@@ -67,7 +67,7 @@ from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_POKES, NO_SL
                               holds_slot, launch_entries, load,
                               load_all, max_slots,
                               next_stage, read_background, read_session,
-                              read_stage_signal,
+                              read_stage_doc, read_stage_signal, stage_signal,
                               implement_done, resumable_crash, shown_stage,
                               end, park, save, task_key, unpark, wake)
 from dispatcher.workspace import (MissingBaseError, append_worktree_file, create_workspace,
@@ -643,7 +643,7 @@ def _write_working(worktree: str, stage: Stage, entry) -> None:
     _log_model(worktree, stage, str(entry))
 
 
-def _signal_working(worktree: str, stage: Stage, entry) -> None:
+def _signal_working(worktree: str, stage: Stage, entry, handover: dict | None = None) -> None:
     """.agent/stage.json says `working` on `stage`. An implement session's
     progress note is kept for the same stage: the tickets it counts are
     still merged on the branch, and the console shows them until the session
@@ -654,7 +654,36 @@ def _signal_working(worktree: str, stage: Stage, entry) -> None:
     if (stage is Stage.IMPLEMENT and old is not None and old.note
             and (old.stage, old.status) == (stage.value, "working")):
         doc["note"] = old.note
+    if handover is not None:
+        doc[HANDOVER] = handover
     write_worktree_file(worktree, ".agent", "stage.json", json.dumps(doc))
+
+
+# The report a launch replaced in stage.json, kept beside its `working`.
+HANDOVER = "handover"
+
+
+def _write_launching(worktree: str, stage: Stage, entry) -> None:
+    """_write_working for a launch of the table, before the session can
+    report: the report it replaces rides along as the hand-over, which the
+    pass after a dispatcher killed before the commit acts on again
+    (_handed_over), so the launch is repeated, never lost."""
+    old = read_stage_doc(worktree)
+    _signal_working(worktree, stage, entry, old.get(HANDOVER, old) if old else None)
+    _log_model(worktree, stage, str(entry))
+
+
+def _handed_over(task: TaskState, doc: dict | None) -> StageSignal | None:
+    """The report a launch replaced, while that launch never committed:
+    stage.json names the launched stage, the task still the one before."""
+    handover = doc.get(HANDOVER) if doc else None
+    if not isinstance(handover, dict) or doc.get("stage") == task.continued_stage.value:
+        return None
+    return stage_signal(handover)
+
+
+def _signal_of(task: TaskState) -> StageSignal | None:
+    return _handed_over(task, read_stage_doc(task.worktree)) or read_stage_signal(task.worktree)
 
 
 def _with_implement_provider(task: TaskState, stage: Stage, entry) -> list[str]:
@@ -1905,16 +1934,17 @@ def _handover(turn: _Turn, task: TaskState, act: RespawnStage) -> tuple[TaskStat
 def _respawned(turn: _Turn, task: TaskState, act: RespawnStage) -> TaskState:
     """The previous stage's session is usually still alive: an interactive
     session cannot exit itself, and the launch would type the next stage's
-    command INTO it. End it first. The launch is logged before it (which
-    refuses an .agent that is not a real directory); stage.json says
-    `working` only after the commit, so a dispatcher killed before the
-    commit finds the hand-over again and repeats the launch."""
+    command INTO it. End it first. stage.json says `working` before the
+    launch (which refuses an .agent that is not a real directory), so the
+    new session's own report is never overwritten and the old one is never
+    read again; it keeps the hand-over, so a dispatcher killed before the
+    commit repeats the launch."""
     task, spec_path = _handover(turn, task, act)
     launch = turn.launches[act.stage]
     _end_session(turn.cfg, turn.deps, task.repository, task.issue)
     task = loops.reset(task, ResetCause.STAGE_STARTED)
     try:
-        _log_model(task.worktree, act.stage, str(launch.entry))
+        _write_launching(task.worktree, act.stage, launch.entry)
         task = _spawned(turn.cfg, turn.deps, turn.repository, task, launch, spec_path,
                         gh_config=turn.gh_config)
     except Exception as exc:
@@ -1926,7 +1956,6 @@ def _respawned(turn: _Turn, task: TaskState, act: RespawnStage) -> TaskState:
 
 
 def _working_launched(turn: _Turn, saved: TaskState, launch: Launch) -> None:
-    _signal_working(saved.worktree, launch.stage, launch.entry)
     _stage_started(turn.cfg, saved, launch)
 
 
@@ -1953,7 +1982,7 @@ def _retried(turn: _Turn, task: TaskState, act: RetryStage) -> TaskState:
     text = f"Your .agent/stage.json was rejected: {act.reason}. {_RETRY_HINT[act.stage]}"
     launch = turn.launches[act.stage]
     try:
-        _log_model(task.worktree, act.stage, str(launch.entry))
+        _write_working(task.worktree, act.stage, launch.entry)
         task, detail = _continued(turn.cfg, turn.deps, turn.repository, task, launch,
                                   text, gh_config=turn.gh_config)
     except Exception as exc:
@@ -1964,7 +1993,6 @@ def _retried(turn: _Turn, task: TaskState, act: RetryStage) -> TaskState:
 
 
 def _working_resumed(turn: _Turn, saved: TaskState, launch: Launch, detail: str) -> None:
-    _signal_working(saved.worktree, launch.stage, launch.entry)
     if detail:
         _stage_started(turn.cfg, saved, launch)
     _resumed(turn.cfg, saved, launch, detail)
@@ -2226,7 +2254,7 @@ def _drive_task(cfg: Config, deps: Deps, repository: Repository, task: TaskState
 
 
 def _observed(turn: _Turn, task: TaskState) -> tuple[TaskState, Event | None]:
-    signal = read_stage_signal(task.worktree)
+    signal = _signal_of(task)
     policy = policy_for(turn.cfg, turn.repository)
     task, turn.signal = _adopt_track(turn.cfg, policy, task, signal, turn.dry_run)
     if task.at.status.kind is Kind.WAKING:
