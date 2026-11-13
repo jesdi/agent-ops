@@ -101,3 +101,24 @@ def test_doors_change_no_key_of_the_task_file(tmp_path):
         save(tmp_path, t)
         assert set(json.loads(
             (tmp_path / "task-portfolio_eval-42.json").read_text())) == keys
+
+
+def test_a_failed_stage_signal_ends_the_task_through_end(tmp_path, monkeypatch):
+    """awaiting-ci with no run id fails the task (SetTaskStage(FAILED)): it
+    leaves no park field a running task carried from before."""
+    from datetime import datetime, timezone
+
+    import dispatcher.main as main
+    from tests.test_main import FakeSessions, cfg, deps, make_task, patch_usage
+
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    wt = make_task(c, updated_at=datetime.now(timezone.utc).isoformat(),
+                   park_reason="decision", park_note="which DB?", park_msg_id=7,
+                   ci_run_id=991)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "implement", "status": "awaiting-ci"}))
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.stage is Stage.FAILED
+    assert fields(t) == fields(make())

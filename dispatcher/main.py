@@ -1777,21 +1777,23 @@ def _on_retry_stage(turn: _Turn, task: TaskState, act: RetryStage,
     _retry_stage(turn.cfg, turn.deps, turn.repository, task, launch, act)
 
 
-def _gate_request(task: TaskState, act: SetTaskStage) -> PlanApprovalRequest | None:
-    """The plan-approval request a finished plan arms. Any other transition
-    drops a request: nothing is left to approve on a task that failed at
-    the gate."""
+def _enter_stage(task: TaskState, act: SetTaskStage, signal) -> TaskState:
+    """task moved to act.stage with what that move sets: a terminal stage
+    ends it; a finished plan enters the gate; any other stage runs on, with
+    no request left to approve (a task that left the gate), and the PR
+    number a pr-open signal links."""
+    if act.stage in TERMINAL_STAGES:
+        return end(task, act.stage)
     if act.stage is Stage.AWAITING_PLAN_REVIEW:
-        return _plan_approval(task, act.artifact)
-    return None
+        return _enter_gate(task, act)
+    return replace(unpark(task), stage=act.stage, **_pr_link(act, signal))
 
 
-def _stage_extra(task: TaskState, act: SetTaskStage, signal) -> dict:
-    """The fields a stage transition sets besides the stage itself and its
-    gate request (_gate_request)."""
-    if act.stage is Stage.AWAITING_PLAN_REVIEW:
-        return _gate_round_fields(task)
-    return _pr_link(act, signal)
+def _enter_gate(task: TaskState, act: SetTaskStage) -> TaskState:
+    """A finished plan at the gate: held on its plan-approval request, with
+    the gate's round fields."""
+    return replace(unpark(task, request=_plan_approval(task, act.artifact)),
+                   stage=Stage.AWAITING_PLAN_REVIEW, **_gate_round_fields(task))
 
 
 def _gate_round_fields(task: TaskState) -> dict:
@@ -1815,9 +1817,7 @@ def _on_set_task_stage(turn: _Turn, task: TaskState, act: SetTaskStage,
                        launch: Launch | None) -> TaskState:
     cfg = turn.cfg
     clear_turn_markers(cfg.state_dir, task.repository, task.issue)
-    task = replace(unpark(task, request=_gate_request(task, act)),
-                   stage=act.stage, updated_at=_now(),
-                   **_stage_extra(task, act, turn.signal))
+    task = replace(_enter_stage(task, act, turn.signal), updated_at=_now())
     save(cfg.state_dir, task)
     if act.stage is Stage.PR_OPEN:
         eventlog.append_event(cfg.state_dir, "pr-opened",
