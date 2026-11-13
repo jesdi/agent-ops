@@ -17,7 +17,7 @@ from dispatcher import (board, claims, containers, github_app, herdr, priority,
 from dispatcher.config import Config, policy_for, routed_providers
 from dispatcher.models import Entry, triage_entry, tracks_text
 from dispatcher.prompts import render_triage_prompt
-from dispatcher.state import load_all
+from dispatcher.state import load_all, write_json_atomic
 from dispatcher.usage import admits, verdict_note
 from dispatcher.usage_providers import fetch_all
 
@@ -95,10 +95,7 @@ def enqueue(state_dir: str | Path) -> bool:
     if running() or load_request(state_dir) is not None:
         return False
     p = Path(state_dir) / REQUEST_FILE
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"requested_at": _now()}, indent=2))
-    tmp.replace(p)
+    write_json_atomic(p, {"requested_at": _now()}, indent=2)
     return True
 
 
@@ -138,10 +135,7 @@ def load_cursors(state_dir: str | Path) -> dict[str, str]:
 
 def save_cursors(state_dir: str | Path, cursors: dict[str, str]) -> None:
     p = Path(state_dir) / CURSORS_FILE
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(cursors, indent=2, sort_keys=True))
-    tmp.replace(p)
+    write_json_atomic(p, cursors, indent=2, sort_keys=True)
 
 
 def triage_repos(cfg: Config) -> list[str]:

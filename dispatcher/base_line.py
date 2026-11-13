@@ -6,6 +6,8 @@ import json
 import re
 from pathlib import Path
 
+from dispatcher.state import write_json_atomic
+
 _LINE = re.compile(r"^\s*Base:[ \t]*(.*?)\s*$", re.MULTILINE)
 # What `git check-ref-format --branch` accepts, within letters, digits and
 # `/ . _ -`: not HEAD; no `..`, empty part, part starting with `.` or ending
@@ -40,10 +42,7 @@ def is_recorded(state_dir: str, repository: str, issue: int, key: str) -> bool:
 def record_wait(state_dir: str, repository: str, issue: int, key: str) -> None:
     """Record the ping for `key`; atomic, so a crash never leaves a torn file."""
     p = _path(state_dir, repository, issue)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"key": key}))
-    tmp.replace(p)
+    write_json_atomic(p, {"key": key})
 
 
 def clear_wait(state_dir: str, repository: str, issue: int) -> None:
