@@ -47,7 +47,8 @@ from dispatcher.lifecycle import (AcquireSlot, Admission, ApplyRound, At, ClearT
                                   FailReason, Kind, LaunchFailure, LinkPR, MarkAsked, Notify,
                                   Pane, Poke, PublishSpec, RecordBackgroundWait, ReleaseSlot,
                                   ReportCrash, ReportTaskCrash, RespawnStage, RetryStage,
-                                  Status, Stranded, Transition, Woken, decide, legacy_fields,
+                                  Status, Stranded, Transition, WakeBlocked, Woken, decide,
+                                  legacy_fields,
                                   login_at, occupies, operator_request)
 from dispatcher.loops import Decision, Outcome, ResetCause
 from dispatcher.models import (Admitted, Entry, ModelPolicy,
@@ -2123,6 +2124,11 @@ def _pr_linked(turn: _Turn, task: TaskState, act: LinkPR) -> TaskState:
     return replace(task, pr_number=int(m.group(1)) if m else task.pr_number)
 
 
+def _wake_blocked(turn: _Turn, task: TaskState, act: WakeBlocked) -> TaskState:
+    _mark_wake_blocked(turn.cfg, turn.repository, task, act.reason)
+    return task
+
+
 def _markers_cleared(turn: _Turn, task: TaskState, act: ClearTurnMarkers) -> TaskState:
     clear_turn_markers(turn.cfg.state_dir, task.repository, task.issue)
     return replace(task, **NO_POKES)
@@ -2175,6 +2181,7 @@ _ACT: dict[type, Callable[..., TaskState]] = {
     RecordBackgroundWait: _wait_recorded, ReportCrash: _crash_reported,
     ReportTaskCrash: _task_crash_reported, MarkAsked: _marked_asked, EnterGate: _gate_entered,
     LinkPR: _pr_linked, ClearTurnMarkers: _markers_cleared, Notify: _noticed,
+    WakeBlocked: _wake_blocked,
 }
 
 
@@ -2278,7 +2285,30 @@ def _launch_due(turn: _Turn, task: TaskState, policy: ModelPolicy) -> Event | No
     if launch is None:
         return None
     turn.launches[stage] = launch
-    return Event(EventType.RESUME_ADMITTED, Woken(blocked=""))
+    return _wake_room(turn, task)
+
+
+def _wake_room(turn: _Turn, task: TaskState) -> Event | None:
+    """An admitted wake with no capacity or slot stays waking and says so
+    once (WakeBlocked): no event while its marker stands."""
+    blocked = _no_room(turn.cfg, task)
+    if not blocked:
+        _clear_wake_blocked(turn.cfg, task.repository, task.issue)
+    elif _wake_blocked_path(turn.cfg, task.repository, task.issue).exists():
+        return None
+    return Event(EventType.RESUME_ADMITTED, Woken(blocked=blocked))
+
+
+def _no_room(cfg: Config, task: TaskState) -> str:
+    """Why the wake has no room; its own file is left out (the legacy
+    `active` counts a waking review as running)."""
+    tasks = [t for t in load_all(cfg.state_dir)
+             if (t.repository, t.issue) != (task.repository, task.issue)]
+    if _box_free(cfg, tasks) <= 0:
+        return "capacity full"
+    if task.slot == NO_SLOT and allocate_slot(tasks, max_slots(cfg.capacity)) is None:
+        return "no free slot"
+    return ""
 
 
 def _observation(turn: _Turn, task: TaskState,
@@ -2966,8 +2996,15 @@ def _starving(task: TaskState) -> bool:
     """Is this task legitimately still waiting for the capacity/slot it was
     denied? Exactly the two queues that mark the marker: _resume_woken's
     (park == PARK_WAKE) and _spawn_feedback's (_awaiting_feedback_round).
-    Anything else is not waiting for anything."""
-    return task.park == PARK_WAKE or _awaiting_feedback_round(task)
+    Anything else is not waiting for anything, but the driven waits whose
+    wake the table blocks (_wake_room): a claim the App held back, review
+    after implement."""
+    return task.park == PARK_WAKE or _awaiting_feedback_round(task) or _waits_to_launch(task)
+
+
+def _waits_to_launch(task: TaskState) -> bool:
+    return not task.park and (task.unlaunched or (task.stage is Stage.IMPLEMENT
+                                                  and implement_done(task)))
 
 
 def _migrate_legacy_keys(cfg: Config) -> None:

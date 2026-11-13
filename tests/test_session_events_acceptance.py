@@ -416,15 +416,27 @@ def test_review_takes_a_slot_once_admitted(c):
                                "to": "running", "stage": "review"}]
 
 
-def test_review_with_no_free_slot_fails_the_turn(c):
-    c = dc_replace(c, capacity=0)          # two slots, both taken
+def _wake_blocked(c):
+    return [e for e in eventlog.read_tail(c.state_dir) if e["event"] == "wake-blocked"]
+
+
+def test_review_with_no_room_stays_waking_and_says_so_once(c):
+    """Requirement 7: a wake with no capacity or slot stays waking and emits
+    WakeBlocked, edge-triggered; it launches once room frees."""
+    c = dc_replace(c, capacity=2)
     _review_waits(c)
     task(c, issue=1, slot=0)
     task(c, issue=2, slot=1)
-    d = run(c, FakeSessions(alive={1, 2, 42}))
-    t = load(c.state_dir, T, 42)
-    assert (t.stage, t.crashed_stage) == (Stage.FAILED, "review")
+    sess = FakeSessions(alive={1, 2, 42})
+    for _ in range(2):
+        d = run(c, sess)
+        t = load(c.state_dir, T, 42)
+        assert t.at == At(Stage.REVIEW, Status(Kind.WAKING, cause=Cause.NEXT_STAGE))
     assert d.sessions.spawned == []
+    assert [e["detail"] for e in _wake_blocked(c)] == ["capacity full"]
+    save(c.state_dir, dc_replace(load(c.state_dir, T, 2), stage=Stage.DONE, slot=NO_SLOT))
+    run(c, sess)
+    assert load(c.state_dir, T, 42).at == At(Stage.REVIEW, Status(Kind.RUNNING))
 
 
 # --- decide runs once, on facts gathered before it -----------------------------

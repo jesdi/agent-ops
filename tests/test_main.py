@@ -925,7 +925,7 @@ def test_every_action_a_session_event_emits_has_a_handler():
     other event families wire theirs with their own tickets."""
     import typing
     from dispatcher import lifecycle as lc
-    later = {lc.ContinueSession, lc.SpawnAddressReview, lc.WakeBlocked,
+    later = {lc.ContinueSession, lc.SpawnAddressReview,
              lc.SetResumeOverride, lc.ResetRounds, lc.ReleaseCard, lc.CancelIssue,
              lc.FinishMerged, lc.SweepTombstone, lc.Flush, lc.TypeLoginCode}
     assert set(typing.get_args(lc.Action)) - later == set(main._ACT)
