@@ -1412,39 +1412,59 @@ def _admissions(cfg: Config, deps: Deps, wants: Callable[[TaskState], bool],
     Yields (repository, task, launch, gh_config) per admitted task, lazily:
     capacity and slots are re-read after the caller acted on the previous
     one. A refused task is marked and the iteration carries on."""
-    repositories = {t.name: t for t in cfg.repositories}
-    candidates = sorted(
-        [t for t in load_all(cfg.state_dir)
-         if t.repository in repositories and wants(t)],
-        key=_oldest_first(cfg),
-    )
-    for task in candidates:
-        repository = repositories[task.repository]
+    for repository, task in _admission_candidates(cfg, wants):
         launch, why = choose(repository, task)
         if why:
             _park_stranded(cfg, deps, repository, task, why)
         if launch is None:
             continue
-        if _box_free(cfg, load_all(cfg.state_dir)) <= 0:
-            _mark_wake_blocked(cfg, repository, task, "capacity full")
-            continue
-        others = [t for t in load_all(cfg.state_dir)
-                  if (t.repository, t.issue) != (task.repository, task.issue)]
-        if task.slot == NO_SLOT or any(holds_slot(t) and t.slot == task.slot
-                                       for t in others):
-            # Parked tasks gave their slot back, and a recorded slot another
-            # holder took is not ours. Take any free one: worktrees are
-            # per-issue, so the number need not be the original.
-            slot = allocate_slot(others, max_slots(cfg.capacity))
-            if slot is None:
-                _mark_wake_blocked(cfg, repository, task, "no free slot")
-                continue  # retried next pass
-            task = replace(task, slot=slot)
+        task = _seat(cfg, repository, task)
+        if task is None:
+            continue  # retried next pass
         gh_config = _task_token(cfg, deps, repository, task)
         if gh_config is None:
             continue   # stays as it was (App error) or parked for access
         yield repository, task, launch, gh_config
 
+
+
+def _admission_candidates(cfg: Config, wants: Callable[[TaskState], bool]
+                          ) -> list[tuple[Repository, TaskState]]:
+    """(repository, task) for each task `wants` picks in a configured
+    repository, oldest first."""
+    repositories = {t.name: t for t in cfg.repositories}
+    tasks = sorted(
+        [t for t in load_all(cfg.state_dir)
+         if t.repository in repositories and wants(t)],
+        key=_oldest_first(cfg),
+    )
+    return [(repositories[t.repository], t) for t in tasks]
+
+
+def _seat(cfg: Config, repository: Repository, task: TaskState) -> TaskState | None:
+    """The task on a slot it may run in, under box capacity; None when it
+    must wait (marked wake-blocked)."""
+    if _box_free(cfg, load_all(cfg.state_dir)) <= 0:
+        _mark_wake_blocked(cfg, repository, task, "capacity full")
+        return None
+    others = [t for t in load_all(cfg.state_dir)
+              if (t.repository, t.issue) != (task.repository, task.issue)]
+    if not _slot_lost(task, others):
+        return task
+    # Parked tasks gave their slot back, and a recorded slot another
+    # holder took is not ours. Take any free one: worktrees are
+    # per-issue, so the number need not be the original.
+    slot = allocate_slot(others, max_slots(cfg.capacity))
+    if slot is None:
+        _mark_wake_blocked(cfg, repository, task, "no free slot")
+        return None
+    return replace(task, slot=slot)
+
+
+def _slot_lost(task: TaskState, others: list[TaskState]) -> bool:
+    """Whether the task has no slot, or another holder took its recorded one."""
+    return task.slot == NO_SLOT or any(holds_slot(t) and t.slot == task.slot
+                                       for t in others)
 
 def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
                   dry_run: bool = False) -> None:
