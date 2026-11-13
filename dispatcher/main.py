@@ -1779,14 +1779,16 @@ def _on_retry_stage(turn: _Turn, task: TaskState, act: RetryStage,
 
 def _enter_stage(task: TaskState, act: SetTaskStage, signal) -> TaskState:
     """task moved to act.stage with what that move sets: a terminal stage
-    ends it; a finished plan enters the gate; any other stage runs on, with
-    no request left to approve (a task that left the gate), and the PR
-    number a pr-open signal links."""
+    ends it; a finished plan enters the gate; pr-open links its PR; any
+    other stage runs on, with no request left to approve (a task that left
+    the gate)."""
     if act.stage in TERMINAL_STAGES:
         return end(task, act.stage)
     if act.stage is Stage.AWAITING_PLAN_REVIEW:
         return _enter_gate(task, act)
-    return replace(unpark(task), stage=act.stage, **_pr_link(act, signal))
+    if act.stage is Stage.PR_OPEN:
+        return _enter_pr_open(task, signal)
+    return replace(unpark(task), stage=act.stage)
 
 
 def _enter_gate(task: TaskState, act: SetTaskStage) -> TaskState:
@@ -1805,12 +1807,16 @@ def _gate_round_fields(task: TaskState) -> dict:
     return extra
 
 
-def _pr_link(act: SetTaskStage, signal) -> dict:
-    """The PR number a pr-open signal links."""
-    if act.stage is not Stage.PR_OPEN or signal is None:
-        return {}
-    m = re.search(r"/pull/(\d+)", signal.artifact or signal.note or "")
-    return {"pr_number": int(m.group(1))} if m else {}
+def _enter_pr_open(task: TaskState, signal) -> TaskState:
+    """pr-open, with the PR number its signal links (kept when none)."""
+    m = re.search(r"/pull/(\d+)", _signal_text(signal))
+    return replace(unpark(task), stage=Stage.PR_OPEN,
+                   pr_number=int(m.group(1)) if m else task.pr_number)
+
+
+def _signal_text(signal) -> str:
+    """Where a stage signal may carry a link: its artifact, else its note."""
+    return (signal.artifact or signal.note or "") if signal is not None else ""
 
 
 def _on_set_task_stage(turn: _Turn, task: TaskState, act: SetTaskStage,
