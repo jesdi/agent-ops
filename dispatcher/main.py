@@ -2289,14 +2289,12 @@ def _wake_room(turn: _Turn, task: TaskState) -> Event | None:
 
 def _no_room(cfg: Config, task: TaskState) -> str:
     """Why the wake has no room; its own file is left out (the legacy
-    `active` counts a waking review as running)."""
+    `active` counts a waking review as running). A free unit has a free
+    slot: a slot is held only by a task that holds a unit, and there are two
+    more slots than units (state.max_slots); AcquireSlot still refuses."""
     tasks = [t for t in load_all(cfg.state_dir)
              if (t.repository, t.issue) != (task.repository, task.issue)]
-    if _box_free(cfg, tasks) <= 0:
-        return "capacity full"
-    if task.slot == NO_SLOT and allocate_slot(tasks, max_slots(cfg.capacity)) is None:
-        return "no free slot"
-    return ""
+    return "capacity full" if _box_free(cfg, tasks) <= 0 else ""
 
 
 def _observation(turn: _Turn, task: TaskState, policy: ModelPolicy) -> Observation:

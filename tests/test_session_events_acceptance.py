@@ -569,3 +569,4 @@ def test_a_wake_the_config_strands_parks_through_the_table(c):
     assert transitions(c) == [{"from": "waking", "event": "track-unconfigured",
                                "to": "parked-human", "stage": "implement"}]
     assert d.notifier.sent == ["parked_question"] and t.park_msg_id
+
