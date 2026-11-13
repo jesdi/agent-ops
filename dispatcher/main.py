@@ -44,11 +44,13 @@ from dispatcher.classify import (BackgroundView, Observation, Reads, artifact_pa
                                  classify, config_note)
 from dispatcher.lifecycle import (AcquireSlot, ApplyRound, At, ClearTurnMarkers,
                                   EndPokeStretch, EndSession, EnterGate, Event, EventType,
-                                  FailReason, Ignore, Kind, LinkPR, MarkAsked, Notify, Pane,
+                                  FailReason, Ignore, Kind, LaunchFailure, LinkPR,
+                                  MarkAsked, Notify, Pane,
                                   Poke, PublishSpec, RecordBackgroundWait, Reject,
                                   ReleaseSlot, ReportCrash, ReportTaskCrash, RespawnStage,
-                                  RetryStage, Status, Transition, carries, decide,
-                                  legacy_fields, occupies, operator_request)
+                                  RetryStage, Status, Transition, decide,
+                                  Stranded, Woken, legacy_fields, login_at, occupies,
+                                  operator_request)
 from dispatcher.loops import Decision, Outcome, ResetCause
 from dispatcher.models import (Admitted, Entry, ModelPolicy,
                                Order, override_refusal,
@@ -1684,7 +1686,7 @@ def _execute(turn: _Turn, task: TaskState, t: Transition) -> None:
         after = _act(turn, task, t)
     except _LaunchFailed as failed:
         turn.error, turn.after = traceback.format_exc(), []
-        turn.event = Event(EventType.LAUNCH_FAILED, stage=failed.stage)
+        turn.event = Event(EventType.LAUNCH_FAILED, LaunchFailure(failed.stage))
         t = decide(task, turn.event)
         after = _act(turn, failed.accepted, t)
     _settle(turn, _commit(turn, before, after, t), t)
@@ -1722,9 +1724,10 @@ def _look_before_poke(turn: _Turn, task: TaskState, event: Event,
                       t: Transition) -> Event | None:
     """herdr and the pane, read right before a poke is typed: a dry run
     types nothing."""
-    if event.pane is not Pane.UNSEEN or not any(isinstance(a, Poke) for a in t.actions):
+    if not any(isinstance(a, Poke) for a in t.actions) or event.detail.pane is not None:
         return None
-    return replace(event, pane=Pane.UNKNOWN if turn.dry_run else _pane(turn.deps, task))
+    pane = Pane.UNKNOWN if turn.dry_run else _pane(turn.deps, task)
+    return replace(event, detail=replace(event.detail, pane=pane))
 
 
 def _launch_action(t: Transition) -> RespawnStage | RetryStage | None:
@@ -1745,9 +1748,9 @@ def _admission(turn: _Turn, task: TaskState, event: Event, t: Transition) -> Eve
     launch, _bypass, why = _action_launch(turn.cfg, turn.repository, preview, act.stage,
                                           turn.admit, turn.order)
     if why:
-        return Event(EventType.TRACK_UNCONFIGURED, note=config_note(why))
+        return Event(EventType.TRACK_UNCONFIGURED, Stranded(config_note(why), login=""))
     if launch is None:
-        return replace(event, launch_denied=True)
+        return replace(event, detail=replace(event.detail, launch_denied=True))
     turn.launch = launch
     return None
 
@@ -1756,17 +1759,18 @@ def _at_login_prompt(turn: _Turn, task: TaskState, event: Event,
                      t: Transition) -> Event | None:
     """A park of a live session reads its pane first: one at a login prompt
     is held there instead."""
-    if event.login or not _parks_a_session(task, event, t):
+    if login_at(event) or not _parks_a_session(task, event, t):
         return None
     turn.tail = turn.deps.sessions.capture_tail(task.repository, task.issue)
     login = relogin.classify_login(turn.tail)
     if login is None:
         return None
-    return replace(event, login=login.url or "(attach to the session to see the URL)")
+    url = login.url or "(attach to the session to see the URL)"
+    return replace(event, detail=replace(event.detail, login=url))
 
 
 def _parks_a_session(task: TaskState, event: Event, t: Transition) -> bool:
-    return (carries(event.type, "login") and occupies(task.at.status)
+    return (hasattr(event.detail, "login") and occupies(task.at.status)
             and t.status.kind in (Kind.PARKED_HUMAN, Kind.PARKED_ANSWERS))
 
 
@@ -2107,7 +2111,7 @@ def _question(turn: _Turn, saved: TaskState, act: Notify) -> dict:
 
 
 def _relogin(turn: _Turn, saved: TaskState, act: Notify) -> dict:
-    return {"note": _with_tail(act.note, turn.tail or ""), "login_url": turn.event.login}
+    return {"note": _with_tail(act.note, turn.tail or ""), "login_url": login_at(turn.event)}
 
 
 def _plan_parked(turn: _Turn, saved: TaskState, act: Notify) -> dict:
@@ -2242,8 +2246,8 @@ def _launch_due(turn: _Turn, task: TaskState, policy: ModelPolicy) -> Event | No
         turn.launch, _bypass, why = _action_launch(turn.cfg, turn.repository, task, stage,
                                                    turn.admit, turn.order)
     if why:
-        return Event(EventType.TRACK_UNCONFIGURED, note=config_note(why))
-    return Event(EventType.RESUME_ADMITTED) if turn.launch else None
+        return Event(EventType.TRACK_UNCONFIGURED, Stranded(config_note(why), login=""))
+    return Event(EventType.RESUME_ADMITTED, Woken(blocked="")) if turn.launch else None
 
 
 def _observation(turn: _Turn, task: TaskState,

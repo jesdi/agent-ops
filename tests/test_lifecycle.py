@@ -19,8 +19,10 @@ from dispatcher.lifecycle import (TABLE, AcquireSlot, At, CancelIssue, Cause,
                                   Transition, TypeLoginCode, WakeBlocked,
                                   decide, graph, legacy_view, next_transitions,
                                   occupies, operator_request)
-from dispatcher.lifecycle import Notify
-from dispatcher.state import (AnswersRequest, PlanApprovalRequest, Stage,
+from dispatcher.lifecycle import (Attempt, Death, Gate, LaunchFailure, LoginCode, Notify, Pane,
+                                  Ranked, Report, ResumeChoice, Silence, Stranded, Wait,
+                                  Woken)
+from dispatcher.state import (AnswersRequest, PlanApprovalRequest, Stage, StageSignal,
                               TaskState)
 
 ANSWERS = AnswersRequest(path="q.html", fingerprint="ab12")
@@ -164,18 +166,41 @@ TASKS = [
     At(S.QUEUED, failed("unknown")), At(S.PLAN, Status(Kind.CANCELED)),
     At(S.PR_OPEN, Status(Kind.DONE)),
 ]
-FACTS = ({}, dict(blocked="capacity full"), dict(exhausted=True), dict(this_pass=True),
-         dict(left_login_prompt=True), dict(model="anthropic/claude-opus-5", bypass_usage=True),
-         dict(code="ABCD-1234"))
+PLAIN_GATE = Gate(at=False, gated=False, rounds_used=False, respawn_pending=False,
+                  armed=False)
+
+
+def report(signal: StageSignal, **facts) -> Report:
+    """A session-signal's facts: those named, the rest plain."""
+    plain = dict(round=None, gate=PLAIN_GATE, retries=frozenset(), asks=False, bad_track="",
+                 skips_gate=False, tickets=None, revision=None, spec=None, answers=None,
+                 launch_denied=False, login="")
+    return Report(signal, **{**plain, **facts})
+
+
+# The facts each event type is tried with.
+DETAILS = {
+    E.SESSION_SIGNAL: [report(StageSignal("implement", s)) for s in ("working", "blocked")],
+    E.SESSION_IDLE: [Silence(round=None, note="", pane=Pane.CLEAR, login=""),
+                     Silence(round=None, note="stalled", pane=None, login="")],
+    E.SESSION_WAITING: [Wait(round=None, note="", record=None, login="")],
+    E.SESSION_DIED: [Death(at_gate=False, rounds_used=False, launch_denied=False)],
+    E.TRACK_UNCONFIGURED: [Stranded(note="gone", login="")],
+    E.LAUNCH_FAILED: [LaunchFailure(S.SPEC)],
+    E.RESUME_ADMITTED: [Woken(""), Woken("capacity full")],
+    E.CANDIDATE_RANKED: [Ranked(False), Ranked(True)],
+    E.OP_RESUME: [ResumeChoice("", False), ResumeChoice("anthropic/claude-opus-5", True)],
+    E.OP_LOGIN_CODE: [LoginCode("ABCD-1234", False), LoginCode("ABCD-1234", True)],
+    **{e: [Attempt(False), Attempt(True)]
+       for e in (E.CI_FINISHED, E.PR_CHECK_FAILED, E.PR_CONFLICT)},
+}
 
 
 def events():
-    """Every event type with each set of facts it carries."""
-    for e, facts in itertools.product(EventType, FACTS):
-        try:
-            yield Event(e, **facts)
-        except ValueError:
-            continue
+    """Every event type with each set of facts it is tried with."""
+    for e in EventType:
+        for detail in DETAILS.get(e, [None]):
+            yield Event(e, detail)
 
 
 EVENTS = list(events())
@@ -211,8 +236,12 @@ def test_decide_answers_every_pair_without_io():
 
 
 def test_a_transition_into_failed_canceled_or_done_keeps_the_stage():
+    """Requirement 1's one exception: a launch that raises fails the task
+    at the stage that could not start."""
     ends = {Kind.FAILED, Kind.CANCELED, Kind.DONE}
     for at, event in itertools.product(TASKS, EVENTS):
+        if event.type is E.LAUNCH_FAILED:
+            continue
         got = decide(at, event)
         if isinstance(got, Transition) and got.status.kind in ends:
             assert got.stage is at.stage, (at, event)
@@ -240,32 +269,32 @@ def test_decide_reads_a_task_through_its_legacy_view():
     (At(S.QUEUED, failed("unknown")), E.OP_RESUME, "re-queue the issue instead"),
 ])
 def test_resume_of_an_unresumable_failure_is_refused(at, event, reason):
-    assert decide(at, Event(event)) == Reject(reason)
+    assert decide(at, Event(event, DETAILS.get(event, [None])[0])) == Reject(reason)
 
 
 def test_a_done_task_ranked_again_is_refused():
-    assert isinstance(decide(At(S.PR_OPEN, Status(Kind.DONE)), Event(E.CANDIDATE_RANKED)),
+    assert isinstance(decide(At(S.PR_OPEN, Status(Kind.DONE)), Event(E.CANDIDATE_RANKED, Ranked(False))),
                       Reject)
 
 
 @pytest.mark.parametrize("reason, stage", [("session-crash", S.IMPLEMENT),
                                            ("killed", S.PLAN), ("unknown", S.PR_OPEN)])
 def test_resume_of_a_failure_wakes_it(reason, stage):
-    got = decide(At(stage, failed(reason)), Event(E.OP_RESUME, model="m"))
+    got = decide(At(stage, failed(reason)), Event(E.OP_RESUME, ResumeChoice("m", False)))
     assert got == Transition(waking(failed(reason), "resume"), stage,
                              (ResetRounds(), SetResumeOverride("m", False)))
 
 
 def test_resume_admitted_respawns_a_failed_stage_with_a_slot():
     got = decide(At(S.IMPLEMENT, waking(failed("session-crash"), "resume")),
-                 Event(E.RESUME_ADMITTED))
+                 Event(E.RESUME_ADMITTED, Woken("")))
     assert got == Transition(RUNNING, S.IMPLEMENT,
                              (AcquireSlot(), RespawnStage(S.IMPLEMENT)))
 
 
 def test_resume_on_a_waking_task_replaces_its_overrides_and_stays():
     at = At(S.IMPLEMENT, waking(human("decision"), "reply"))
-    got = decide(at, Event(E.OP_RESUME, model="anthropic/claude-opus-5"))
+    got = decide(at, Event(E.OP_RESUME, ResumeChoice("anthropic/claude-opus-5", False)))
     assert got == Transition(at.status, S.IMPLEMENT,
                              (SetResumeOverride("anthropic/claude-opus-5", False),))
 
@@ -283,23 +312,23 @@ def test_park_intent_parks_a_running_task_for_the_operator():
 
 def test_a_blocked_wake_stays_waking():
     at = At(S.IMPLEMENT, waking(human("decision"), "reply"))
-    got = decide(at, Event(E.RESUME_ADMITTED, blocked="capacity full"))
+    got = decide(at, Event(E.RESUME_ADMITTED, Woken("capacity full")))
     assert got == Transition(at.status, S.IMPLEMENT, (WakeBlocked("capacity full"),))
 
 
 def test_an_admitted_reply_wake_continues_the_session():
     got = decide(At(S.IMPLEMENT, waking(human("decision"), "reply")),
-                 Event(E.RESUME_ADMITTED))
+                 Event(E.RESUME_ADMITTED, Woken("")))
     assert got == Transition(RUNNING, S.IMPLEMENT, (AcquireSlot(), ContinueSession()))
 
 
 def test_a_claim_waiting_on_the_app_spawns_spec_once_admitted():
-    got = decide(At(S.QUEUED, waking(None, "launch")), Event(E.RESUME_ADMITTED))
+    got = decide(At(S.QUEUED, waking(None, "launch")), Event(E.RESUME_ADMITTED, Woken("")))
     assert got == Transition(RUNNING, S.SPEC, (AcquireSlot(), RespawnStage(S.SPEC)))
 
 
 def test_implement_done_launches_review_once_admitted():
-    got = decide(At(S.REVIEW, waking(None, "next-stage")), Event(E.RESUME_ADMITTED))
+    got = decide(At(S.REVIEW, waking(None, "next-stage")), Event(E.RESUME_ADMITTED, Woken("")))
     assert got == Transition(RUNNING, S.REVIEW, (AcquireSlot(), RespawnStage(S.REVIEW),
                                                  Notify("review_started")))
 
@@ -325,22 +354,22 @@ def test_answers_wake_a_task_parked_for_them():
 def test_pr_feedback_wakes_an_address_review_round():
     got = decide(At(S.PR_OPEN, PR), Event(E.PR_FEEDBACK))
     assert got.status == waking(PR, "attention(feedback)")
-    got = decide(At(S.PR_OPEN, got.status), Event(E.RESUME_ADMITTED))
+    got = decide(At(S.PR_OPEN, got.status), Event(E.RESUME_ADMITTED, Woken("")))
     assert got == Transition(RUNNING, S.ADDRESS_REVIEW, (AcquireSlot(), SpawnAddressReview()))
 
 
 def test_an_exhausted_ci_loop_parks_for_the_operator_where_only_merge_and_close_act():
-    got = decide(At(S.PR_OPEN, PR), Event(E.PR_CHECK_FAILED, exhausted=True))
+    got = decide(At(S.PR_OPEN, PR), Event(E.PR_CHECK_FAILED, Attempt(True)))
     assert got.status.kind is Kind.PARKED_HUMAN and got.status.reason is HumanReason.LOOP_CAP
     at = At(S.PR_OPEN, got.status)
-    assert isinstance(decide(at, Event(E.PR_CONFLICT)), Ignore)
+    assert isinstance(decide(at, Event(E.PR_CONFLICT, Attempt(False))), Ignore)
     assert decide(at, Event(E.PR_MERGED)).status == Status(Kind.DONE)
 
 
 def test_reply_to_an_exhausted_pr_task_resets_the_rounds_and_wakes_address_review():
     got = decide(At(S.PR_OPEN, LOOP_CAP), Event(E.OP_REPLY))
     assert got == Transition(waking(LOOP_CAP, "reply"), S.PR_OPEN, (ResetRounds(),))
-    got = decide(At(S.PR_OPEN, got.status), Event(E.RESUME_ADMITTED))
+    got = decide(At(S.PR_OPEN, got.status), Event(E.RESUME_ADMITTED, Woken("")))
     assert SpawnAddressReview() in got.actions and got.stage is S.ADDRESS_REVIEW
 
 
@@ -358,22 +387,22 @@ def test_a_merged_pr_finishes_the_task():
 
 def test_ci_and_access_wake_their_parks():
     assert decide(At(S.IMPLEMENT, Status(Kind.PARKED_CI, run_id=991)),
-                  Event(E.CI_FINISHED)).status.cause is Cause.CI
+                  Event(E.CI_FINISHED, Attempt(False))).status.cause is Cause.CI
     assert decide(At(S.QUEUED, Status(Kind.PARKED_ACCESS)), Event(E.ACCESS_REACHED)
                   ).status == waking(Status(Kind.PARKED_ACCESS), "access")
 
 
 def test_a_failed_task_ranked_again_wakes_in_place():
-    got = decide(At(S.REVIEW, failed("task-crash")), Event(E.CANDIDATE_RANKED))
+    got = decide(At(S.REVIEW, failed("task-crash")), Event(E.CANDIDATE_RANKED, Ranked(False)))
     assert got == Transition(waking(failed("task-crash"), "ranked"), S.REVIEW, (ResetRounds(),))
 
 
 @pytest.mark.parametrize("at", [At(S.PLAN, Status(Kind.CANCELED)),
                                 At(S.PR_OPEN, failed("pr-closed"))])
 def test_a_tombstone_ranked_again_is_swept_unless_written_this_pass(at):
-    assert decide(at, Event(E.CANDIDATE_RANKED)) == Transition(
+    assert decide(at, Event(E.CANDIDATE_RANKED, Ranked(False))) == Transition(
         at.status, at.stage, (SweepTombstone(),))
-    assert isinstance(decide(at, Event(E.CANDIDATE_RANKED, this_pass=True)), Ignore)
+    assert isinstance(decide(at, Event(E.CANDIDATE_RANKED, Ranked(True))), Ignore)
 
 
 def test_kill_and_cancel_end_the_task_at_its_stage():
@@ -385,11 +414,11 @@ def test_kill_and_cancel_end_the_task_at_its_stage():
 
 def test_a_login_code_resumes_a_held_session_still_at_its_prompt():
     at = At(S.SPEC, Status(Kind.HELD_LOGIN))
-    assert decide(at, Event(E.OP_LOGIN_CODE, code="ABCD-1234")) == Transition(
+    assert decide(at, Event(E.OP_LOGIN_CODE, LoginCode("ABCD-1234", False))) == Transition(
         RUNNING, S.SPEC, (TypeLoginCode("ABCD-1234"),))
-    assert decide(at, Event(E.OP_LOGIN_CODE, left_login_prompt=True)) == Reject(
+    assert decide(at, Event(E.OP_LOGIN_CODE, LoginCode("", True))) == Reject(
         "no longer at a login prompt — code not typed")
-    assert isinstance(decide(At(S.IMPLEMENT, RUNNING), Event(E.OP_LOGIN_CODE)), Reject)
+    assert isinstance(decide(At(S.IMPLEMENT, RUNNING), Event(E.OP_LOGIN_CODE, LoginCode("", False))), Reject)
 
 
 def test_next_transitions_of_a_task_parked_on_a_decision():
@@ -427,13 +456,13 @@ def test_park_intent_at_the_gate_parks_it_for_review():
 
 def test_an_unknown_failure_at_queued_ranked_again_is_swept_unless_written_this_pass():
     at = At(S.QUEUED, failed("unknown"))
-    assert decide(at, Event(E.CANDIDATE_RANKED)) == Transition(
+    assert decide(at, Event(E.CANDIDATE_RANKED, Ranked(False))) == Transition(
         at.status, S.QUEUED, (SweepTombstone(),))
-    assert isinstance(decide(at, Event(E.CANDIDATE_RANKED, this_pass=True)), Ignore)
+    assert isinstance(decide(at, Event(E.CANDIDATE_RANKED, Ranked(True))), Ignore)
 
 
 def test_resume_of_a_login_hold_is_refused():
-    assert isinstance(decide(At(S.SPEC, Status(Kind.HELD_LOGIN)), Event(E.OP_RESUME)), Reject)
+    assert isinstance(decide(At(S.SPEC, Status(Kind.HELD_LOGIN)), Event(E.OP_RESUME, ResumeChoice("", False))), Reject)
 
 
 @pytest.mark.parametrize("at", [At(S.IMPLEMENT, failed("killed")),
@@ -463,17 +492,30 @@ def test_a_row_that_decides_nothing_refuses_what_it_would_drop(outcome, dropped)
         lifecycle.Row(Kind.RUNNING, E.OP_REPLY, outcome, **dropped)
 
 
-@pytest.mark.parametrize("event, facts", [
-    (E.OP_REPLY, dict(code="ABCD-1234")), (E.OP_KILL, dict(model="m")),
-    (E.PR_FEEDBACK, dict(exhausted=True)), (E.OP_RESUME, dict(this_pass=True)),
+@pytest.mark.parametrize("event, detail", [
+    (E.OP_REPLY, LoginCode("ABCD-1234", False)), (E.OP_KILL, ResumeChoice("m", False)),
+    (E.PR_FEEDBACK, Attempt(True)), (E.OP_RESUME, Ranked(True)),
+    (E.SESSION_SIGNAL, Silence(round=None, note="", pane=None, login="")),
 ])
-def test_an_event_refuses_facts_its_type_does_not_carry(event, facts):
+def test_an_event_refuses_facts_its_type_does_not_carry(event, detail):
     with pytest.raises(ValueError):
-        Event(event, **facts)
+        Event(event, detail)
+
+
+@pytest.mark.parametrize("event", [E.SESSION_SIGNAL, E.SESSION_DIED, E.CI_FINISHED,
+                                   E.RESUME_ADMITTED, E.LAUNCH_FAILED])
+def test_an_event_refuses_to_go_without_its_facts(event):
+    with pytest.raises(ValueError):
+        Event(event)
+
+
+def test_a_fact_left_out_is_a_type_error():
+    with pytest.raises(TypeError):
+        Report(StageSignal("implement", "done"))
 
 
 def test_a_login_code_is_in_no_repr_or_reason():
-    event = Event(E.OP_LOGIN_CODE, code="ABCD-1234")
+    event = Event(E.OP_LOGIN_CODE, LoginCode("ABCD-1234", False))
     assert "ABCD-1234" not in repr(event)
     for at in TASKS:
         assert "ABCD-1234" not in repr(decide(at, event)), at

@@ -369,83 +369,147 @@ class EventType(str, Enum):
 
 class Pane(str, Enum):
     """What herdr and the pane say right before a poke is typed."""
-    UNSEEN = ""          # not looked at yet: a poke is due
     CLEAR = "clear"      # a stopped session at its composer
     UNKNOWN = "unknown"  # herdr or the pane cannot be read: hold
     WORKING = "working"  # the session started a turn after the idle read
     PROMPT = "prompt"    # a permission, trust or login prompt
 
 
+# Each event family carries its own facts, every one of them required: a fact
+# the executor did not gather is a TypeError where the facts are built, never a
+# default a rule then reads (decide reads no file, clock or session).
+
 @dataclass(frozen=True)
-class Session:
-    """What the rules of a session event read: the stage signal and the facts
-    classify gathered from the task and the worktree for it."""
-    signal: StageSignal | None = None
-    round: Decision | None = None        # a working report's round the policy counts
-    at_gate: bool = False                # the plan session runs at the review gate
-    gated: bool = False                  # the task waited at the gate once
-    retries: frozenset[Retry] = frozenset()   # the budgets with a retry left
-    rounds_used: bool = False            # the gate's unattended rounds are used up
-    respawn_pending: bool = False        # a gate respawn prepaid the next round
-    armed: bool = False                  # the request is armed for the plan on disk
-    skips_gate: bool = False
-    asks: bool = False                   # a park for answers marks the task as asking
-    bad_track: str = ""                  # why a done report's track is refused
-    tickets: CheckResult | None = None
-    revision: PlanRevision | None = None
-    spec: CheckResult | None = None
-    answers: tuple[str, str] | None = None   # the answers page: (path, fingerprint)
+class Gate:
+    """The plan review gate, as a report reads it."""
+    at: bool                 # the plan session runs at the gate
+    gated: bool              # the task waited at the gate once
+    rounds_used: bool        # the gate's unattended rounds are used up
+    respawn_pending: bool    # a gate respawn prepaid the next round
+    armed: bool              # the request is armed for the plan on disk
+
+
+@dataclass(frozen=True)
+class Report:
+    """session-signal: the stage signal and what the worktree says about it."""
+    signal: StageSignal
+    round: Decision | None           # a working report's round the policy counts
+    gate: Gate
+    retries: frozenset[Retry]        # the budgets with a retry left
+    asks: bool                       # a park for answers marks the task as asking
+    bad_track: str                   # why a done report's track is refused
+    skips_gate: bool
+    tickets: CheckResult | None      # None: not read for this report
+    revision: PlanRevision | None
+    spec: CheckResult | None
+    answers: tuple[str, str] | None  # the answers page: (path, fingerprint)
+    launch_denied: bool              # the launch the rule names is not admitted now
+    login: str                       # the pane is at a login prompt: its URL
+
+
+@dataclass(frozen=True)
+class Silence:
+    """session-idle: a silent or stopped session."""
+    round: Decision | None
+    note: str                 # why it parks stalled; "" while it is poked
+    pane: Pane | None         # the look before a poke; None: not looked at, a poke is due
+    login: str
+
+
+@dataclass(frozen=True)
+class Wait:
+    """session-waiting: a background wait in force."""
+    round: Decision | None
+    note: str                         # the cap is reached: why it parks
+    record: tuple[float, int] | None  # a background report to record: (reported, seq)
+    login: str
+
+
+@dataclass(frozen=True)
+class Death:
+    """session-died."""
+    at_gate: bool
+    rounds_used: bool
+    launch_denied: bool
+
+
+@dataclass(frozen=True)
+class Stranded:
+    """track-unconfigured: the config strands the task."""
+    note: str                 # the question the park asks
+    login: str
+
+
+@dataclass(frozen=True)
+class LaunchFailure:
+    """launch-failed."""
+    stage: Stage              # the stage whose launch raised
+
+
+@dataclass(frozen=True)
+class Woken:
+    """resume-admitted."""
+    blocked: str              # why the launch cannot start now; "" when it can
+
+
+@dataclass(frozen=True)
+class Ranked:
+    """candidate-ranked."""
+    this_pass: bool           # the task ended in this pass
+
+
+@dataclass(frozen=True)
+class ResumeChoice:
+    """op-resume."""
+    model: str                # the model override
+    bypass_usage: bool        # launch past the usage gate
+
+
+@dataclass(frozen=True)
+class LoginCode:
+    """op-login-code."""
+    code: str = field(repr=False)  # never logged
+    left_login_prompt: bool   # the pane shows no login prompt any more
+
+
+@dataclass(frozen=True)
+class Attempt:
+    """ci-finished, pr-check-failed, pr-conflict."""
+    exhausted: bool           # no ci round left
+
+
+Detail = (Report | Silence | Wait | Death | Stranded | LaunchFailure | Woken | Ranked
+          | ResumeChoice | LoginCode | Attempt)
+_DETAIL: dict[EventType, type] = {
+    EventType.SESSION_SIGNAL: Report, EventType.SESSION_IDLE: Silence,
+    EventType.SESSION_WAITING: Wait, EventType.SESSION_DIED: Death,
+    EventType.TRACK_UNCONFIGURED: Stranded, EventType.LAUNCH_FAILED: LaunchFailure,
+    EventType.RESUME_ADMITTED: Woken, EventType.CANDIDATE_RANKED: Ranked,
+    EventType.OP_RESUME: ResumeChoice, EventType.OP_LOGIN_CODE: LoginCode,
+    EventType.CI_FINISHED: Attempt, EventType.PR_CHECK_FAILED: Attempt,
+    EventType.PR_CONFLICT: Attempt}
+# The facts a live session's park reads: the login prompt its pane shows.
+_LOGIN_FACTS = (Report, Silence, Wait, Stranded)
 
 
 @dataclass(frozen=True)
 class Event:
-    """An event and the facts the executor read for it (decide reads no file,
-    clock or session). Every default is the plain case; a fact is set only on
-    the event types of _CARRIED."""
+    """An event and the facts the executor gathered for it: exactly the
+    detail type of its family (_DETAIL), or None for a type that has none."""
     type: EventType
-    blocked: str = ""              # why the launch cannot start now
-    exhausted: bool = False        # no ci round left
-    this_pass: bool = False        # the task ended in this pass
-    left_login_prompt: bool = False  # the pane shows no login prompt any more
-    model: str = ""                # the model override
-    bypass_usage: bool = False     # launch past the usage gate
-    code: str = field(default="", repr=False)  # never logged
-    session: Session | None = None   # what the session's rules read
-    note: str = ""                 # the question a park asks the operator
-    launch_denied: bool = False    # the launch the rule names is not admitted now
-    login: str = ""                # the pane is at a login prompt: its URL
-    pane: Pane = Pane.UNSEEN       # the look before a poke
-    record: tuple[float, int] | None = None  # a background report to record: (reported, seq)
-    stage: Stage | None = None     # the stage whose launch raised
+    detail: Detail | None = None
 
     def __post_init__(self) -> None:
-        stray = [name for name, types in _CARRIED.items()
-                 if getattr(self, name) and self.type not in types]
-        if stray:
-            raise ValueError(f"{self.type.value} carries no {', '.join(stray)}")
+        want = _DETAIL.get(self.type)
+        if not (isinstance(self.detail, want) if want else self.detail is None):
+            got = type(self.detail).__name__
+            raise ValueError(f"{self.type.value} carries {want.__name__ if want else 'no facts'}"
+                             f", not {got}")
 
 
-def carries(event_type: EventType, fact: str) -> bool:
-    """Can an event of `event_type` carry `fact`?"""
-    return event_type in _CARRIED[fact]
-
-
-_RUNNING_SESSION = {EventType.SESSION_SIGNAL, EventType.SESSION_IDLE,
-                    EventType.SESSION_WAITING}
-_CARRIED = {"blocked": {EventType.RESUME_ADMITTED},
-            "exhausted": {EventType.CI_FINISHED, EventType.PR_CHECK_FAILED,
-                          EventType.PR_CONFLICT},
-            "this_pass": {EventType.CANDIDATE_RANKED},
-            "left_login_prompt": {EventType.OP_LOGIN_CODE},
-            "model": {EventType.OP_RESUME}, "bypass_usage": {EventType.OP_RESUME},
-            "code": {EventType.OP_LOGIN_CODE},
-            "session": {*_RUNNING_SESSION, EventType.SESSION_DIED},
-            "note": {*_RUNNING_SESSION, EventType.TRACK_UNCONFIGURED},
-            "launch_denied": {EventType.SESSION_SIGNAL, EventType.SESSION_DIED},
-            "login": {*_RUNNING_SESSION, EventType.TRACK_UNCONFIGURED},
-            "pane": {EventType.SESSION_IDLE},
-            "record": {EventType.SESSION_WAITING},
-            "stage": {EventType.LAUNCH_FAILED}}
+def login_at(event: Event) -> str:
+    """The login prompt a live session's park found in its pane, else ""."""
+    return event.detail.login if isinstance(event.detail, _LOGIN_FACTS) else ""
 
 
 # ---- Outcomes and actions ---------------------------------------------------
@@ -665,11 +729,11 @@ def unknown_at_queued(f: Facts) -> bool:
 
 
 def ended_this_pass(f: Facts) -> bool:
-    return f.event.this_pass
+    return f.event.detail.this_pass
 
 
 def launch_blocked(f: Facts) -> bool:
-    return bool(f.event.blocked)
+    return bool(f.event.detail.blocked)
 
 
 def next_stage(f: Facts) -> bool:
@@ -685,11 +749,11 @@ def respawns(f: Facts) -> bool:
 
 
 def loop_exhausted(f: Facts) -> bool:
-    return f.event.exhausted
+    return f.event.detail.exhausted
 
 
 def left_login_prompt(f: Facts) -> bool:
-    return f.event.left_login_prompt
+    return f.event.detail.left_login_prompt
 
 
 def _wake(cause: Cause) -> Callable[[Facts], Status]:
@@ -733,15 +797,15 @@ def _respawn_here(f: Facts) -> RespawnStage:
 
 
 def _wake_blocked(f: Facts) -> WakeBlocked:
-    return WakeBlocked(f.event.blocked)
+    return WakeBlocked(f.event.detail.blocked)
 
 
 def _resume_override(f: Facts) -> SetResumeOverride:
-    return SetResumeOverride(f.event.model, f.event.bypass_usage)
+    return SetResumeOverride(f.event.detail.model, f.event.detail.bypass_usage)
 
 
 def _login_code(f: Facts) -> TypeLoginCode:
-    return TypeLoginCode(f.event.code)
+    return TypeLoginCode(f.event.detail.code)
 
 
 # ---- The stage sub-function: a running session's report, death and silence ---
@@ -760,8 +824,9 @@ PLAN_READY = "plan ready for review"
 _WAITS_FOR_LAUNCH = Ignore("the launch waits for admission")
 
 
-def _session(f: Facts) -> Session:
-    return f.event.session or Session()
+def _report(f: Facts) -> Report:
+    """The facts of a session-signal (the rows of on_signal)."""
+    return f.event.detail
 
 
 def _asking(f: Facts, reason: HumanReason, note: str, *before: Action) -> Transition:
@@ -784,13 +849,13 @@ def _failed_artifact(f: Facts, reason: str) -> Transition:
 
 
 def _rounds(f: Facts) -> tuple[Action, ...]:
-    d = _session(f).round
+    d = f.event.detail.round
     return (ApplyRound(d),) if d else ()
 
 
 def _exhausted(f: Facts) -> Transition | None:
     """A loop round past its cap parks before anything else the event does."""
-    d = _session(f).round
+    d = f.event.detail.round
     if d is None or d.outcome is not Rounds.EXHAUSTED:
         return None
     note = f"{d.loop.value} loop exceeded its cap of {d.cap} rounds"
@@ -818,9 +883,9 @@ def _working(f: Facts, *then: Action) -> Transition | Ignore:
 def _bounce(f: Facts, retry: Retry, reason: str) -> Transition | Ignore:
     """A rejected signal: the session is resumed with the reason while its
     retry lasts, then the task parks."""
-    if retry not in _session(f).retries:
+    if retry not in _report(f).retries:
         return _asking(f, HumanReason.BAD_SIGNAL, reason)
-    if f.event.launch_denied:   # the plan on offer is rejected all the same
+    if _report(f).launch_denied:   # the plan on offer is rejected all the same
         return _disarmed(f) if f.status.kind is Kind.HELD_PLAN_APPROVAL else _WAITS_FOR_LAUNCH
     told = (Notify("plan_retry", reason),) if f.stage is Stage.PLAN else ()
     return Transition(Status(Kind.RUNNING), f.stage,
@@ -836,12 +901,12 @@ def _check_failed(f: Facts, result: CheckResult) -> Transition | Ignore | None:
     session once, then the task fails. None when it passes."""
     if result.ok:
         return None
-    if Retry.PLAN_TICKETS in _session(f).retries:
+    if Retry.PLAN_TICKETS in _report(f).retries:
         return _bounce(f, Retry.PLAN_TICKETS, result.reason)
     return _failed_artifact(f, result.reason)
 
 
-def _plan_check(s: Session) -> CheckResult:
+def _plan_check(s: Report) -> CheckResult:
     """The ticket check, and that the plan reads as one revision."""
     tickets = s.tickets or CheckResult(False, "no ticket check")
     problem = s.revision.problem if s.revision else "no plan revision"
@@ -850,9 +915,9 @@ def _plan_check(s: Session) -> CheckResult:
 
 def _implement(f: Facts, *before: Action) -> Transition | Ignore:
     """One implement session works the checked ticket set."""
-    if f.event.launch_denied:
+    if _report(f).launch_denied:
         return _WAITS_FOR_LAUNCH
-    n = _session(f).tickets.count
+    n = _report(f).tickets.count
     return Transition(Status(Kind.RUNNING), Stage.IMPLEMENT,
                       (*before, RespawnStage(Stage.IMPLEMENT, tickets=n),
                        Notify("implement_started", f"{n} ticket(s)")))
@@ -860,7 +925,7 @@ def _implement(f: Facts, *before: Action) -> Transition | Ignore:
 
 def _review_round(f: Facts) -> Transition:
     """The plan is held at the gate for the operator, the session kept."""
-    s = _session(f)
+    s = _report(f)
     held = Status(Kind.HELD_PLAN_APPROVAL, path=s.revision.path,
                   fingerprint=s.revision.fingerprint)
     return Transition(held, Stage.PLAN, (EnterGate(), PublishSpec(),
@@ -870,7 +935,7 @@ def _review_round(f: Facts) -> Transition:
 def _plan_ready(f: Facts) -> Transition | Ignore:
     """The plan stage's ready report: nothing reaches the operator, and no
     implement session starts, before the ticket check."""
-    s = _session(f)
+    s = _report(f)
     failed = _check_failed(f, _plan_check(s))
     if failed:
         return failed
@@ -883,13 +948,13 @@ def _gate_ready(f: Facts) -> Transition | Ignore:
     """A ready report at the gate: an armed plan waits for the operator (or
     its grace time, GRACE_EXPIRED); anything else is a new review round while
     unattended rounds are left."""
-    s = _session(f)
-    if s.armed:
+    s = _report(f)
+    if s.gate.armed:
         return Ignore("the armed plan waits for the operator")
     failed = _check_failed(f, _plan_check(s))
     if failed:
         return failed
-    if s.rounds_used and not s.respawn_pending:
+    if s.gate.rounds_used and not s.gate.respawn_pending:
         return _review_parked(f, s.revision.path, s.revision.fingerprint, PLAN_READY,
                               "plan_parked")
     return _review_round(f)
@@ -897,7 +962,7 @@ def _gate_ready(f: Facts) -> Transition | Ignore:
 
 def _ready(f: Facts) -> Transition | Ignore:
     """awaiting-review, by the stage it arrives in."""
-    if _session(f).at_gate:
+    if _report(f).gate.at:
         return _gate_ready(f)
     if f.stage is Stage.PLAN:
         return _plan_ready(f)
@@ -908,7 +973,7 @@ def _ready(f: Facts) -> Transition | Ignore:
 
 def _approved(f: Facts) -> Transition | Ignore:
     """The operator's approval, reported by the plan session at the gate."""
-    s = _session(f)
+    s = _report(f)
     if s.bad_track:
         return _bounce(f, Retry.PLAN_SIGNAL, s.bad_track)
     return _check_failed(f, s.tickets or CheckResult(False, "no ticket check")) \
@@ -916,10 +981,10 @@ def _approved(f: Facts) -> Transition | Ignore:
 
 
 def _plan_done(f: Facts) -> Transition | Ignore:
-    s = _session(f)
-    if s.at_gate:
+    s = _report(f)
+    if s.gate.at:
         return _approved(f)
-    if s.gated:
+    if s.gate.gated:
         return _asking(f, HumanReason.BAD_SIGNAL, (
             f"The gate state was lost: this task waited at the plan gate, "
             f"but it is in stage plan and reports done with track "
@@ -928,29 +993,29 @@ def _plan_done(f: Facts) -> Transition | Ignore:
 
 
 def _spec_done(f: Facts) -> Transition | Ignore:
-    s = _session(f)
+    s = _report(f)
     if s.bad_track:
         return _bounce(f, Retry.SPEC_SIGNAL, s.bad_track)
     if not s.spec.ok:
         return _failed_artifact(f, s.spec.reason)
-    if f.event.launch_denied:
+    if s.launch_denied:
         return _WAITS_FOR_LAUNCH
     return Transition(Status(Kind.RUNNING), Stage.PLAN, (RespawnStage(Stage.PLAN),))
 
 
 def _implement_done(f: Facts) -> Transition:
     """Review follows implement; a denied launch waits as waking(next-stage)."""
-    if f.event.launch_denied:
+    if _report(f).launch_denied:
         return Transition(Status(Kind.WAKING, cause=Cause.NEXT_STAGE), Stage.REVIEW)
     return Transition(Status(Kind.RUNNING), Stage.REVIEW,
                       (RespawnStage(Stage.REVIEW),
-                       Notify("review_started", _session(f).signal.note)))
+                       Notify("review_started", _report(f).signal.note)))
 
 
 def _pr_opened(template: str) -> Callable[[Facts], Transition]:
     def opened(f: Facts) -> Transition:
         return Transition(Status(Kind.PARKED_PR), Stage.PR_OPEN,
-                          (LinkPR(), Notify(template, _session(f).signal.note)))
+                          (LinkPR(), Notify(template, _report(f).signal.note)))
     return opened
 
 
@@ -965,19 +1030,19 @@ def _done(f: Facts) -> Transition | Ignore:
 
 
 def _awaiting_ci(f: Facts) -> Transition:
-    run_id = _session(f).signal.run_id
+    run_id = _report(f).signal.run_id
     if run_id <= 0:
         return _failed_artifact(f, "awaiting-ci without run_id")
     return Transition(Status(Kind.PARKED_CI, run_id=run_id), f.stage, (EndSession(),))
 
 
 def _blocked(f: Facts) -> Transition:
-    return _asking(f, HumanReason.DECISION, _session(f).signal.note)
+    return _asking(f, HumanReason.DECISION, _report(f).signal.note)
 
 
 def _awaiting_answers(f: Facts) -> Transition:
     """A questionnaire, prototype or wizard: the page the operator answers."""
-    s = _session(f)
+    s = _report(f)
     asked = (MarkAsked(),) if s.asks else ()
     note = s.signal.note
     if s.answers is None:
@@ -996,32 +1061,32 @@ _SIGNALS: dict[str, Callable[[Facts], Transition | Ignore]] = {
 
 def on_signal(f: Facts) -> Transition | Ignore:
     """running + session-signal (requirement 15): today's rules by status."""
-    signal = _session(f).signal
-    if signal is None:
-        return Ignore("no signal")
+    signal = _report(f).signal
     rule = _SIGNALS.get(signal.status)
     return rule(f) if rule else Ignore(f"unknown signal status {signal.status!r}")
 
 
-_POKE = {Pane.UNSEEN: (Poke(),), Pane.CLEAR: (Poke(),), Pane.UNKNOWN: (),
+_POKE = {None: (Poke(),), Pane.CLEAR: (Poke(),), Pane.UNKNOWN: (),
          Pane.WORKING: (EndPokeStretch(),)}
 
 
 def on_idle(f: Facts) -> Transition | Ignore:
     """A silent session parks stalled (the note says why); a stopped one is
     poked, unless the look before the poke finds it at a prompt."""
-    if f.event.note:
-        return _stalled(f, HumanReason.STALLED, f.event.note)
-    if f.event.pane is Pane.PROMPT:
+    s: Silence = f.event.detail
+    if s.note:
+        return _stalled(f, HumanReason.STALLED, s.note)
+    if s.pane is Pane.PROMPT:
         return _stalled(f, HumanReason.DECISION, STOPPED_NOTE)
-    return _working(f, *_POKE[f.event.pane])
+    return _working(f, *_POKE[s.pane])
 
 
 def on_waiting(f: Facts) -> Transition | Ignore:
     """A background wait holds the task running; past its cap it parks."""
-    if f.event.note:
-        return _stalled(f, HumanReason.STALLED, f.event.note)
-    recorded = (RecordBackgroundWait(*f.event.record),) if f.event.record else ()
+    w: Wait = f.event.detail
+    if w.note:
+        return _stalled(f, HumanReason.STALLED, w.note)
+    recorded = (RecordBackgroundWait(*w.record),) if w.record else ()
     actions = (*_rounds(f), *recorded)
     if not actions:
         return Ignore("the background wait holds")
@@ -1031,15 +1096,16 @@ def on_waiting(f: Facts) -> Transition | Ignore:
 def on_died(f: Facts) -> Transition | Ignore:
     """A dead session crashes its stage; at the gate the plan session is
     respawned while unattended rounds remain."""
-    if _session(f).at_gate:
+    if f.event.detail.at_gate:
         return _gate_died(f)
     return Transition(Status(Kind.FAILED, reason=FailReason.SESSION_CRASH), f.stage,
                       (ReportCrash(), EndSession(), Notify("session_crashed")))
 
 
 def _gate_died(f: Facts) -> Transition | Ignore:
-    if not _session(f).rounds_used:
-        if f.event.launch_denied:
+    d: Death = f.event.detail
+    if not d.rounds_used:
+        if d.launch_denied:
             return _WAITS_FOR_LAUNCH
         return Transition(Status(Kind.RUNNING), Stage.PLAN, (RespawnStage(Stage.PLAN),))
     if not f.status.path:   # a rework session: no plan is on offer
@@ -1054,7 +1120,7 @@ def on_launch_failed(f: Facts) -> Transition:
     """The hand-over is accepted; only the launch failed: the task fails at
     the stage that could not start, which Resume starts."""
     return Transition(Status(Kind.FAILED, reason=FailReason.TASK_CRASH),
-                      f.event.stage or f.stage, (ReportTaskCrash(),))
+                      f.event.detail.stage, (ReportTaskCrash(),))
 
 
 def _grace_park(f: Facts) -> Status:
@@ -1063,11 +1129,11 @@ def _grace_park(f: Facts) -> Status:
 
 
 def _config_park(f: Facts) -> Status:
-    return Status(Kind.PARKED_HUMAN, reason=HumanReason.CONFIG, note=f.event.note)
+    return Status(Kind.PARKED_HUMAN, reason=HumanReason.CONFIG, note=f.event.detail.note)
 
 
 def _config_question(f: Facts) -> Notify:
-    return Notify("parked_question", f.event.note)
+    return Notify("parked_question", f.event.detail.note)
 
 
 @dataclass(frozen=True)
@@ -1108,11 +1174,13 @@ class Row:
             raise ValueError(f"{self.source.value} + {self.event.value}: a row that "
                              f"decides nothing takes no build, move or actions")
 
-    def decides(self, f: Facts) -> bool:
-        """Is this the row for `f`, its stage move and guard included?"""
-        return (self.source is f.status.kind and self.event is f.event.type
-                and (self.move is None or self.move[0] is f.stage) and self.guard(f))
-
+    def decides(self, stage: Stage, kind: Kind, event_type: EventType,
+                facts: Callable[[], Facts]) -> bool:
+        """Is this the row for the pair at `stage`? A guarded row reads the
+        facts, built only then."""
+        return (self.source is kind and self.event is event_type
+                and (self.move is None or self.move[0] is stage)
+                and (self.guard is always or self.guard(facts())))
 
     @property
     def unconditional(self) -> bool:
@@ -1301,7 +1369,7 @@ def decide(task: TaskState | At, event: Event) -> Transition | Ignore | Reject:
     network or session."""
     at = _at(task)
     facts = Facts(at.stage, at.status, event)
-    got = _answer(_match(facts), facts)
+    got = _answer(_match(at.stage, at.status.kind, event.type, lambda: facts), facts)
     if not isinstance(got, Transition):
         return got
     got = _held_for_login(facts, got)
@@ -1324,15 +1392,17 @@ _LOGIN_HOLDS = (Kind.PARKED_HUMAN, Kind.PARKED_ANSWERS)
 def _held_for_login(f: Facts, t: Transition) -> Transition:
     """A park of a live session at a login prompt holds it there instead:
     the pane is where the code is typed. Its round is still counted."""
-    if not f.event.login or t.status.kind not in _LOGIN_HOLDS:
+    login = login_at(f.event)
+    if not login or t.status.kind not in _LOGIN_HOLDS:
         return t
     kept = tuple(a for a in t.actions if isinstance(a, ApplyRound))
     return Transition(Status(Kind.HELD_LOGIN, note=t.status.note), t.stage,
                       (*kept, ClearTurnMarkers(), Notify("needs_relogin", t.status.note)))
 
 
-def _match(f: Facts) -> Row:
-    return next(r for r in TABLE if r.decides(f))
+def _match(stage: Stage, kind: Kind, event_type: EventType,
+           facts: Callable[[], Facts]) -> Row:
+    return next(r for r in TABLE if r.decides(stage, kind, event_type, facts))
 
 
 def _with_slot(before: Status, after: Status,
@@ -1357,11 +1427,24 @@ PIPELINE = (Stage.QUEUED, Stage.SPEC, Stage.PLAN, Stage.IMPLEMENT, Stage.REVIEW,
             Stage.PR_OPEN, Stage.ADDRESS_REVIEW)
 
 
+# The plain facts of each event type a guard reads: nothing blocked, ended,
+# exhausted or left behind.
+_PLAIN = {EventType.RESUME_ADMITTED: Woken(blocked=""),
+          EventType.CANDIDATE_RANKED: Ranked(this_pass=False),
+          EventType.OP_RESUME: ResumeChoice(model="", bypass_usage=False),
+          EventType.OP_LOGIN_CODE: LoginCode(code="", left_login_prompt=False),
+          **{e: Attempt(exhausted=False) for e in (EventType.CI_FINISHED,
+                                                   EventType.PR_CHECK_FAILED,
+                                                   EventType.PR_CONFLICT)}}
+
+
 def next_transitions(task: TaskState | At) -> list[Edge]:
     """The transitions `task` can take now: per event type, the row that
     decides it (with the event's plain facts), when that row is a transition."""
     at = _at(task)
-    rows = (_match(Facts(at.stage, at.status, Event(e))) for e in EventType)
+    rows = (_match(at.stage, at.status.kind, e,
+                   lambda e=e: Facts(at.stage, at.status, Event(e, _PLAIN.get(e))))
+            for e in EventType)
     return [e for r in rows for e in _edges(r)]
 
 

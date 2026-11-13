@@ -14,14 +14,15 @@ import dispatcher.main as main
 from dispatcher import eventlog, spec_publish
 from dispatcher.classify import Observation, classify
 from dispatcher.lifecycle import (At, Cause, Event, EventType, FailReason, HumanReason,
-                                  Kind, Pane, Status, decide, legacy_fields, legacy_view,
-                                  occupies)
+                                  Death, Kind, Pane, Silence, Status, decide, legacy_fields,
+                                  legacy_view, occupies)
 from dispatcher.state import (NO_SLOT, BackgroundWait, Stage, StageSignal, TaskState,
                               active, load, load_all, mark_background, mark_waiting,
                               save)
 from tests.test_herdr_liveness_poke_acceptance import HerdrSessions
 from tests.test_main import (FakeGitHub, FakeSessions, cfg, deps, make_task,
                              patch_usage, patch_workspace)
+from tests.test_lifecycle import report
 from tests.test_session_rules_characterization import GOOD_SPEC, LOGIN_TAIL, WORK
 
 T = "portfolio_eval"
@@ -277,27 +278,24 @@ def test_a_track_gone_outranks_everything():
 # --- the table's session rows --------------------------------------------------
 
 def test_a_park_at_a_login_prompt_keeps_its_round():
-    from dispatcher.lifecycle import ApplyRound, Session
+    from dispatcher.lifecycle import ApplyRound
     from dispatcher.loops import Decision, Loop, Outcome
     d = Decision(Outcome.EXHAUSTED, Loop.REVIEW, 3, 2)
     got = decide(At(Stage.REVIEW, Status(Kind.RUNNING)), Event(
-        EventType.SESSION_SIGNAL, session=Session(StageSignal("review", "working"), round=d),
-        login="https://claude.ai/oauth"))
+        EventType.SESSION_SIGNAL, report(StageSignal("review", "working"), round=d,
+                                         login="https://claude.ai/oauth")))
     assert got.status.kind is Kind.HELD_LOGIN and ApplyRound(d) in got.actions
 
 
 def test_a_prompt_seen_before_a_poke_parks_for_the_operator():
-    from dispatcher.lifecycle import Session
     got = decide(At(Stage.REVIEW, Status(Kind.RUNNING)), Event(
-        EventType.SESSION_IDLE, session=Session(StageSignal("review", "working")),
-        pane=Pane.PROMPT))
+        EventType.SESSION_IDLE, Silence(round=None, note="", pane=Pane.PROMPT, login="")))
     assert (got.status.kind, got.status.reason) == (Kind.PARKED_HUMAN, HumanReason.DECISION)
 
 
 def test_a_gate_session_dead_mid_rework_with_no_rounds_parks_stalled():
-    from dispatcher.lifecycle import Session
     got = decide(At(Stage.PLAN, Status(Kind.RUNNING)), Event(
-        EventType.SESSION_DIED, session=Session(at_gate=True, rounds_used=True)))
+        EventType.SESSION_DIED, Death(at_gate=True, rounds_used=True, launch_denied=False)))
     assert (got.status.kind, got.status.reason) == (Kind.PARKED_HUMAN, HumanReason.STALLED)
 
 

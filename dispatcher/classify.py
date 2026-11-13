@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import NamedTuple
 
 from dispatcher.artifacts import CheckResult, PlanRevision
-from dispatcher.lifecycle import Event, EventType, Session
+from dispatcher.lifecycle import (Death, Event, EventType, Gate, Report, Silence, Stranded,
+                                  Wait)
 from dispatcher.loops import (Decision, Loop, ReportedRound, Retry, evaluate, retry_left,
                               unattended_rounds_used)
 from dispatcher.loops import Outcome as Rounds
@@ -72,7 +73,9 @@ def _working_signal(o: Observation) -> bool:
 
 
 def _track_gone(o: Observation) -> Event | None:
-    return Event(EventType.TRACK_UNCONFIGURED, note=config_note(o.gone)) if o.gone else None
+    if not o.gone:
+        return None
+    return Event(EventType.TRACK_UNCONFIGURED, Stranded(note=config_note(o.gone), login=""))
 
 
 def _in_background(o: Observation) -> Event | None:
@@ -81,31 +84,37 @@ def _in_background(o: Observation) -> Event | None:
     herdr's counter moved (a new turn: today's rules decide)."""
     if o.background is None or not o.alive or o.waiting or not _working_signal(o):
         return None
-    facts = _wait_facts(o.task, o.background)
-    if facts is None:
+    held = _wait_facts(o.task, o.background)
+    if held is None:
         return None
-    return Event(EventType.SESSION_WAITING, session=Session(o.signal, _round(o)), **facts)
+    note, record = held
+    return Event(EventType.SESSION_WAITING,
+                 Wait(round=_round(o), note=note, record=record, login=""))
 
 
-def _wait_facts(t: TaskState, view: BackgroundView) -> dict | None:
+def _wait_facts(t: TaskState, view: BackgroundView
+                ) -> tuple[str, tuple[float, int] | None] | None:
+    """(why the wait parks, the report to record) while the wait is in
+    force; None once herdr's counter moved."""
     if view.agent is None:
-        return {}   # herdr cannot be asked: hold
+        return "", None   # herdr cannot be asked: hold
     status, seq = view.agent
     if view.wait.reported != t.background_reported:
-        return {} if status == "working" else {"record": (view.wait.reported, seq)}
+        return "", None if status == "working" else (view.wait.reported, seq)
     if seq != t.background_seq:
         return None
     if view.now - view.wait.since > view.cap:
-        return {"note": f"(background work still running after {view.cap // 60}m — cap reached)"}
-    return {}
+        return f"(background work still running after {view.cap // 60}m — cap reached)", None
+    return "", None
 
 
 def _dead(o: Observation) -> Event | None:
     if o.alive or (o.signal is not None and o.signal.status == "done"):
         return None
     t = o.task
-    return Event(EventType.SESSION_DIED, session=Session(
-        at_gate=t.stage is Stage.AWAITING_PLAN_REVIEW, rounds_used=unattended_rounds_used(t)))
+    return Event(EventType.SESSION_DIED, Death(
+        at_gate=t.stage is Stage.AWAITING_PLAN_REVIEW, rounds_used=unattended_rounds_used(t),
+        launch_denied=False))
 
 
 def _past_stall(o: Observation) -> bool:
@@ -118,7 +127,7 @@ def _silent(o: Observation) -> Event | None:
         return None
     note = (f"(no session output for {int(o.stall_after) // 60}m — "
             f"likely login/trust prompt or hang)")
-    return Event(EventType.SESSION_IDLE, note=note, session=Session(o.signal))
+    return Event(EventType.SESSION_IDLE, Silence(round=None, note=note, pane=None, login=""))
 
 
 def _at_composer(o: Observation) -> bool:
@@ -142,19 +151,20 @@ def _stopped(o: Observation) -> Event | None:
     until the cap."""
     if not _at_composer(o):
         return None
-    return Event(EventType.SESSION_IDLE, note=_poke_cap_note(o), session=_facts(o))
+    return Event(EventType.SESSION_IDLE,
+                 Silence(round=_round(o), note=_poke_cap_note(o), pane=None, login=""))
 
 
 def _grace(o: Observation) -> Event | None:
     """An armed plan whose review the operator left past the grace time."""
     if (o.signal is None or o.signal.status != "awaiting-review"
-            or not o.grace_elapsed or not _facts(o).armed):
+            or not o.grace_elapsed or not _gate(o).armed):
         return None
     return Event(EventType.GRACE_EXPIRED)
 
 
 def _reported(o: Observation) -> Event | None:
-    return Event(EventType.SESSION_SIGNAL, session=_facts(o)) if o.signal else None
+    return Event(EventType.SESSION_SIGNAL, _report(o)) if o.signal else None
 
 
 _PRECEDENCE = (_track_gone, _in_background, _dead, _silent, _stopped, _grace, _reported)
@@ -172,17 +182,22 @@ def _round(o: Observation) -> Decision | None:
     return None if d.outcome is Rounds.UNCHANGED else d
 
 
-def _facts(o: Observation) -> Session:
-    t, r = o.task, o.reads
-    at_gate = t.stage is Stage.AWAITING_PLAN_REVIEW
-    return Session(
-        signal=o.signal, round=_round(o), at_gate=at_gate, gated=t.gated,
+def _gate(o: Observation) -> Gate:
+    t = o.task
+    return Gate(at=t.stage is Stage.AWAITING_PLAN_REVIEW, gated=t.gated,
+                rounds_used=unattended_rounds_used(t), respawn_pending=t.gate_respawn_pending,
+                armed=_armed(t.operator_request, o.reads.revision))
+
+
+def _report(o: Observation) -> Report:
+    t, r, gate = o.task, o.reads, _gate(o)
+    return Report(
+        signal=o.signal, round=_round(o), gate=gate,
         retries=frozenset(x for x in Retry if retry_left(t, x)),
-        rounds_used=unattended_rounds_used(t), respawn_pending=t.gate_respawn_pending,
-        armed=_armed(t.operator_request, r.revision),
-        skips_gate=_skips_gate(o), asks=t.stage in (Stage.SPEC, Stage.PLAN),
-        bad_track=_bad_track(o.signal, o.tracks, optional=at_gate),
-        tickets=r.tickets, revision=r.revision, spec=r.spec, answers=r.answers)
+        asks=t.stage in (Stage.SPEC, Stage.PLAN),
+        bad_track=_bad_track(o.signal, o.tracks, optional=gate.at),
+        skips_gate=_skips_gate(o), tickets=r.tickets, revision=r.revision, spec=r.spec,
+        answers=r.answers, launch_denied=False, login="")
 
 
 def _armed(request: OperatorRequest | None, revision: PlanRevision | None) -> bool:

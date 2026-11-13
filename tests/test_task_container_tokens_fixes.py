@@ -231,13 +231,14 @@ def test_a_rejected_signal_retry_touches_nothing_without_a_token(tmp_path, monke
     for name in ("_write_working", "_end_session", "_continued", "save", "_fail_task_crash",
                  "_park_for_input"):
         monkeypatch.setattr(main, name, lambda *a, _n=name, **k: touched.append(_n))
-    from dispatcher.lifecycle import Event, EventType, Session
+    from dispatcher.lifecycle import Event, EventType
     from dispatcher.loops import Retry
     from dispatcher.state import StageSignal
+    from tests.test_lifecycle import report
     deps = SimpleNamespace(access=github_app.Access(app))
     turn = main._Turn(SimpleNamespace(state_dir=str(tmp_path)), deps, REPO, None, None, False,
                       launch=SimpleNamespace(entry=None))
-    bounced = Event(EventType.SESSION_SIGNAL, session=Session(
+    bounced = Event(EventType.SESSION_SIGNAL, report(
         StageSignal("plan", "done"), retries=frozenset({Retry.PLAN_SIGNAL})))
     main._apply(turn, task, bounced)
     assert touched == ([] if failure == "app error" else ["_park_for_input"])
