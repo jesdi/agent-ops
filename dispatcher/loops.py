@@ -123,15 +123,16 @@ def reset(task: TaskState, cause: ResetCause) -> TaskState:
     return task
 
 
-def gate_fields(task: TaskState, *, respawn: bool = False) -> dict[str, object]:
+def gate_fields(task: TaskState, *, from_gate: bool,
+                respawn: bool = False) -> dict[str, object]:
     """What a step at the plan gate records on the task, for the executor to
     save. The task has waited there (`gated`, never cleared: also a task that
-    leaves the gate by a respawn has waited). A step taken from the gate, a
-    new review round or the respawn of a dead session, is one more unattended
-    round; gate entry from the plan stage is not a round. A respawn prepays
-    its first valid ready report, even if another respawn intervenes."""
-    if (task.stage is Stage.AWAITING_PLAN_REVIEW
-            and (respawn or not task.gate_respawn_pending)):
+    leaves the gate by a respawn has waited). A step taken `from_gate`
+    (lifecycle.at_gate), a new review round or the respawn of a dead
+    session, is one more unattended round; gate entry from the plan stage is
+    not a round. A respawn prepays its first valid ready report, even if
+    another respawn intervenes."""
+    if from_gate and (respawn or not task.gate_respawn_pending):
         rounds = task.unattended_rounds + 1
     else:
         rounds = max(task.unattended_rounds, 0)   # an operator's round is one at the gate

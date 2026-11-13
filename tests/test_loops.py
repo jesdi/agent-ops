@@ -298,16 +298,16 @@ def test_reset_operator_wake():
 
 def test_gate_fields_count_only_what_the_task_does_at_the_gate():
     gate = _task(stage=Stage.AWAITING_PLAN_REVIEW, unattended_rounds=1)
-    assert gate_fields(gate) == {"gated": True, "unattended_rounds": 2,
+    assert gate_fields(gate, from_gate=True) == {"gated": True, "unattended_rounds": 2,
                                 "gate_respawn_pending": False}
-    assert unattended_rounds_used(replace(gate, **gate_fields(gate)))
+    assert unattended_rounds_used(replace(gate, **gate_fields(gate, from_gate=True)))
     # the round that answers the operator is theirs
     answered = reset(gate, ResetCause.OPERATOR_WAKE)
-    assert gate_fields(answered)["unattended_rounds"] == 0
+    assert gate_fields(answered, from_gate=True)["unattended_rounds"] == 0
     # gate entry from the plan stage is not a round, and keeps no credit
     for before, after in ((1, 1), (answered.unattended_rounds, 0)):
         plan = _task(stage=Stage.PLAN, unattended_rounds=before)
-        assert gate_fields(plan) == {"gated": True, "unattended_rounds": after,
+        assert gate_fields(plan, from_gate=False) == {"gated": True, "unattended_rounds": after,
                                     "gate_respawn_pending": False}
 
 

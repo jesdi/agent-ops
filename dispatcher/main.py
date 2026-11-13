@@ -47,9 +47,8 @@ from dispatcher.lifecycle import (AcquireSlot, Admission, ApplyRound, At, ClearT
                                   FailReason, Kind, LaunchFailure, LinkPR, MarkAsked, Notify,
                                   Pane, Poke, PublishSpec, RecordBackgroundWait, ReleaseSlot,
                                   ReportCrash, ReportTaskCrash, RespawnStage, RetryStage,
-                                  Status, Stranded, Transition, WakeBlocked, Woken, decide,
-                                  legacy_fields,
-                                  login_at, occupies, operator_request)
+                                  Status, Stranded, Transition, WakeBlocked, Woken, at_gate,
+                                  decide, legacy_fields, login_at, occupies, operator_request)
 from dispatcher.loops import Decision, Outcome, ResetCause
 from dispatcher.models import (Admitted, Entry, ModelPolicy,
                                Order, override_refusal,
@@ -1072,8 +1071,10 @@ _RETRY_HINT = {
 
 def _grace_elapsed(cfg: Config, task: TaskState) -> bool:
     """Has the plan-review gate gone unanswered past the grace period?
-    `updated_at` was stamped when the stage flipped to AWAITING_PLAN_REVIEW,
-    so no extra timer field is needed and the pass stays stateless. An
+    `updated_at` was stamped when the task became held(plan-approval) for
+    this revision, and only a change of stage or status stamps it again
+    (_commit; an armed ready report read again changes neither), so no
+    extra timer field is needed and the pass stays stateless. An
     unparseable timestamp never expires — failing closed keeps a corrupt state
     file from parking the whole queue."""
     if cfg.spec_review_grace_minutes is None:
@@ -1914,8 +1915,9 @@ def _handover(turn: _Turn, task: TaskState, act: RespawnStage) -> tuple[TaskStat
     if task.stage is Stage.SPEC and act.stage is Stage.PLAN:
         spec_path = turn.signal.artifact
         task = replace(task, track=turn.signal.track)
-    elif task.stage is Stage.AWAITING_PLAN_REVIEW:
-        task = replace(task, **loops.gate_fields(task, respawn=act.stage is Stage.PLAN))
+    elif at_gate(task):
+        task = replace(task, **loops.gate_fields(task, from_gate=True,
+                                                 respawn=act.stage is Stage.PLAN))
     if act.tickets:
         task = replace(task, ticket_count=act.tickets)
     return task, spec_path
@@ -2096,8 +2098,9 @@ def _gate_entered(turn: _Turn, task: TaskState, act: EnterGate) -> TaskState:
 def _gate_round_fields(task: TaskState) -> dict:
     """The gate's round fields; a plan entering the gate starts the gate
     phase's own retries."""
-    extra = dict(loops.gate_fields(task))
-    if task.stage is Stage.PLAN:
+    from_gate = at_gate(task)
+    extra = dict(loops.gate_fields(task, from_gate=from_gate))
+    if not from_gate:
         extra.update(plan_retries=0, plan_slips=0)
     return extra
 
@@ -2204,12 +2207,17 @@ def _adopt_track(cfg: Config, policy: ModelPolicy, task: TaskState,
     # track is adopted here: an unknown/misspelled one must reach
     # next_actions' bounce-then-park ladder (_bad_track) instead of being
     # written onto the task and mis-parked as "no longer configured".
-    if (signal is not None and signal.status == "done"
-            and task.stage in (Stage.SPEC, Stage.AWAITING_PLAN_REVIEW)
-            and signal.track and signal.track != task.track
+    if (_sets_track(task, signal) and signal.track != task.track
             and signal.track in policy.tracks):
         task = replace(task, track=signal.track)
     return task, signal
+
+
+def _sets_track(task: TaskState, signal: StageSignal | None) -> bool:
+    """Is `signal` one that sets the track: the spec session's `done`, or the
+    approval (a `done` at the plan gate)?"""
+    return (signal is not None and signal.status == "done"
+            and (task.stage is Stage.SPEC or at_gate(task)))
 
 
 def _background_view(cfg: Config, deps: Deps, task: TaskState,
@@ -2650,7 +2658,7 @@ def _apply_reply_intent(cfg: Config, deps: Deps, task: TaskState | None,
 def _wake_for_queued_message(cfg: Config, deps: Deps, task: TaskState) -> None:
     """Wake a task that waits for the operator, so its session reads the
     message just queued. Any other task reads it on its next resume."""
-    if not task.park and task.stage is Stage.AWAITING_PLAN_REVIEW:
+    if at_gate(task):
         # A gate task that has not parked yet waits for exactly this message,
         # and only a resume hands the queue to its session: without the wake
         # the grace park would end the session with the message undelivered.
