@@ -14,11 +14,14 @@ from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 from dispatcher.models import (FEEDBACK_PICK, IMPLEMENT_PICK, Entry,
                                ModelPolicy, Order, candidates, pick_provider,
                                review_avoid)
+
+if TYPE_CHECKING:
+    from dispatcher.lifecycle import Status
 
 
 class Stage(str, Enum):
@@ -259,6 +262,13 @@ class TaskState:
     # worktree-contained path resolves — so an answers request never exists
     # without a valid path.
     operator_request: "OperatorRequest | None" = None
+
+    @property
+    def status(self) -> "Status":
+        """The lifecycle status read from the park fields (#132): a view until
+        the status is stored, then the stored field replaces it."""
+        from dispatcher.lifecycle import legacy_view  # lifecycle imports this module
+        return legacy_view(self)[1]
 
     @property
     def continued_stage(self) -> Stage:
