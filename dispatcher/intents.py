@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, TypeVar
 
-from dispatcher.state import state_lock
+from dispatcher.state import state_lock, write_json_atomic
 
 T = TypeVar("T")
 
@@ -40,15 +40,13 @@ class Queue:
         subject = "-".join(map(str, key))
         stamp = _next_stamp(directory, subject, epoch_ms)
         p = directory / f"{stamp}-{subject}-{action}.json"
-        tmp = p.with_suffix(".tmp")
-        tmp.write_text(json.dumps({
+        write_json_atomic(p, {
             "action": action,
             **dict(zip(self.key, key, strict=True)),
             "payload": payload,
             "actor": actor,
             "created_at": datetime.now(timezone.utc).isoformat(),
-        }, indent=2))
-        tmp.replace(p)
+        }, indent=2)
         return p
 
     def read(self, state_dir: str | Path, parse: Callable[[dict, Path], T]) -> list[T]:

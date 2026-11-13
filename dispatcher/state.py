@@ -466,10 +466,7 @@ def write_json_atomic(path: Path, doc: dict, *, indent: int | None = None,
 def _write_task(p: Path, ts: TaskState) -> None:
     d = asdict(ts)
     d["stage"] = ts.stage.value
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps(d, indent=2))
-    tmp.replace(p)
+    write_json_atomic(p, d, indent=2)
 
 
 # The next launch of a task at one of these is a PR feedback round.
@@ -786,9 +783,7 @@ def mark_background(state_dir: str | Path, repository: str, issue: int,
     p = _background_path(state_dir, repository, issue)
     p.parent.mkdir(parents=True, exist_ok=True)
     _waiting_path(state_dir, repository, issue).unlink(missing_ok=True)  # latest turn end wins; before the write so a pass never sees both
-    tmp = p.with_name(p.name + ".tmp")  # with_suffix would truncate a dotted repository
-    tmp.write_text(json.dumps({"tasks": list(ids), "since": since, "reported": now}))
-    tmp.replace(p)
+    write_json_atomic(p, {"tasks": list(ids), "since": since, "reported": now})
 
 
 def has_waiting(state_dir: str | Path, repository: str, issue: int) -> bool:
