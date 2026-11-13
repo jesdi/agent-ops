@@ -118,6 +118,7 @@ def test_plan_gate_is_skipped(c):
     d = _run(c)
     t = _task(c)
     assert t.at.stage is Stage.IMPLEMENT and operator_request(t) is None
+    assert (t.gated, t.asked) == (False, False)
     assert _transitions(c) == [{"from": "running", "event": "session-signal",
                                 "to": "running", "stage": "implement"}]
     assert "awaiting_plan_review" not in d.notifier.sent
