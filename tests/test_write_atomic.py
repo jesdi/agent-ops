@@ -121,12 +121,17 @@ def test_threads_writing_one_path_never_tear_it(d):
     path = d / "shared"
     payloads = [bytes([65 + i]) * MIB for i in range(8)]
     seen, torn, done = [], [], threading.Event()
+    started, read_while_writing = threading.Event(), threading.Event()
     errors = []
 
     def writer(payload):
         try:
-            for _ in range(50):
+            for i in range(50):
                 write_atomic(path, payload)
+                if i == 0:
+                    # no writer goes on before the reader read during the writes
+                    started.set()
+                    assert read_while_writing.wait(30)
         except BaseException as e:
             errors.append(e)
 
@@ -136,7 +141,9 @@ def test_threads_writing_one_path_never_tear_it(d):
                 data = path.read_bytes()
             except FileNotFoundError:
                 continue
-            seen.append(1)
+            if started.is_set():
+                seen.append(1)
+                read_while_writing.set()
             if data not in payloads:
                 torn.append(len(data))
 
@@ -150,6 +157,7 @@ def test_threads_writing_one_path_never_tear_it(d):
     done.set()
     r.join()
     assert errors == []
+    assert seen, "the reader never read the path while the writers were running"
     assert torn == []
     assert path.read_bytes() in payloads
     assert names(d) == ["shared"]
