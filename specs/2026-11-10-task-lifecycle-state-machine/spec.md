@@ -18,7 +18,8 @@ since: the plan review gate (ADR 0001), one implement session (ADR 0003), one ta
 
    `reason` of `parked(human)` is one of `decision | stalled | loop-cap | bad-signal | config |
    operator` and carries the note shown to the operator. No transition into `failed`, `canceled`
-   or `done` changes `stage`. The stages `awaiting-plan-review`, `blocked`, `stalled-on-budget`,
+   or `done` changes `stage`, with one exception: a launch that raises (`launch-failed`) fails
+   the task at the stage that could not start, so Resume restarts that stage. The stages `awaiting-plan-review`, `blocked`, `stalled-on-budget`,
    `failed`, `done` and `canceled` no longer exist in `Stage`, and `TERMINAL_STAGES` /
    `IN_FLIGHT_STAGES` are replaced by predicates on `status`.
 2. **One pure decision function.** `dispatcher/lifecycle.py` exposes
