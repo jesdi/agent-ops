@@ -167,8 +167,7 @@ TASKS = [
     At(S.QUEUED, failed("unknown")), At(S.PLAN, Status(Kind.CANCELED)),
     At(S.PR_OPEN, Status(Kind.DONE)),
 ]
-PLAIN_GATE = Gate(at=False, gated=False, rounds_used=False, respawn_pending=False,
-                  armed=False)
+PLAIN_GATE = Gate(at=False, rounds_used=False, respawn_pending=False, armed=False)
 
 
 def report(signal: StageSignal, **facts) -> Report:

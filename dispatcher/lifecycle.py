@@ -390,7 +390,6 @@ class Pane(str, Enum):
 class Gate:
     """The plan review gate, as a report reads it."""
     at: bool                 # the plan session runs at the gate
-    gated: bool              # the task waited at the gate once
     rounds_used: bool        # the gate's unattended rounds are used up
     respawn_pending: bool    # a gate respawn prepaid the next round
     armed: bool              # the request is armed for the plan on disk

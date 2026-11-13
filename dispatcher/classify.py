@@ -210,8 +210,8 @@ def _round(o: Observation) -> Decision | None:
 
 def _gate(o: Observation) -> Gate:
     t = o.task
-    return Gate(at=at_gate(t), gated=t.gated,
-                rounds_used=unattended_rounds_used(t), respawn_pending=t.gate_respawn_pending,
+    return Gate(at=at_gate(t), rounds_used=unattended_rounds_used(t),
+                respawn_pending=t.gate_respawn_pending,
                 armed=_armed(t.operator_request, o.reads.revision))
 
 
