@@ -462,6 +462,9 @@ def _read(p: Path) -> TaskState | None:
     d["stage"] = Stage(d["stage"])
     if d["stage"] in TERMINAL_STAGES:
         d["terminal_at"] = d.get("terminal_at") or d.get("done_at") or d["updated_at"]
+        # A terminal task is never parked; files a closed PR wrote before #316
+        # were, and a reply would wake them into Resuming for good.
+        d["park"] = ""
     else:
         d["terminal_at"] = ""
     d["labels"] = tuple(d.get("labels", ()))

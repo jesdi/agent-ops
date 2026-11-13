@@ -1179,7 +1179,7 @@ def _poll_prs(cfg: Config, deps: Deps, repository: Repository,
             # would otherwise hold their memory/cpu reservation until the box
             # reboots. The worktree stays for autopsy.
             _end_session(cfg, deps, task.repository, task.issue)
-            save(cfg.state_dir, replace(task, stage=Stage.FAILED,
+            save(cfg.state_dir, replace(task, stage=Stage.FAILED, park="",
                                         operator_request=None,
                                         updated_at=_now()))
             eventlog.append_event(cfg.state_dir, "pr-closed",
