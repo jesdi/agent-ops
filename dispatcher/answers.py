@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Callable, Iterable, TypedDict
 
 from dispatcher import intents
-from dispatcher.state import (PARK_HUMAN, PARK_REVIEW, TaskState,
+from dispatcher.state import (PARK_HUMAN, PARK_REVIEW, TaskState, at_gate,
                               read_regular)
 from dispatcher.workspace import remove_worktree_file, write_worktree_file
 
@@ -98,8 +98,6 @@ def select(pending: Iterable[intents.Intent],
 
 def waits_for_operator(task: TaskState) -> bool:
     """Parked for input or review, or at the gate before the grace park."""
-    # Imported here: lifecycle reads this module through artifacts.
-    from dispatcher.lifecycle import at_gate
     return task.park in (PARK_HUMAN, PARK_REVIEW) or at_gate(task)
 
 

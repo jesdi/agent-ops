@@ -279,6 +279,18 @@ class TaskState:
         return Stage.PLAN if self.stage is Stage.AWAITING_PLAN_REVIEW else self.stage
 
 
+def at_gate(t: TaskState) -> bool:
+    """Does the plan session run at the review gate? Held there, or running
+    there: reworking the plan with the request disarmed, or woken or
+    respawned at the gate. Only a status says so, never `gated`. The legacy
+    file stores both statuses as the gate stage with no park
+    (lifecycle._encode_held, _encode_running); a running gate session has no
+    status of its own apart from `running` at `plan`, so until the status is
+    stored (ticket 06) that stage is what tells it from a session that never
+    waited there."""
+    return t.stage is Stage.AWAITING_PLAN_REVIEW and not t.park
+
+
 # The doors: park, wake, unpark and end are the only writers of the park fields
 # (park, park_reason, park_note, park_msg_id, ci_run_id, crashed_stage,
 # hold_for_attach, operator_request) besides the claim. Callers compose them

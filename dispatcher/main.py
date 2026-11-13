@@ -47,8 +47,8 @@ from dispatcher.lifecycle import (AcquireSlot, Admission, ApplyRound, At, ClearT
                                   FailReason, Kind, LaunchFailure, LinkPR, MarkAsked, Notify,
                                   Pane, Poke, PublishSpec, RecordBackgroundWait, ReleaseSlot,
                                   ReportCrash, ReportTaskCrash, RespawnStage, RetryStage,
-                                  Status, Stranded, Transition, WakeBlocked, Woken, at_gate,
-                                  decide, legacy_fields, login_at, occupies, operator_request)
+                                  Status, Stranded, Transition, WakeBlocked, Woken, decide,
+                                  legacy_fields, login_at, occupies, operator_request)
 from dispatcher.loops import Decision, Outcome, ResetCause
 from dispatcher.models import (Admitted, Entry, ModelPolicy,
                                Order, override_refusal,
@@ -69,7 +69,7 @@ from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_POKES, NO_SL
                               next_stage, read_background, read_session,
                               read_stage_doc, read_stage_signal, stage_signal,
                               implement_done, resumable_crash, shown_stage,
-                              end, park, save, task_key, unpark, wake)
+                              at_gate, end, park, save, task_key, unpark, wake)
 from dispatcher.workspace import (MissingBaseError, append_worktree_file, create_workspace,
                                   exclude_local_state, remove_workspace,
                                   write_task_identity, write_worktree_file)
@@ -1916,8 +1916,7 @@ def _handover(turn: _Turn, task: TaskState, act: RespawnStage) -> tuple[TaskStat
         spec_path = turn.signal.artifact
         task = replace(task, track=turn.signal.track)
     elif at_gate(task):
-        task = replace(task, **loops.gate_fields(task, from_gate=True,
-                                                 respawn=act.stage is Stage.PLAN))
+        task = replace(task, **loops.gate_fields(task, respawn=act.stage is Stage.PLAN))
     if act.tickets:
         task = replace(task, ticket_count=act.tickets)
     return task, spec_path
@@ -2098,9 +2097,8 @@ def _gate_entered(turn: _Turn, task: TaskState, act: EnterGate) -> TaskState:
 def _gate_round_fields(task: TaskState) -> dict:
     """The gate's round fields; a plan entering the gate starts the gate
     phase's own retries."""
-    from_gate = at_gate(task)
-    extra = dict(loops.gate_fields(task, from_gate=from_gate))
-    if not from_gate:
+    extra = dict(loops.gate_fields(task))
+    if not at_gate(task):
         extra.update(plan_retries=0, plan_slips=0)
     return extra
 

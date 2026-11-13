@@ -261,17 +261,6 @@ def _without_implement_pick(t: TaskState, stage: Stage) -> TaskState:
     return replace(t, picks={k: v for k, v in t.picks.items() if k != IMPLEMENT_PICK})
 
 
-def at_gate(t: TaskState) -> bool:
-    """Does the plan session run at the review gate? Held there, or running
-    there: reworking the plan with the request disarmed, or woken or
-    respawned at the gate. Only a status says so, never `gated`. The legacy
-    file stores both statuses as the gate stage with no park (_encode_held,
-    _encode_running); a running gate session has no status of its own apart
-    from `running` at `plan`, so until the status is stored (ticket 06) that
-    stage is what tells it from a session that never waited there."""
-    return t.stage is Stage.AWAITING_PLAN_REVIEW and not t.park
-
-
 def _gate_stage(t: TaskState, stage: Stage) -> Stage:
     """The legacy stage of `stage` for `t`: a plan task stays at the gate in
     whatever status it takes there. `gated` alone moves no task to the gate:

@@ -8,12 +8,12 @@ from typing import Callable, NamedTuple
 
 from dispatcher.artifacts import CheckResult, PlanRevision
 from dispatcher.lifecycle import (Admission, Death, Event, EventType, Gate, Pane, Report,
-                                  Silence, Stranded, Wait, at_gate)
+                                  Silence, Stranded, Wait)
 from dispatcher.loops import (Decision, Loop, ReportedRound, Retry, evaluate, retry_left,
                               unattended_rounds_used)
 from dispatcher.loops import Outcome as Rounds
 from dispatcher.state import (BackgroundWait, LoopCaps, OperatorRequest, Stage, StageSignal,
-                              TaskState)
+                              TaskState, at_gate)
 
 
 class BackgroundView(NamedTuple):

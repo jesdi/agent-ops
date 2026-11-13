@@ -14,8 +14,8 @@ import dispatcher.main as main
 from dispatcher import eventlog, intents as intents_mod, spec_publish
 from dispatcher.artifacts import plan_revision
 from dispatcher.lifecycle import (GATE_STOPPED, PLAN_NO_APPROVAL, At, Kind, Status,
-                                  at_gate, operator_request)
-from dispatcher.state import NO_SLOT, PlanApprovalRequest, Stage, load, save
+                                  operator_request)
+from dispatcher.state import NO_SLOT, PlanApprovalRequest, Stage, at_gate, load, save
 
 from tests.test_main import (PLAN_SUMMARY, SPEC_PATH, POLICY, FakeSessions, cfg, deps,
                              make_task, patch_usage, patch_workspace, write_tickets)
