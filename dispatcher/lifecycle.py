@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Callable, NamedTuple
 
-from dispatcher.artifacts import CheckResult, PlanRevision
+from dispatcher.artifacts import REVIEW_PAGE, CheckResult, PlanRevision
 from dispatcher.loops import Decision, Retry
 from dispatcher.loops import Outcome as Rounds
 from dispatcher.models import IMPLEMENT_PICK
@@ -1162,10 +1162,11 @@ def _gate_died(f: Facts) -> Transition | Ignore:
     if not d.rounds_used:
         return _launching(f, Stage.PLAN, Transition(Status(Kind.RUNNING), Stage.PLAN,
                                                     (RespawnStage(Stage.PLAN),)))
-    if not f.status.path:   # a rework session: no plan is on offer
-        return Transition(Status(Kind.PARKED_HUMAN, reason=HumanReason.STALLED,
-                                 note=GATE_STOPPED), f.stage,
-                          (EndSession(), Notify("plan_session_stopped")))
+    if not f.status.path:
+        # A rework session offers no checked plan: the prescribed page waits
+        # for review armed for no revision, so nothing on it can be approved.
+        return Transition(Status(Kind.PARKED_REVIEW, path=REVIEW_PAGE, note=GATE_STOPPED),
+                          f.stage, (EndSession(), Notify("plan_session_stopped")))
     return _review_parked(f, f.status.path, f.status.fingerprint, GATE_STOPPED,
                           "plan_session_stopped")
 

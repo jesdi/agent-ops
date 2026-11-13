@@ -6235,8 +6235,9 @@ def test_round_that_follows_an_operator_reply_is_not_an_unattended_one(
 
 def test_capped_respawn_park_does_not_arm_an_unchecked_summary(tmp_path, monkeypatch):
     """The session died in the middle of a rework (request disarmed) and the
-    respawns are used up: the task parks, but nothing is offered for approval,
-    because no ready report passed the ticket check."""
+    respawns are used up: the task parks for review (#132 ticket 05), but on
+    a request armed for no revision, so nothing can be approved, because no
+    ready report passed the ticket check."""
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
     wt = make_task(c, stage=Stage.AWAITING_PLAN_REVIEW, spec_path=SPEC_PATH,
@@ -6245,13 +6246,14 @@ def test_capped_respawn_park_does_not_arm_an_unchecked_summary(tmp_path, monkeyp
     gate_signal(wt)                       # the dead session's old signal
     d = _gate_pass(c, FakeSessions(alive=set()), monkeypatch)
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert (t.park, t.park_reason, t.operator_request) == (PARK_HUMAN, "stalled", None)
+    assert (t.park, t.slot) == (PARK_REVIEW, NO_SLOT)
+    assert t.operator_request == PlanApprovalRequest(PLAN_SUMMARY, fingerprint="")
     # No plan is ready here: the message says what happened, not "plan ready".
     ((template, ctx),) = d.notifier.contexts
     assert template == "plan_session_stopped" and ctx["rounds"] == 2
     assert t.park_note == "plan session stopped at the review gate"
     (parked,) = [e for e in eventlog.read_tail(c.state_dir) if e["event"] == "parked"]
-    assert parked["detail"] == "plan session stopped at the review gate"
+    assert parked["detail"] == "plan session died at the gate; unattended rounds used up"
 
 
 def test_old_ready_signal_is_never_read_after_a_respawn_or_a_resume(tmp_path, monkeypatch):

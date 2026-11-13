@@ -346,10 +346,11 @@ def test_a_prompt_seen_before_a_poke_parks_for_the_operator():
     assert (got.status.kind, got.status.reason) == (Kind.PARKED_HUMAN, HumanReason.DECISION)
 
 
-def test_a_gate_session_dead_mid_rework_with_no_rounds_parks_stalled():
+def test_a_gate_session_dead_mid_rework_with_no_rounds_parks_for_review_armed_for_none():
     got = decide(At(Stage.PLAN, Status(Kind.RUNNING)), Event(
         EventType.SESSION_DIED, Death(at_gate=True, rounds_used=True, launches=())))
-    assert (got.status.kind, got.status.reason) == (Kind.PARKED_HUMAN, HumanReason.STALLED)
+    assert got.status == Status(Kind.PARKED_REVIEW, path=".agent/review.html",
+                                note="plan session stopped at the review gate")
 
 
 @pytest.mark.parametrize("stage, status", [
