@@ -528,6 +528,24 @@ def test_a_ready_report_from_a_stage_with_no_gate_changes_nothing(c):
     assert now(c) == before
 
 
+@pytest.mark.parametrize("status", ["blocked", "done"])
+def test_a_live_session_at_the_legacy_blocked_stage_is_left_alone(c, status):
+    """The escalate-in-place stage: its session waits for the operator."""
+    signal(task(c, stage=Stage.BLOCKED), status, stage="blocked", note="q")
+    before = now(c)
+    d = run(c)
+    assert now(c) == before
+    assert (d.notifier.sent, d.sessions.ended, d.sessions.spawned) == ([], [], [])
+
+
+def test_done_at_a_stage_no_stage_follows_changes_nothing(c):
+    signal(task(c, stage=Stage.STALLED_ON_BUDGET), "done", stage="stalled-on-budget")
+    before = now(c)
+    d = run(c)
+    assert now(c) == before
+    assert (d.notifier.sent, d.sessions.ended, d.sessions.spawned) == ([], [], [])
+
+
 # --- done ----------------------------------------------------------------------
 
 def test_implement_done_starts_review(c):
