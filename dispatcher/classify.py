@@ -98,15 +98,18 @@ def _in_background(o: Observation) -> Event | None:
     """A background marker decides the pass only for a live session whose
     signal says working and that left no waiting marker; None also once
     herdr's counter moved (a new turn: today's rules decide)."""
-    if o.background is None or not o.alive or o.waiting or not _working_signal(o):
-        return None
-    held = _wait_facts(o.task, o.background)
+    held = _wait_facts(o.task, o.background) if _waits_in_background(o) else None
     if held is None:
         return None
     note, record = held
     d = _round(o)
     login = o.look.login() if note or _exhausted(d) else ""
     return Event(EventType.SESSION_WAITING, Wait(round=d, note=note, record=record, login=login))
+
+
+def _waits_in_background(o: Observation) -> bool:
+    return (o.background is not None and o.alive and not o.waiting
+            and _working_signal(o))
 
 
 def _wait_facts(t: TaskState, view: BackgroundView

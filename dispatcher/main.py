@@ -1743,10 +1743,14 @@ def _admissions(turn: _Turn, task: TaskState,
     executor. A saved choice is dropped only when it may apply to none of
     them: it may be meant for the one the rule does not pick."""
     saved = {stage: _saved_override(turn.cfg, task, stage) for stage in stages}
-    refusals = [(stage, why) for stage, (_, why) in saved.items() if why]
-    if stages and len(refusals) == len(stages):
-        _drop_override(turn.cfg, task, *refusals[0])
+    _drop_if_refused_by_all(turn.cfg, task, saved)
     return tuple(_admission(turn, task, stage, saved[stage][0]) for stage in stages)
+
+
+def _drop_if_refused_by_all(cfg: Config, task: TaskState, saved: dict) -> None:
+    refusals = [(stage, why) for stage, (_, why) in saved.items() if why]
+    if saved and len(refusals) == len(saved):
+        _drop_override(cfg, task, *refusals[0])
 
 
 def _admission(turn: _Turn, task: TaskState, stage: Stage,
