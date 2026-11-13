@@ -6,7 +6,7 @@ fields; the migration command applies the same function to every task file.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, NamedTuple
 
@@ -258,15 +258,31 @@ class EventType(str, Enum):
 @dataclass(frozen=True)
 class Event:
     """An event and the facts the executor read for it (decide reads no file,
-    clock or session). Every default is the plain case."""
+    clock or session). Every default is the plain case; a fact is set only on
+    the event types of _CARRIED."""
     type: EventType
-    blocked: str = ""              # resume-admitted: why the launch cannot start now
-    exhausted: bool = False        # ci-finished, pr-check-failed, pr-conflict: no ci round left
-    this_pass: bool = False        # candidate-ranked: the task ended in this pass
-    left_login_prompt: bool = False  # op-login-code: the pane shows no login prompt any more
-    model: str = ""                # op-resume: the model override
-    bypass_usage: bool = False     # op-resume: launch past the usage gate
-    code: str = ""                 # op-login-code: never logged
+    blocked: str = ""              # why the launch cannot start now
+    exhausted: bool = False        # no ci round left
+    this_pass: bool = False        # the task ended in this pass
+    left_login_prompt: bool = False  # the pane shows no login prompt any more
+    model: str = ""                # the model override
+    bypass_usage: bool = False     # launch past the usage gate
+    code: str = field(default="", repr=False)  # never logged
+
+    def __post_init__(self) -> None:
+        stray = [name for name, types in _CARRIED.items()
+                 if getattr(self, name) and self.type not in types]
+        if stray:
+            raise ValueError(f"{self.type.value} carries no {', '.join(stray)}")
+
+
+_CARRIED = {"blocked": {EventType.RESUME_ADMITTED},
+            "exhausted": {EventType.CI_FINISHED, EventType.PR_CHECK_FAILED,
+                          EventType.PR_CONFLICT},
+            "this_pass": {EventType.CANDIDATE_RANKED},
+            "left_login_prompt": {EventType.OP_LOGIN_CODE},
+            "model": {EventType.OP_RESUME}, "bypass_usage": {EventType.OP_RESUME},
+            "code": {EventType.OP_LOGIN_CODE}}
 
 
 # ---- Outcomes and actions ---------------------------------------------------
@@ -364,7 +380,7 @@ class Flush:
 
 @dataclass(frozen=True)
 class TypeLoginCode:
-    code: str
+    code: str = field(repr=False)  # never logged
 
 
 Action = (AcquireSlot | ReleaseSlot | EndSession | ContinueSession | RespawnStage

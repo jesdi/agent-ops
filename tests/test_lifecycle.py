@@ -164,9 +164,21 @@ TASKS = [
     At(S.QUEUED, failed("unknown")), At(S.PLAN, Status(Kind.CANCELED)),
     At(S.PR_OPEN, Status(Kind.DONE)),
 ]
-EVENTS = [Event(e, **facts) for e in EventType for facts in (
-    {}, dict(blocked="capacity full"), dict(exhausted=True), dict(this_pass=True),
-    dict(left_login_prompt=True), dict(model="anthropic/claude-opus-5", code="ABCD-1234"))]
+FACTS = ({}, dict(blocked="capacity full"), dict(exhausted=True), dict(this_pass=True),
+         dict(left_login_prompt=True), dict(model="anthropic/claude-opus-5", bypass_usage=True),
+         dict(code="ABCD-1234"))
+
+
+def events():
+    """Every event type with each set of facts it carries."""
+    for e, facts in itertools.product(EventType, FACTS):
+        try:
+            yield Event(e, **facts)
+        except ValueError:
+            continue
+
+
+EVENTS = list(events())
 
 
 def undeclared(event_types) -> list[tuple[str, str]]:
@@ -447,3 +459,19 @@ def test_a_pr_parked_task_ends_with_its_pr_and_notifies(event, status, notice):
 def test_a_row_that_decides_nothing_refuses_what_it_would_drop(outcome, dropped):
     with pytest.raises(ValueError):
         lifecycle.Row(Kind.RUNNING, E.OP_REPLY, outcome, **dropped)
+
+
+@pytest.mark.parametrize("event, facts", [
+    (E.OP_REPLY, dict(code="ABCD-1234")), (E.OP_KILL, dict(model="m")),
+    (E.PR_FEEDBACK, dict(exhausted=True)), (E.OP_RESUME, dict(this_pass=True)),
+])
+def test_an_event_refuses_facts_its_type_does_not_carry(event, facts):
+    with pytest.raises(ValueError):
+        Event(event, **facts)
+
+
+def test_a_login_code_is_in_no_repr_or_reason():
+    event = Event(E.OP_LOGIN_CODE, code="ABCD-1234")
+    assert "ABCD-1234" not in repr(event)
+    for at in TASKS:
+        assert "ABCD-1234" not in repr(decide(at, event)), at
