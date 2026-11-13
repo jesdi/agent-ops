@@ -450,6 +450,11 @@ class Row:
     move: tuple[Stage, Stage] | None = None
     actions: tuple = ()
 
+    def decides(self, f: Facts) -> bool:
+        """Is this the row for `f`, its stage move and guard included?"""
+        return (self.source is f.status.kind and self.event is f.event.type
+                and (self.move is None or self.move[0] is f.stage) and self.guard(f))
+
 
 def _rows(kinds, events, to: Outcome, **kw) -> list[Row]:
     return [Row(k, e, to, **kw) for k in kinds for e in events]
@@ -588,9 +593,7 @@ def decide(task: TaskState | At, event: Event) -> Transition | Ignore | Reject:
 
 
 def _match(f: Facts) -> Row:
-    return next(r for r in TABLE
-                if r.source is f.status.kind and r.event is f.event.type
-                and (r.move is None or r.move[0] is f.stage) and r.guard(f))
+    return next(r for r in TABLE if r.decides(f))
 
 
 def _with_slot(before: Status, after: Status, actions: tuple) -> tuple:
@@ -626,12 +629,13 @@ def graph() -> dict:
     """Every transition row as an edge between status kinds, and every stage
     move as an edge between stages."""
     rows = [r for r in TABLE if isinstance(r.to, Kind)]
-    return {
-        "status": {"nodes": [k.value for k in Kind], "edges": [_edge(r) for r in rows]},
-        "stage": {"nodes": [s.value for s in PIPELINE],
-                  "edges": [Edge(r.move[0].value, r.event.value, r.guard.__name__,
-                                 r.move[1].value) for r in rows if r.move]},
-    }
+    return {"status": {"nodes": [k.value for k in Kind], "edges": [_edge(r) for r in rows]},
+            "stage": {"nodes": [s.value for s in PIPELINE], "edges": _stage_edges(rows)}}
+
+
+def _stage_edges(rows: list[Row]) -> list[Edge]:
+    return [Edge(r.move[0].value, r.event.value, r.guard.__name__, r.move[1].value)
+            for r in rows if r.move]
 
 
 def _edge(r: Row) -> Edge:
