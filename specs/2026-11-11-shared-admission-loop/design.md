@@ -20,7 +20,8 @@
   spawn in the same pass can be allocated that number), and keeps the
   number a resumed conversation already knows (ports `8100+slot`). Costs one
   behaviour change: a feedback task recording a free slot keeps it instead
-  of taking the lowest free one (open question on the review page).
+  of taking the lowest free one. The operator chose this rule on the plan review
+  (2026-11-13) over "always fresh" and "each queue as today".
 - **The generator yields the task with its slot, unsaved** — the spawn
   action saves it as it does today; a skipped task never gets a slot
   written.
