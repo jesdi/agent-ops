@@ -481,6 +481,20 @@ def test_triage_state_running_pauses_claims_too(monkeypatch, src):
 
 # --- triage probe cache -----------------------------------------------------
 
+def test_triage_state_unreadable_request_file_keeps_the_probed_value(tmp_path, monkeypatch):
+    """A request-file read error must not hide a running probe nor invent a pause."""
+    import dispatcher.triage as triage_mod
+
+    def boom(*_a, **_kw):
+        raise OSError("simulated unreadable request file")
+
+    monkeypatch.setattr(triage_mod, "load_request", boom)
+    for probed in (True, False):
+        monkeypatch.setattr(triage_mod, "running", lambda probed=probed: probed)
+        _, src = make_sources(tmp_path)
+        assert src.triage_state() == (probed, probed)
+
+
 def _triage_sources(tmp_path, monkeypatch, probe):
     """Sources + clock + call counter around a monkeypatched triage.running."""
     import dispatcher.triage as triage_mod
