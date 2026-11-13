@@ -793,10 +793,12 @@ def test_a_failed_marker_write_still_falls_through(tmp_path, monkeypatch, caplog
     assert "cannot record the usage cooldown" in caplog.text
 
 
-def test_a_malformed_home_token_does_not_prevent_the_host_fallback(tmp_path, monkeypatch):
+@pytest.mark.parametrize("bad_token", [123, "\ud800"])
+def test_a_malformed_home_token_does_not_prevent_the_host_fallback(
+        tmp_path, monkeypatch, bad_token):
     adapter = two_stores(tmp_path, monkeypatch)
     (tmp_path / "claude-home" / ".credentials.json").write_text(
-        json.dumps({"claudeAiOauth": {"accessToken": 123}}))
+        json.dumps({"claudeAiOauth": {"accessToken": bad_token}}))
     asked = serve(monkeypatch, {"tok-host": oauth_response()})
     u = adapter.fetch(tmp_path, now=lambda: 1000)
     assert u.source == "oauth"

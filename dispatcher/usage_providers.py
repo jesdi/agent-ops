@@ -210,7 +210,10 @@ class AnthropicUsage:
         marker = cooldown_path(state_dir, self.name)
         cooling = _live_cooldowns(marker, at)
         for token in self._candidates(state_dir):
-            key = _token_key(token)
+            try:
+                key = _token_key(token)
+            except UnicodeError:
+                continue  # malformed token; the next credential store may be live
             if key in cooling:
                 continue
             try:
