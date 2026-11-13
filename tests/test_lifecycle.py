@@ -18,6 +18,7 @@ from dispatcher.lifecycle import (TABLE, AcquireSlot, At, CancelIssue,
                                   Transition, TypeLoginCode, WakeBlocked,
                                   decide, graph, legacy_view, next_transitions,
                                   occupies, operator_request)
+from dispatcher.machine import Notify
 from dispatcher.state import (AnswersRequest, PlanApprovalRequest, Stage,
                               TaskState)
 
@@ -406,3 +407,31 @@ def test_park_intent_at_the_gate_parks_it_for_review():
     assert operator_request(At(S.PLAN, got.status)) == PLAN
     assert ("op-park", "parked-review") in {
         (e.event, e.to) for e in next_transitions(At(S.PLAN, GATE))}
+
+
+def test_an_unknown_failure_at_queued_ranked_again_is_swept_unless_written_this_pass():
+    at = At(S.QUEUED, failed("unknown"))
+    assert decide(at, Event(E.CANDIDATE_RANKED)) == Transition(
+        at.status, S.QUEUED, (SweepTombstone(),))
+    assert isinstance(decide(at, Event(E.CANDIDATE_RANKED, this_pass=True)), Ignore)
+
+
+def test_resume_of_a_login_hold_is_refused():
+    assert isinstance(decide(At(S.SPEC, Status(Kind.HELD_LOGIN)), Event(E.OP_RESUME)), Reject)
+
+
+@pytest.mark.parametrize("at", [At(S.IMPLEMENT, failed("killed")),
+                                At(S.PLAN, Status(Kind.CANCELED)),
+                                At(S.PR_OPEN, Status(Kind.DONE))])
+def test_kill_of_an_ended_task_is_refused(at):
+    assert isinstance(decide(at, Event(E.OP_KILL)), Reject)
+
+
+@pytest.mark.parametrize("event, status, notice", [
+    (E.PR_CLOSED, failed("pr-closed"), "pr_closed"),
+    (E.PR_MERGED, Status(Kind.DONE), "task_done"),
+])
+def test_a_pr_parked_task_ends_with_its_pr_and_notifies(event, status, notice):
+    got = decide(At(S.PR_OPEN, PR), Event(event))
+    assert (got.status, got.stage) == (status, S.PR_OPEN)
+    assert Notify(notice) in got.actions
