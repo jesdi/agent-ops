@@ -175,7 +175,7 @@ def report(signal: StageSignal, **facts) -> Report:
     """A session-signal's facts: those named, the rest plain."""
     plain = dict(round=None, gate=PLAIN_GATE, retries=frozenset(), asks=False, bad_track="",
                  skips_gate=False, tickets=None, revision=None, spec=None, answers=None,
-                 launches=(), login="")
+                 launches=(), login="", moved_on=False)
     return Report(signal, **{**plain, **facts})
 
 
@@ -192,7 +192,7 @@ DETAILS = {
     E.SESSION_SIGNAL: [report(StageSignal("implement", s)) for s in ("working", "blocked")],
     E.SESSION_IDLE: [Silence(round=None, note="", pane=Pane.CLEAR, login=""),
                      Silence(round=None, note="stalled", pane=None, login="")],
-    E.SESSION_WAITING: [Wait(round=None, note="", record=None, login="")],
+    E.SESSION_WAITING: [Wait(round=None, note="", record=None, login="", moved_on=False)],
     E.SESSION_DIED: [Death(at_gate=False, rounds_used=False, launches=())],
     E.TRACK_UNCONFIGURED: [Stranded(note="gone", login="")],
     E.LAUNCH_FAILED: [LaunchFailure(S.SPEC)],

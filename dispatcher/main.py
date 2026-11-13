@@ -1859,6 +1859,15 @@ def _settle(turn: _Turn, saved: TaskState, t: Transition) -> None:
     _legacy_event(turn, saved, t)
     for effect in turn.after:
         effect(saved)
+    _remember_question(turn, saved)
+
+
+def _remember_question(turn: _Turn, saved: TaskState) -> None:
+    """The one write after the commit: the id of the message a park's notice
+    got, which only the send returns, and the notice goes out only after the
+    commit (ADR 0015). An operator's reply to it is matched by that id; a
+    crash before this write leaves 0, which the console shows as a question
+    not yet sent. A fact, never the stage or the status."""
     if turn.msg_id and saved.park:
         save(turn.cfg.state_dir, replace(saved, park_msg_id=turn.msg_id))
 
@@ -2234,17 +2243,6 @@ def _background_view(cfg: Config, deps: Deps, task: TaskState,
                           time.time(), cfg.background_wait_seconds)
 
 
-def _end_poke_stretch(cfg: Config, task: TaskState, idle: float | None,
-                      dry_run: bool) -> TaskState:
-    """herdr sees the session working (idle 0): whatever woke it, the poke
-    stretch is over and the next poke starts a new clock."""
-    if idle != 0 or not task.poked_since or dry_run:
-        return task
-    task = replace(task, **NO_POKES)
-    save(cfg.state_dir, task)
-    return task
-
-
 def _park_stranded(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
                    why: str) -> None:
     """Park a task the config strands for `why` (models.stranded)."""
@@ -2267,8 +2265,7 @@ def _observed(turn: _Turn, task: TaskState) -> tuple[TaskState, Event | None]:
     task, turn.signal = _adopt_track(turn.cfg, policy, task, signal, turn.dry_run)
     if task.at.status.kind is Kind.WAKING:
         return task, _launch_due(turn, task, policy)
-    task, o = _observation(turn, task, policy)
-    return task, classify(o)
+    return task, classify(_observation(turn, task, policy))
 
 
 def _launch_due(turn: _Turn, task: TaskState, policy: ModelPolicy) -> Event | None:
@@ -2312,8 +2309,7 @@ def _no_room(cfg: Config, task: TaskState) -> str:
     return ""
 
 
-def _observation(turn: _Turn, task: TaskState,
-                 policy: ModelPolicy) -> tuple[TaskState, Observation]:
+def _observation(turn: _Turn, task: TaskState, policy: ModelPolicy) -> Observation:
     cfg, sessions = turn.cfg, turn.deps.sessions
     alive = sessions.is_alive(task.repository, task.issue)
     # herdr's view of a background wait BEFORE the idle reading: a session
@@ -2323,8 +2319,7 @@ def _observation(turn: _Turn, task: TaskState,
     # Idle only when it can matter: detection on and the session alive.
     stall_after = cfg.stall_after_seconds if alive else 0
     idle = sessions.idle_seconds(task.repository, task.issue) if stall_after > 0 else None
-    task = _end_poke_stretch(cfg, task, idle, turn.dry_run)
-    return task, Observation(
+    return Observation(
         task=task, signal=turn.signal, alive=alive,
         waiting=has_waiting(cfg.state_dir, task.repository, task.issue),
         idle=idle, stall_after=stall_after, background=view, now=time.time(),

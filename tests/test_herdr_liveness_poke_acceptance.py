@@ -336,8 +336,10 @@ def test_table_past_the_cap_parks_with_cap_note():
 
 
 def test_table_herdr_working_does_nothing_even_past_the_cap():
-    from dispatcher.lifecycle import Ignore
-    assert isinstance(_decide(idle=0.0, since=1_000_000.0 - 4 * HOUR, pokes=48), Ignore)
+    """No poke and no park: only the stretch ends, its next poke a new clock."""
+    from dispatcher.lifecycle import EndPokeStretch
+    got = _decide(idle=0.0, since=1_000_000.0 - 4 * HOUR, pokes=48)
+    assert got.status.kind.value == "running" and got.actions == (EndPokeStretch(),)
 
 
 def test_table_no_marker_idle_past_stall_parks_with_stall_note():

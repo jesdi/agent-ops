@@ -429,6 +429,7 @@ class Report:
     answers: tuple[str, str] | None  # the answers page: (path, fingerprint)
     launches: tuple[Admission, ...]  # the launches the report's rule may start
     login: str                       # the pane is at a login prompt: its URL
+    moved_on: bool                   # herdr sees the poked session working again
 
 
 @dataclass(frozen=True)
@@ -447,6 +448,7 @@ class Wait:
     note: str                         # the cap is reached: why it parks
     record: tuple[float, int] | None  # a background report to record: (reported, seq)
     login: str
+    moved_on: bool                    # herdr sees the poked session working again
 
 
 @dataclass(frozen=True)
@@ -1097,9 +1099,19 @@ def _awaiting_answers(f: Facts) -> Transition:
                       (*asked, EndSession(), Notify("parked_question", note)))
 
 
+def _stretch_over(f: Facts) -> tuple[Action, ...]:
+    """A poked session herdr sees working again: the next poke starts a new
+    clock (RecordBackgroundWait ends the stretch too)."""
+    return (EndPokeStretch(),) if f.event.detail.moved_on else ()
+
+
+def _still_working(f: Facts) -> Transition | Ignore:
+    return _working(f, *_stretch_over(f))
+
+
 _SIGNALS: dict[str, Callable[[Facts], Transition | Ignore]] = {
     "awaiting-ci": _awaiting_ci, "blocked": _blocked, "awaiting-answers": _awaiting_answers,
-    "working": _working, "awaiting-review": _ready, "done": _done}
+    "working": _still_working, "awaiting-review": _ready, "done": _done}
 
 
 def on_signal(f: Facts) -> Transition | Ignore:
@@ -1130,7 +1142,7 @@ def on_waiting(f: Facts) -> Transition | Ignore:
     if w.note:
         return _stalled(f, HumanReason.STALLED, w.note)
     recorded = (RecordBackgroundWait(*w.record),) if w.record else ()
-    actions = (*_rounds(f), *recorded)
+    actions = (*_rounds(f), *recorded, *_stretch_over(f))
     if not actions:
         return Ignore("the background wait holds")
     return _exhausted(f) or Transition(f.status, f.stage, actions)

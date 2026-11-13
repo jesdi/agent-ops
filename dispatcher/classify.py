@@ -104,7 +104,8 @@ def _in_background(o: Observation) -> Event | None:
     note, record = held
     d = _round(o)
     login = o.look.login() if note or _exhausted(d) else ""
-    return Event(EventType.SESSION_WAITING, Wait(round=d, note=note, record=record, login=login))
+    return Event(EventType.SESSION_WAITING, Wait(round=d, note=note, record=record, login=login,
+                                                 moved_on=_moved_on(o)))
 
 
 def _waits_in_background(o: Observation) -> bool:
@@ -224,7 +225,13 @@ def _report(o: Observation) -> Report:
         skips_gate=_skips_gate(o), tickets=r.tickets, revision=r.revision, spec=r.spec,
         answers=r.answers,
         launches=o.look.launches(_launchable(t.at.stage, gate.at, o.signal.status)),
-        login=o.look.login() if _may_park(o.signal.status, d, gate.armed) else "")
+        login=o.look.login() if _may_park(o.signal.status, d, gate.armed) else "",
+        moved_on=_moved_on(o))
+
+
+def _moved_on(o: Observation) -> bool:
+    """herdr sees the session working (idle 0) while a poke stretch is open."""
+    return o.idle == 0 and bool(o.task.poked_since)
 
 
 def _exhausted(d: Decision | None) -> bool:

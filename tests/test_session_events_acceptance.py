@@ -525,3 +525,33 @@ def test_the_plan_link_is_posted_only_after_the_gate_entry_commits(c, monkeypatc
     with pytest.raises(_Killed):
         run(c, FakeSessions(alive={42}), gh)
     assert gh.comments == []
+
+
+# --- a turn saves once: the commit (and a park's message id after its notice)
+
+def _saves(monkeypatch):
+    saved = []
+    real = main.save
+
+    def counting(state_dir, ts):
+        saved.append(ts)
+        real(state_dir, ts)
+    monkeypatch.setattr(main, "save", counting)
+    return saved
+
+
+def test_a_session_herdr_sees_working_ends_the_poke_stretch_in_the_commit(c, monkeypatch):
+    signal(task(c, poked_since=time.time() - 60, pokes=1), "working")
+    saved = _saves(monkeypatch)
+    run(c, HerdrSessions({42: ("working", 6)}, alive=[42], idle={42: 0.0}))
+    assert [(t.poked_since, t.pokes) for t in saved if t.issue == 42] == [(0.0, 0)]
+    assert [e["event"] for e in transitions(c)] == ["session-signal"]
+
+
+def test_a_park_saves_its_commit_then_only_the_message_that_asked(c, monkeypatch):
+    signal(task(c), "blocked", note="which DB?")
+    saved = _saves(monkeypatch)
+    d = run(c, FakeSessions(alive={42}))
+    commit, asked = [t for t in saved if t.issue == 42]
+    assert dc_replace(asked, park_msg_id=0) == commit and asked.park_msg_id
+    assert d.notifier.sent == ["parked_question"]
