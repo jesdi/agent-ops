@@ -389,11 +389,15 @@ def _wake(cause: str) -> Callable[[Facts], Status]:
     return lambda f: Status(Kind.WAKING, origin=f.status, cause=cause)
 
 
+def _review_park(f: Facts) -> Status:
+    """The gate's page parked for review: the same request, no live session."""
+    return Status(Kind.PARKED_REVIEW, path=f.status.path,
+                  fingerprint=f.status.fingerprint, note=f.status.note)
+
+
 def _wake_through_review(f: Facts) -> Status:
     """The gate session ends: the task passes through parked(review)."""
-    origin = Status(Kind.PARKED_REVIEW, path=f.status.path,
-                    fingerprint=f.status.fingerprint, note=f.status.note)
-    return Status(Kind.WAKING, origin=origin, cause="reply")
+    return Status(Kind.WAKING, origin=_review_park(f), cause="reply")
 
 
 _PR_ATTENTION = {EventType.PR_FEEDBACK: "feedback", EventType.PR_CHECK_FAILED: "check-failed",
@@ -514,8 +518,10 @@ TABLE: tuple[Row, ...] = tuple([
     Row(K.DONE, E.OP_CANCEL, _ENDED_REJECT),
     Row(K.RUNNING, E.OP_PARK, K.PARKED_HUMAN, build=_human("operator", "parked by operator"),
         actions=(EndSession(),)),
-    *_rows([k for k in K if k is not K.RUNNING], [E.OP_PARK],
-           Reject("only a running task can be parked")),
+    Row(K.HELD_PLAN_APPROVAL, E.OP_PARK, K.PARKED_REVIEW, build=_review_park,
+        actions=(EndSession(),)),
+    *_rows([k for k in K if k not in (K.RUNNING, K.HELD_PLAN_APPROVAL)], [E.OP_PARK],
+           Reject("only a running task or one at the plan gate can be parked")),
 
     # op-login-code: the pane is re-verified by the executor (left_login_prompt).
     Row(K.HELD_LOGIN, E.OP_LOGIN_CODE, Reject("no longer at a login prompt — code not typed"),

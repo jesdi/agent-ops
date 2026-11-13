@@ -396,3 +396,11 @@ def test_graph_draws_every_transition_row_and_the_stage_progression():
     assert ("pr-open", "resume-admitted", "always", "address-review") in g["stage"]["edges"]
     assert ("queued", "resume-admitted", "always", "spec") in g["stage"]["edges"]
     assert {"queued", "spec", "pr-open", "address-review"} <= set(g["stage"]["nodes"])
+
+
+def test_park_intent_at_the_gate_parks_it_for_review():
+    got = decide(At(S.PLAN, GATE), Event(E.OP_PARK))
+    assert got == Transition(REVIEW_PARK, S.PLAN, (EndSession(), ReleaseSlot()))
+    assert operator_request(At(S.PLAN, got.status)) == PLAN
+    assert ("op-park", "parked-review") in {
+        (e.event, e.to) for e in next_transitions(At(S.PLAN, GATE))}
