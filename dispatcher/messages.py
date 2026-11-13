@@ -77,12 +77,16 @@ def append(state_dir: str | Path, repository: str, issue: int, text: str,
     return m
 
 
+def _read(p: Path) -> list[Message]:
+    out = [_parse(raw, p) for raw in p.read_text().splitlines() if raw.strip()]
+    return [m for m in out if m is not None]
+
+
 def all_messages(state_dir: str | Path, repository: str, issue: int) -> list[Message]:
     p = _path(state_dir, repository, issue)
     if not p.exists():
         return []
-    out = [_parse(raw, p) for raw in p.read_text().splitlines() if raw.strip()]
-    return [m for m in out if m is not None]
+    return _read(p)
 
 
 def undelivered(state_dir: str | Path, repository: str, issue: int) -> list[Message]:
@@ -130,9 +134,7 @@ def _merge_legacy(state_dir: str | Path, repository: str, issue: int,
     crash before the unlink never duplicates on re-run."""
     existing = all_messages(state_dir, repository, issue)
     seen = {m.id for m in existing}
-    legacy = [m for m in (_parse(raw, p) for raw in
-                          p.read_text().splitlines() if raw.strip())
-              if m is not None and m.id not in seen]
+    legacy = [m for m in _read(p) if m.id not in seen]
     merged = sorted(existing + legacy, key=lambda m: m.created_at)
     write_atomic(dest, "".join(_dump(m) + "\n" for m in merged))
     p.unlink()
