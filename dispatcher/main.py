@@ -69,7 +69,8 @@ from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_POKES, NO_SL
                               next_stage, read_background, read_session,
                               read_stage_doc, read_stage_signal, stage_signal,
                               implement_done, resumable_crash, shown_stage,
-                              at_gate, end, park, save, task_key, unpark, wake)
+                              at_gate, end, gate_stage, park, save, task_key, unpark,
+                              wake)
 from dispatcher.workspace import (MissingBaseError, append_worktree_file, create_workspace,
                                   exclude_local_state, remove_workspace,
                                   write_task_identity, write_worktree_file)
@@ -777,8 +778,7 @@ def _spawned(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
                               stage.value, entry.model_id, entry.effort,
                               second=launch.second, gh_config=gh_config)
     messages.mark_delivered(cfg.state_dir, task.repository, task.issue, drained)
-    # A gated task's plan session runs at the gate, so its `done` is the approval.
-    kept = Stage.AWAITING_PLAN_REVIEW if stage is Stage.PLAN and task.gated else stage
+    kept = gate_stage(task, stage)
     return replace(unpark(task), stage=kept, spec_path=spec_path or task.spec_path,
                    unlaunched=False,
                    gate_respawn_pending=(task.gate_respawn_pending
@@ -2831,7 +2831,10 @@ def _apply_resume_intent(cfg: Config, by_name: dict,
         # Back to the stage it crashed in, queued like any wake so capacity,
         # slots and admission still decide when; crashed_stage stays set so
         # _resume_one respawns the stage instead of continuing a transcript.
+        # A crash at the gate (an older file) resumes plan: no session runs
+        # at the gate before it reports a plan ready again.
         task = replace(task, stage=Stage(task.crashed_stage), terminal_at="")
+        task = replace(task, stage=task.continued_stage)
     elif not _is_parked(task):
         print(f"[warn] resume intent for #{issue}: task not parked — skipped",
               file=sys.stderr)

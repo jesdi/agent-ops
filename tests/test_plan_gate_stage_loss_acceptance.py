@@ -5,7 +5,6 @@ Spec: specs/plan-gate-stage-loss/spec.md, requirements 1-3 and their scenarios.
 Black-box, through dispatcher.main.run_pass over the fakes of tests/test_main.py,
 with a real worktree behind each task.
 """
-import json
 from dataclasses import replace as dc_replace
 
 import pytest
@@ -17,7 +16,7 @@ from dispatcher.models import parse_policy
 from dispatcher.state import NO_SLOT, PARK_REVIEW, PlanApprovalRequest, Stage
 
 from tests.test_main import (FakeSessions, deps, make_task,
-                             patch_usage, patch_workspace)
+                             patch_usage, patch_workspace, record_session)
 from tests.test_plan_review_gate_acceptance import (
     GATE, ISSUE, SPEC, SUMMARY, _arm, _done, _folder_files, _plan_task, _ready,
     _signal, _task)
@@ -156,12 +155,15 @@ def test_respawn_of_a_dead_session_at_the_gate_keeps_the_gate_stage(
     assert sess.resumed == []   # a ready report is not bounced back to the session
 
 
-def test_crash_resume_of_a_gated_task_runs_at_the_gate_stage(tmp_path, monkeypatch):
+@pytest.mark.parametrize("crashed", ["plan", GATE])
+def test_crash_resume_of_a_gated_task_runs_in_stage_plan_and_its_done_is_bounced(
+        tmp_path, monkeypatch, crashed):
+    """#132 ticket 05: `gated` moves no launch to the gate. A Resume after a
+    crash is no session at the gate, so its `done` is no approval, even one
+    the operator approved before the crash."""
     c = _setup(tmp_path, monkeypatch)
     wt = _plan_task(c, tmp_path, Stage.FAILED, git=False, tickets=1, gated=True,
-                    slot=NO_SLOT, crashed_stage="plan", unattended_rounds=1)
-    (wt / ".agent" / "review-answers.json").write_text(
-        json.dumps({"answers": [{"question": "approve the plan?", "answer": "approve"}]}))
+                    slot=NO_SLOT, crashed_stage=crashed, unattended_rounds=1)
     intents_mod.write_intent(c.state_dir, "resume", "portfolio_eval", ISSUE, {}, "op", 1)
     sess = FakeSessions()
 
@@ -169,15 +171,16 @@ def test_crash_resume_of_a_gated_task_runs_at_the_gate_stage(tmp_path, monkeypat
 
     assert [s[:2] for s in sess.spawned] == [(ISSUE, "plan")]
     t = _task(c)
-    assert t.stage.value == GATE and t.unattended_rounds == 0
+    assert t.stage is Stage.PLAN and t.unattended_rounds == 0
 
     sess.alive_set.add(ISSUE)
-    _done(wt)
+    record_session(c, "plan", ISSUE)
+    _done(wt)                            # an approval of the plan on disk is there
     main.run_pass(c, deps(sess=sess))
 
-    t = _task(c)
-    assert t.stage is Stage.IMPLEMENT and t.ticket_count == 1
-    assert len(_implement_spawns(sess)) == 1
+    (resume,) = sess.resumed
+    assert PLAN_NO_APPROVAL in resume[1] and _implement_spawns(sess) == []
+    assert _task(c).stage is Stage.PLAN
 
 
 def test_crash_resume_of_a_plan_that_never_reached_the_gate_runs_in_stage_plan(

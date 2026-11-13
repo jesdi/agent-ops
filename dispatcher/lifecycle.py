@@ -19,7 +19,7 @@ from dispatcher.state import (PARK_CI, PARK_HUMAN, PARK_LOGIN, PARK_REVIEW,
                               WHY_CONFIG, WHY_DECISION, WHY_LOOP_CAP, WHY_OPERATOR,
                               WHY_STALLED, AnswersRequest,
                               OperatorRequest, PlanApprovalRequest, Stage, StageSignal,
-                              TaskState, end, implement_done, park, unpark)
+                              TaskState, end, gate_stage, implement_done, park, unpark)
 
 
 class Kind(str, Enum):
@@ -261,17 +261,8 @@ def _without_implement_pick(t: TaskState, stage: Stage) -> TaskState:
     return replace(t, picks={k: v for k, v in t.picks.items() if k != IMPLEMENT_PICK})
 
 
-def _gate_stage(t: TaskState, stage: Stage) -> Stage:
-    """The legacy stage of `stage` for `t`: a plan task stays at the gate in
-    whatever status it takes there. `gated` alone moves no task to the gate:
-    a plan session's `done` outside it is bounced, whatever it once waited
-    for (a launch of a gated task's plan starts it at the gate: _spawned)."""
-    at = stage is Stage.PLAN and t.stage is Stage.AWAITING_PLAN_REVIEW
-    return Stage.AWAITING_PLAN_REVIEW if at else stage
-
-
 def _at_stage(t: TaskState, stage: Stage) -> TaskState:
-    return replace(t, stage=_gate_stage(t, stage))
+    return replace(t, stage=gate_stage(t, stage))
 
 
 def _encode_running(t: TaskState, stage: Stage, status: Status) -> TaskState:

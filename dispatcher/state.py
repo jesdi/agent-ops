@@ -291,6 +291,15 @@ def at_gate(t: TaskState) -> bool:
     return t.stage is Stage.AWAITING_PLAN_REVIEW and not t.park
 
 
+def gate_stage(t: TaskState, stage: Stage) -> Stage:
+    """The legacy stage `stage` runs as for `t`: a plan task stays at the gate
+    in whatever status it takes there. `gated` alone moves no task to the
+    gate: a plan session's `done` outside it is bounced, whatever it once
+    waited for, so a Resume after a crash runs in stage plan."""
+    at = stage is Stage.PLAN and t.stage is Stage.AWAITING_PLAN_REVIEW
+    return Stage.AWAITING_PLAN_REVIEW if at else stage
+
+
 # The doors: park, wake, unpark and end are the only writers of the park fields
 # (park, park_reason, park_note, park_msg_id, ci_run_id, crashed_stage,
 # hold_for_attach, operator_request) besides the claim. Callers compose them

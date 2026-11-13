@@ -254,7 +254,9 @@ def test_awaiting_plan_review_restarts_plan_with_the_operator_reply(
     launch, after = _pass(c, d, before)
     _assert_stage_prompt(launch, before, "plan")
     _assert_delivered(c, before, queued, launch["prompt"])
-    assert after.stage is Stage.PLAN
+    # Woken at the gate, the fresh plan session runs there (#132 ticket 05):
+    # the gate stage it is woken in, not `gated`, decides.
+    assert after.stage is Stage.AWAITING_PLAN_REVIEW
     assert after.spec_path == before.spec_path
     _assert_retained_context(before, after)
 
