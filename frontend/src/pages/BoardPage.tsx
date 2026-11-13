@@ -191,7 +191,7 @@ function useBoardData() {
 type Settled = { isPending: boolean; error: Error | null }
 
 function boardLoading(board: unknown, projectPending: boolean, a: Settled, b: Settled) {
-  return projectPending || (!board && (a.isPending || b.isPending))
+  return projectPending || (!board && [a, b].some((q) => q.isPending))
 }
 
 /** What stands in for the board until it can render. */
