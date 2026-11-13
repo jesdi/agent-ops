@@ -22,7 +22,7 @@ from dispatcher.models import parse_policy
 from dispatcher.state import (NO_SLOT, PARK_HUMAN, PARK_REVIEW, PlanApprovalRequest,
                               Stage, load, save)
 
-from tests.test_main import (FakeGitHub, FakeNotifier, FakeSessions, cfg,
+from tests.test_main import (FakeGitHub, FakeNotifier, FakeSessions, armed_request, cfg,
                              deps, make_task, patch_usage, patch_workspace,
                              write_tickets, GOOD_TICKET)
 
@@ -151,7 +151,7 @@ def _arm(c):
     """A request armed by hand is bound to the plan on disk, as a pass binds it."""
     t = _task(c)
     save(c.state_dir, dc_replace(
-        t, operator_request=main._plan_approval(t, t.operator_request.path)))
+        t, operator_request=armed_request(t, t.operator_request.path)))
 
 
 # 1. The task waits at the plan review gate.
@@ -350,7 +350,7 @@ def test_respawn_ready_report_reuses_its_round_and_starts_a_fresh_grace_clock(
     t = _task(c)
     assert t.unattended_rounds == used + 1
     assert t.park == "" and t.slot != NO_SLOT
-    assert t.operator_request == main._plan_approval(t, SUMMARY)
+    assert t.operator_request == armed_request(t, SUMMARY)
     assert t.updated_at > old_clock and not main._grace_elapsed(c, t)
     assert d.notifier.sent == ["awaiting_plan_review"]
 

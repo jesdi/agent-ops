@@ -19,7 +19,7 @@ from tests.test_answers_intent_acceptance import (ISSUE, PLAN_FILE, REV, REPOSIT
                                                   _drain, _events, _file,
                                                   _gate, _intent, _setup,
                                                   _task, _texts)
-from tests.test_main import FakeSessions, deps, make_task
+from tests.test_main import FakeSessions, armed_request, deps, make_task, write_tickets
 
 
 def test_an_unknown_submit_value_is_dropped(tmp_path, monkeypatch):
@@ -215,7 +215,7 @@ def _real_gate(c):
     wt = make_task(c, issue=ISSUE)
     (wt / ".agent" / "review.html").write_bytes(FIXTURE.read_bytes())
     task = _task(c)
-    req = main._plan_approval(task, ".agent/review.html")
+    req = armed_request(task, ".agent/review.html")
     assert req.fingerprint
     save(c.state_dir, replace(task, stage=Stage.AWAITING_PLAN_REVIEW, slot=NO_SLOT,
                               park=PARK_REVIEW, operator_request=req))
@@ -266,15 +266,18 @@ def test_a_questionnaire_rewritten_since_the_pass_is_stale(tmp_path, monkeypatch
 
 def test_a_new_round_removes_the_text_answer_of_the_last_one(tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
-    wt = make_task(c, issue=ISSUE)
+    wt = make_task(c, issue=ISSUE, stage=Stage.PLAN)
+    write_tickets(wt, 1, page=False)
     (wt / ".agent" / "review.html").write_bytes(FIXTURE.read_bytes())
     (wt / PLAN_FILE).write_text(json.dumps(
         {"v": 1, "stage": "plan", "submitted": "changes", "actor": "text",
          "answers": {"format": "a"}}))
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "plan", "status": "awaiting-review", "artifact": ".agent/review.html"}))
 
-    req = main._plan_approval(_task(c), ".agent/review.html")
+    main.run_pass(c, deps(sess=FakeSessions(alive={ISSUE})))
 
-    assert req.fingerprint and _file(wt) is None
+    assert _task(c).operator_request.fingerprint and _file(wt) is None
 
 
 @pytest.mark.parametrize("doc, kept", [

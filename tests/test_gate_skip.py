@@ -10,7 +10,7 @@ import dispatcher.main as main
 from dispatcher import intents as intents_mod
 from dispatcher import spec_publish
 from dispatcher.artifacts import REVIEW_PAGE_MARKER, REVIEW_PAGE_MAX_BYTES, count_open_questions
-from dispatcher.machine import SetTaskStage, SpawnStage, next_actions
+from dispatcher.lifecycle import Observation, Reads, _skips_gate
 from dispatcher.state import Stage, StageSignal, TaskState, read_stage_signal, save
 
 from tests.test_gate_skip_acceptance import (BRANCH, FOLDER, ISSUE,
@@ -109,22 +109,18 @@ def test_bad_open_questions_does_not_make_the_signal_unreadable(tmp_path, raw, p
     assert sig.status == "awaiting-review" and sig.open_questions == parsed
 
 
-def test_task_file_at_the_gate_from_before_the_gated_flag_never_skips(tmp_path):
+@pytest.mark.parametrize("stage, skips", [(Stage.AWAITING_PLAN_REVIEW, False),
+                                          (Stage.PLAN, True)])
+def test_task_file_at_the_gate_from_before_the_gated_flag_never_skips(
+        tmp_path, monkeypatch, stage, skips):
     """A task saved at the gate before `gated` existed loads with it false:
     the stage alone keeps its next ready report at the gate."""
-    (tmp_path / ".agent").mkdir()
-    write_tickets(tmp_path, 1)
-    (tmp_path / SUMMARY).write_text(NONE_SUMMARY)
-    t = TaskState(issue=ISSUE, repository="portfolio_eval", slot=0, branch=BRANCH,
-                  stage=Stage.AWAITING_PLAN_REVIEW, worktree=str(tmp_path),
-                  title="t", updated_at="2026-10-13T00:00:00+00:00", track="trivial")
-    ready = StageSignal("plan", "awaiting-review", artifact=SUMMARY, open_questions=0)
-    acts = next_actions(t, ready, True, gate_free=frozenset({"trivial"}))
-    assert SetTaskStage(Stage.AWAITING_PLAN_REVIEW, artifact=SUMMARY) in acts
-    assert SpawnStage(Stage.IMPLEMENT, tickets=1) not in acts
-    skipped = next_actions(dc_replace(t, stage=Stage.PLAN), ready, True,
-                           gate_free=frozenset({"trivial"}))
-    assert SpawnStage(Stage.IMPLEMENT, tickets=1) in skipped
+    c = _setup(tmp_path, monkeypatch)
+    wt, sess = _task_at_ready(c, tmp_path)
+    save(c.state_dir, dc_replace(_task(c), stage=stage))
+    _pass(c, sess)
+    assert bool(_implements(sess)) is skips
+    assert (_task(c).operator_request is None) is skips
 
 
 # --- fix round 1 --------------------------------------------------------------
@@ -208,13 +204,6 @@ def test_old_gate_task_file_never_skips_after_its_session_dies(tmp_path, monkeyp
     _ready(wt)
     sess.alive_set = {ISSUE}
     _assert_waits(c, sess, _pass(c, sess))
-
-
-def test_summary_is_not_read_when_another_condition_already_fails(tmp_path, monkeypatch):
-    def boom(_path):
-        raise AssertionError("summary read for a task that cannot skip")
-    monkeypatch.setattr("dispatcher.machine.count_open_questions", boom)
-    _wait_case(tmp_path, monkeypatch, track="standard")
 
 
 def test_page_above_the_size_cap_cannot_be_counted(tmp_path):
@@ -301,14 +290,20 @@ def test_nul_character_in_the_ready_reports_artifact_waits_at_the_gate(tmp_path,
 
 def _skip_inputs(tmp_path, **kw):
     """A task and ready report that skip the gate; `kw` spoils one condition."""
-    from dispatcher.machine import _skips_gate
     (tmp_path / ".agent").mkdir(exist_ok=True)
     (tmp_path / SUMMARY).write_text(NONE_SUMMARY)
     t = TaskState(issue=ISSUE, repository="portfolio_eval", slot=0, branch=BRANCH,
                   stage=Stage.PLAN, worktree=str(tmp_path), title="t",
                   updated_at="2026-10-13T00:00:00+00:00", track="trivial")
     sig = StageSignal("plan", "awaiting-review", artifact=SUMMARY, open_questions=0)
-    return _skips_gate, dc_replace(t, **kw.pop("task", {})), dc_replace(sig, **kw)
+    return _skips, dc_replace(t, **kw.pop("task", {})), dc_replace(sig, **kw)
+
+
+def _skips(t, sig, gate_free):
+    """lifecycle's gate skip on what the executor reads of the page."""
+    reads = Reads(page_questions=main._page_questions(t, sig))
+    return _skips_gate(Observation(t, sig, True, False, None, 0, None, 0.0, 0,
+                                   gate_free=gate_free, reads=reads))
 
 
 def test_skips_gate_when_every_condition_holds(tmp_path):

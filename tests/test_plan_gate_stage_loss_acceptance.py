@@ -12,7 +12,7 @@ import pytest
 
 import dispatcher.main as main
 from dispatcher import eventlog, intents as intents_mod
-from dispatcher.machine import PLAN_NO_APPROVAL
+from dispatcher.lifecycle import PLAN_NO_APPROVAL
 from dispatcher.models import parse_policy
 from dispatcher.state import NO_SLOT, PARK_HUMAN, PARK_REVIEW, PlanApprovalRequest, Stage, load
 

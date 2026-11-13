@@ -335,6 +335,13 @@ def make_task(c, issue=42, stage=Stage.IMPLEMENT, slot=0,
     return wt
 
 
+def armed_request(task, artifact):
+    """The gate's request armed for the plan revision on disk."""
+    from dispatcher.artifacts import plan_revision
+    rev = plan_revision(task.worktree, artifact, task.spec_path)
+    return PlanApprovalRequest(rev.path, fingerprint=rev.fingerprint)
+
+
 def record_session(c, stage, issue=42):
     """What the stop hook does when the task's session ends a turn."""
     write_session(c.state_dir, "portfolio_eval", issue,
@@ -912,15 +919,16 @@ def test_resume_override_waits_for_capacity_without_losing_choice(tmp_path):
     assert saved.resume_bypass_usage is True
 
 
-def test_every_machine_action_has_a_drive_handler():
-    """_drive_task dispatches on the action type; an action machine.py can
-    emit without a handler would crash the task instead of driving it."""
-    import dataclasses
-    import inspect
-    from dispatcher import machine
-    actions = {cls for _, cls in inspect.getmembers(machine, inspect.isclass)
-               if cls.__module__ == machine.__name__ and dataclasses.is_dataclass(cls)}
-    assert actions and actions == set(main._DRIVE)
+def test_every_action_a_session_event_emits_has_a_handler():
+    """The executor dispatches on the action type; an action the table can
+    emit for a session event without a handler would crash the task. The
+    other event families wire theirs with their own tickets."""
+    import typing
+    from dispatcher import lifecycle as lc
+    later = {lc.ContinueSession, lc.SpawnAddressReview, lc.WakeBlocked,
+             lc.SetResumeOverride, lc.ResetRounds, lc.ReleaseCard, lc.CancelIssue,
+             lc.FinishMerged, lc.SweepTombstone, lc.Flush, lc.TypeLoginCode}
+    assert set(typing.get_args(lc.Action)) - later == set(main._ACT)
 
 
 SPEC_PATH = "specs/2026-10-12-x/spec.md"
@@ -2945,11 +2953,10 @@ def test_stall_without_login_tail_stays_generic(tmp_path, monkeypatch):
     assert "parked_question" in d.notifier.sent
 
 
-def test_login_park_when_ping_fails_falls_back_to_generic_park(tmp_path,
-                                                               monkeypatch):
-    # msg_id 0 = the Telegram send failed, so no reply can ever reach this
-    # task. Holding a live container for an unreachable park is worse than a
-    # plain park: release it.
+def test_a_login_hold_whose_ping_fails_stays_held(tmp_path, monkeypatch):
+    # The notice follows the commit (ADR 0015), so a failed send can no
+    # longer turn the hold into a plain park: the task stays held at its
+    # prompt, where the console reaches it.
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
     make_task(c, stage=Stage.SPEC)
@@ -2957,9 +2964,9 @@ def test_login_park_when_ping_fails_falls_back_to_generic_park(tmp_path,
     d = deps(sess=sess, notifier=FakeNotifier(msg_id=0))
     main.run_pass(c, d)
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert t.park == PARK_HUMAN
-    assert sess.ended == [42]           # container released
-    assert d.notifier.sent == ["needs_relogin", "parked_question"]
+    assert (t.park, t.park_msg_id) == (PARK_LOGIN, 0)
+    assert sess.ended == []
+    assert d.notifier.sent == ["needs_relogin"]
 
 
 def test_login_park_holds_capacity_against_new_claims(tmp_path, monkeypatch):
@@ -3127,7 +3134,7 @@ def arm_gate(c, issue: int = 42, artifact: str = ".agent/review.html") -> None:
     """Bind the task's request to the plan that is on disk now, as the pass
     that armed it did: call it after the tickets and the summary are written."""
     t = load(c.state_dir, "portfolio_eval", issue)
-    save(c.state_dir, dc_replace(t, operator_request=main._plan_approval(t, artifact)))
+    save(c.state_dir, dc_replace(t, operator_request=armed_request(t, artifact)))
 
 
 def test_gate_park_ends_session_and_frees_capacity_and_slot(tmp_path, monkeypatch):
@@ -4600,19 +4607,18 @@ def test_resume_with_an_empty_queue_still_says_continue(tmp_path):
     assert d.sessions.resumed[-1][1].split("\n\n")[0] == "Continue."
 
 
-def test_retry_plan_delivers_queued_messages_too(tmp_path):
+def test_retry_plan_delivers_queued_messages_too(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
     c = cfg(tmp_path)
-    write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "plan"))
-    make_task(c, issue=42, stage=Stage.PLAN)
+    wt = make_task(c, issue=42, stage=Stage.PLAN)
+    (wt / ".agent" / "tickets").mkdir()
+    (wt / ".agent" / "tickets" / "01-bad.md").write_text("# tiny\n")
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "plan", "status": "awaiting-review", "artifact": ".agent/review.html"}))
     from dispatcher import messages
     messages.append(c.state_dir, "portfolio_eval", 42, "keep the scope small", "jesdi@github")
-    d = deps()
-    task = load(c.state_dir, "portfolio_eval", 42)
-    main._retry_stage(c, d, c.repositories[0], task,
-                      main._launch_for(c, c.repositories[0], task, Stage.PLAN,
-                                       lambda m: True, tuple),
-                      main.RetryStage(Stage.PLAN, "missing Goal line",
-                                      main.loops.Retry.PLAN_TICKETS))
+    d = deps(sess=FakeSessions(alive={42}))
+    main.run_pass(c, d)
     assert "keep the scope small" in d.sessions.resumed[-1][1]
     assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
 
@@ -4663,11 +4669,13 @@ def test_park_for_input_parks_when_podman_rm_hangs_or_fails(tmp_path, monkeypatc
     assert "teardown-failed" in [e["event"] for e in eventlog.read_tail(c.state_dir)]
 
 
-def test_park_for_ci_frees_the_slot(tmp_path):
+def test_park_for_ci_frees_the_slot(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
     c = cfg(tmp_path)
-    make_task(c, issue=42, slot=2)
-    main._park_for_ci(c, deps(), c.repositories[0], load(c.state_dir, "portfolio_eval", 42),
-                      run_id=4242)
+    wt = make_task(c, issue=42, slot=2)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "implement", "status": "awaiting-ci", "run_id": 4242}))
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_CI and t.slot == NO_SLOT
 
@@ -5578,15 +5586,16 @@ def test_done_transition_clears_operator_request(tmp_path, monkeypatch):
     assert response.json() is None
 
 
-def test_ci_park_clears_operator_request(tmp_path):
-    """Slice 15d: _park_for_ci clears operator_request; spec_path + ci_run_id preserved."""
+def test_ci_park_clears_operator_request(tmp_path, monkeypatch):
+    """Slice 15d: a CI park clears operator_request; spec_path + ci_run_id preserved."""
+    patch_usage(monkeypatch)
     c = cfg(tmp_path)
     wt = make_task(c, issue=42, operator_request=PlanApprovalRequest(".agent/review.html"),
                    spec_path="docs/specs/design.md",
                    review_rounds=1, gate_rounds=0, e2e_rounds=0, ci_rounds=2)
-    task = load(c.state_dir, "portfolio_eval", 42)
-    main._park_for_ci(c, deps(sess=FakeSessions(alive={42})),
-                      c.repositories[0], task, run_id=9999)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "implement", "status": "awaiting-ci", "run_id": 9999}))
+    main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.park == PARK_CI and t.ci_run_id == 9999
     assert t.operator_request is None, (
@@ -6236,13 +6245,13 @@ def test_capped_respawn_park_does_not_arm_an_unchecked_summary(tmp_path, monkeyp
     gate_signal(wt)                       # the dead session's old signal
     d = _gate_pass(c, FakeSessions(alive=set()), monkeypatch)
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert t.park == PARK_REVIEW and t.operator_request is None
+    assert (t.park, t.park_reason, t.operator_request) == (PARK_HUMAN, "stalled", None)
     # No plan is ready here: the message says what happened, not "plan ready".
     ((template, ctx),) = d.notifier.contexts
     assert template == "plan_session_stopped" and ctx["rounds"] == 2
     assert t.park_note == "plan session stopped at the review gate"
     (parked,) = [e for e in eventlog.read_tail(c.state_dir) if e["event"] == "parked"]
-    assert parked["detail"] == "plan session died at the gate; unattended rounds used up"
+    assert parked["detail"] == "plan session stopped at the review gate"
 
 
 def test_old_ready_signal_is_never_read_after_a_respawn_or_a_resume(tmp_path, monkeypatch):

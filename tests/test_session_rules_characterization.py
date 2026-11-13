@@ -336,7 +336,7 @@ def test_a_stopped_session_at_a_prompt_parks_instead_of_a_poke(c):
     run(c, sess)
     t = now(c)
     assert sess.sent_text == [] and t.park == PARK_HUMAN
-    assert t.park_note == main.STOPPED_NOTE
+    assert t.park_note == "(session stopped mid-stage waiting for input)"
 
 
 def test_a_session_herdr_sees_working_ends_the_poke_stretch(c):
