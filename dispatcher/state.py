@@ -453,6 +453,29 @@ def _migrate_implement_pick(d: dict) -> None:
         picks.setdefault(FEEDBACK_PICK, pick)
 
 
+def _read_terminal(d: dict) -> None:
+    if d["stage"] not in TERMINAL_STAGES:
+        d["terminal_at"] = ""
+        return
+    d["terminal_at"] = d.get("terminal_at") or d.get("done_at") or d["updated_at"]
+    # A terminal task is never parked; files a closed PR wrote before #316
+    # were, and a reply would wake them into Resuming for good.
+    d["park"] = ""
+
+
+_OPERATOR_REQUESTS = {"plan-approval": PlanApprovalRequest, "answers": AnswersRequest}
+
+
+def _read_operator_request(raw: dict | None) -> OperatorRequest | None:
+    if raw is None:
+        return None
+    kind = raw.get("kind")
+    if kind not in _OPERATOR_REQUESTS:
+        raise ValueError(f"unrecognized operator_request kind {kind!r}")
+    return _OPERATOR_REQUESTS[kind](path=raw.get("path", ""),
+                                    fingerprint=raw.get("fingerprint", ""))
+
+
 def _read(p: Path) -> TaskState | None:
     if not p.exists():
         return None
@@ -460,28 +483,12 @@ def _read(p: Path) -> TaskState | None:
     if "target" in d:   # files written before the rename
         d["repository"] = d.pop("target")
     d["stage"] = Stage(d["stage"])
-    if d["stage"] in TERMINAL_STAGES:
-        d["terminal_at"] = d.get("terminal_at") or d.get("done_at") or d["updated_at"]
-        # A terminal task is never parked; files a closed PR wrote before #316
-        # were, and a reply would wake them into Resuming for good.
-        d["park"] = ""
-    else:
-        d["terminal_at"] = ""
+    _read_terminal(d)
     d["labels"] = tuple(d.get("labels", ()))
     d["picks"] = dict(d.get("picks") or {})
     _migrate_implement_pick(d)
     d.pop("pending_reply", None)   # retired field, see original comment
-    if d.get("operator_request") is not None:
-        raw = d["operator_request"]
-        kind = raw.get("kind")
-        if kind == "plan-approval":
-            d["operator_request"] = PlanApprovalRequest(
-                path=raw.get("path", ""), fingerprint=raw.get("fingerprint", ""))
-        elif kind == "answers":
-            d["operator_request"] = AnswersRequest(
-                path=raw.get("path", ""), fingerprint=raw.get("fingerprint", ""))
-        else:
-            raise ValueError(f"unrecognized operator_request kind {kind!r}")
+    d["operator_request"] = _read_operator_request(d.get("operator_request"))
     d.pop("artifact", None)        # retired field (slice 24)
     # Retired fields: one implement session, no cursor and no ticket tracks.
     for retired in ("ticket_cursor", "ticket_tracks", "ticket_names",
