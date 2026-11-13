@@ -1,11 +1,12 @@
-"""park / unpark / end: the only writers of a task's park fields (#132)."""
+"""park / wake / unpark / end: the only writers of a task's park fields (#132)."""
 import json
 
 import pytest
 
 from dispatcher.state import (PARK_CI, PARK_HUMAN, PARK_LOGIN, PARK_REVIEW,
                               PARK_WAKE, AnswersRequest, PlanApprovalRequest,
-                              Stage, TaskState, end, load, park, save, unpark)
+                              Stage, TaskState, end, load, park, save, unpark,
+                              wake)
 
 PARK_FIELDS = ("park", "park_reason", "park_note", "park_msg_id", "ci_run_id",
                "crashed_stage", "hold_for_attach", "operator_request")
@@ -48,17 +49,17 @@ def test_park_leaves_every_other_field_alone():
 
 
 def test_a_wake_keeps_the_park_it_comes_from_and_drops_the_ci_run():
-    t = unpark(make(**STALE), waking=True)
+    t = wake(make(**STALE))
     assert fields(t) == {**fields(make(**STALE)), "park": PARK_WAKE,
                          "ci_run_id": 0, "hold_for_attach": False}
 
 
 def test_a_wake_for_attach_holds_the_session():
-    assert unpark(make(park=PARK_HUMAN), waking=True, hold=True).hold_for_attach
+    assert wake(make(park=PARK_HUMAN), hold=True).hold_for_attach
 
 
 def test_a_wake_of_a_crashed_task_keeps_its_crashed_stage():
-    t = unpark(make(crashed_stage="implement"), waking=True)
+    t = wake(make(crashed_stage="implement"))
     assert (t.park, t.crashed_stage) == (PARK_WAKE, "implement")
 
 
@@ -95,7 +96,7 @@ def test_a_terminal_file_loads_through_end_and_keeps_its_crashed_stage(tmp_path)
 def test_doors_change_no_key_of_the_task_file(tmp_path):
     save(tmp_path, make())
     keys = set(json.loads((tmp_path / "task-portfolio_eval-42.json").read_text()))
-    for t in (park(make(), PARK_HUMAN, note="q"), unpark(make(**STALE), waking=True),
+    for t in (park(make(), PARK_HUMAN, note="q"), wake(make(**STALE)),
               unpark(make(**STALE)), end(make(**STALE), Stage.DONE)):
         save(tmp_path, t)
         assert set(json.loads(

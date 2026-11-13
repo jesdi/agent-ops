@@ -67,7 +67,7 @@ from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_POKES, NO_SL
                               next_stage, read_background, read_session,
                               read_stage_signal,
                               implement_done, resumable_crash, shown_stage,
-                              end, park, save, task_key, unpark)
+                              end, park, save, task_key, unpark, wake)
 from dispatcher.workspace import (MissingBaseError, append_worktree_file, create_workspace,
                                   exclude_local_state, remove_workspace,
                                   write_task_identity, write_worktree_file)
@@ -312,7 +312,7 @@ def _wake(cfg: Config, task: TaskState, text: str, hold: bool = False,
           bypass_usage: bool = False) -> None:
     _queue_message(cfg, task.repository, task.issue, text, actor)
     task = loops.reset(task, ResetCause.OPERATOR_WAKE)
-    save(cfg.state_dir, replace(unpark(task, waking=True, hold=hold),
+    save(cfg.state_dir, replace(wake(task, hold=hold),
                                 resume_model_override=model_override,
                                 resume_bypass_usage=bypass_usage,
                                 updated_at=_now()))
@@ -1150,7 +1150,7 @@ def _check_ci_run(cfg: Config, deps: Deps, repository: Repository,
     reply = (f"E2E run {task.ci_run_id} concluded: {conclusion} — "
              f"fetch logs with: gh run view {task.ci_run_id} --log-failed")
     _queue_message(cfg, task.repository, task.issue, reply, "dispatcher")
-    save(cfg.state_dir, replace(unpark(task, waking=True), updated_at=_now()))
+    save(cfg.state_dir, replace(wake(task), updated_at=_now()))
 
 
 def _poll_pr(cfg: Config, deps: Deps, repository: Repository, task: TaskState
@@ -1402,7 +1402,7 @@ def _wake_reached(cfg: Config, deps: Deps) -> None:
             deps.access.reached([repositories[task.repository].repo])
         except (github_app.AppError, github_app.NoAccess):
             continue   # asked again next pass
-        save(cfg.state_dir, replace(unpark(task, waking=True), updated_at=_now()))
+        save(cfg.state_dir, replace(wake(task), updated_at=_now()))
 
 
 def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
@@ -2413,7 +2413,7 @@ def _wake_for_queued_message(cfg: Config, deps: Deps, task: TaskState) -> None:
                        slot=NO_SLOT)
     if task.park in (PARK_HUMAN, PARK_REVIEW):
         task = loops.reset(task, ResetCause.OPERATOR_WAKE)
-        save(cfg.state_dir, replace(unpark(task, waking=True), updated_at=_now()))
+        save(cfg.state_dir, replace(wake(task), updated_at=_now()))
 
 
 def _apply_answers_intent(cfg: Config, deps: Deps, task: TaskState | None,

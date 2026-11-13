@@ -266,7 +266,7 @@ class TaskState:
         return Stage.PLAN if self.stage is Stage.AWAITING_PLAN_REVIEW else self.stage
 
 
-# The doors: park, unpark and end are the only writers of the park fields
+# The doors: park, wake, unpark and end are the only writers of the park fields
 # (park, park_reason, park_note, park_msg_id, ci_run_id, crashed_stage,
 # hold_for_attach, operator_request) besides the claim. Callers compose them
 # with replace() for everything else (slot, updated_at, resume overrides).
@@ -286,15 +286,16 @@ def park(t: TaskState, kind: str, *, note: str = "", msg_id: int = 0,
                    hold_for_attach=False, operator_request=request)
 
 
-def unpark(t: TaskState, *, waking: bool = False, hold: bool = False,
-           request: "OperatorRequest | None" = None) -> TaskState:
-    """t's park lifted. waking: a wake is queued (PARK_WAKE) behind
-    admission; the park's question, reason, message, request and crashed
-    stage stay as its origin until the launch, and `hold` keeps the session
-    for an attach. Otherwise the session runs and every park field goes,
-    bar the plan-approval `request` a session at the gate is held on."""
-    if waking:
-        return replace(t, park=PARK_WAKE, ci_run_id=0, hold_for_attach=hold)
+def wake(t: TaskState, *, hold: bool = False) -> TaskState:
+    """t woken: the wake is queued (PARK_WAKE) behind admission. The park's
+    question, reason, message, request and crashed stage stay as its origin
+    until the launch; `hold` keeps the session for an attach."""
+    return replace(t, park=PARK_WAKE, ci_run_id=0, hold_for_attach=hold)
+
+
+def unpark(t: TaskState, *, request: "OperatorRequest | None" = None) -> TaskState:
+    """t's session runs: every park field goes, bar the plan-approval
+    `request` a session at the gate is held on."""
     return replace(t, **{**_NOT_PARKED, "operator_request": request})
 
 
