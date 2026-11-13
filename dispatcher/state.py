@@ -433,6 +433,11 @@ def _acquire(fd: int, timeout: float | None, name: str) -> None:
             time.sleep(0.1)
 
 
+def write_atomic(path: Path, data: str | bytes) -> None:
+    """Write `data` whole to `path`, atomically, as mode 0644."""
+    raise NotImplementedError
+
+
 def write_json_atomic(path: Path, doc: dict) -> None:
     """For a state file the web process and the dispatcher share (the usage
     cache, the priority mode): write a sibling temp file of its own and rename
