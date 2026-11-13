@@ -1490,7 +1490,8 @@ export interface components {
         };
         /**
          * UnavailableContent
-         * @description File exists as a request but cannot be read: missing, non-UTF-8, or containment violation.
+         * @description File exists as a request but cannot be read: missing, non-UTF-8, or containment
+         *     violation; or the request is armed for no revision, so nothing on it can be submitted.
          */
         UnavailableContent: {
             /**

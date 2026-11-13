@@ -100,6 +100,20 @@ def test_request_route_returns_the_fingerprint_as_revision(tmp_path, request_):
     assert body["revision"] == request_.fingerprint
 
 
+@pytest.mark.parametrize("request_", [
+    PlanApprovalRequest(path=".agent/review.html"),
+    AnswersRequest(path=".agent/questionnaire.md")], ids=["plan-approval", "answers"])
+def test_a_request_armed_for_no_revision_shows_no_page_to_submit(tmp_path, request_):
+    """#132 ticket 05: a rework session that died at the gate parks for review
+    armed for no revision. Nothing can be submitted on it (an answer needs a
+    revision), so the console gets no page and offers no approve."""
+    _, client = rig(tmp_path, request_)
+    (tmp_path / "wt" / request_.path).write_text("<p>an older plan</p>")
+    body = client.get(REQ, headers=HEADERS).json()
+    assert body["content"] == {"kind": "unavailable", "path": request_.path,
+                               "reason": "no-revision"}
+
+
 def test_pending_intent_is_overlaid_on_the_saved_file(tmp_path):
     fake, client = rig(tmp_path, answers_req(), saved({"format": "b"}))
     fake.pending = [pending({"answers": {"format": "b", "limit": "a"},
