@@ -273,10 +273,12 @@ def at_gate(t: TaskState) -> bool:
 
 
 def _gate_stage(t: TaskState, stage: Stage) -> Stage:
-    """Where `stage` runs for `t`: a plan session of a task at the gate, or
-    that waited there, runs at the gate."""
-    gated = t.gated or at_gate(t)
-    return Stage.AWAITING_PLAN_REVIEW if stage is Stage.PLAN and gated else stage
+    """The legacy stage of `stage` for `t`: a plan task stays at the gate in
+    whatever status it takes there. `gated` alone moves no task to the gate:
+    a plan session's `done` outside it is bounced, whatever it once waited
+    for (a launch of a gated task's plan starts it at the gate: _spawned)."""
+    at = stage is Stage.PLAN and t.stage is Stage.AWAITING_PLAN_REVIEW
+    return Stage.AWAITING_PLAN_REVIEW if at else stage
 
 
 def _at_stage(t: TaskState, stage: Stage) -> TaskState:
@@ -1029,14 +1031,10 @@ def _approved(f: Facts) -> Transition | Ignore:
 
 
 def _plan_done(f: Facts) -> Transition | Ignore:
-    s = _report(f)
-    if s.gate.at:
+    """Only the gate session's `done` is the approval; any other is bounced,
+    `gated` or not: a respawn cannot change the status family."""
+    if _report(f).gate.at:
         return _approved(f)
-    if s.gate.gated:
-        return _asking(f, HumanReason.BAD_SIGNAL, (
-            f"The gate state was lost: this task waited at the plan gate, "
-            f"but it is in stage plan and reports done with track "
-            f"{s.signal.track or 'none'!r}. Move it to implement by hand."))
     return _bounce(f, Retry.PLAN_SIGNAL, PLAN_NO_APPROVAL)
 
 

@@ -14,9 +14,9 @@ import dispatcher.main as main
 from dispatcher import eventlog, intents as intents_mod
 from dispatcher.lifecycle import PLAN_NO_APPROVAL
 from dispatcher.models import parse_policy
-from dispatcher.state import NO_SLOT, PARK_HUMAN, PARK_REVIEW, PlanApprovalRequest, Stage, load
+from dispatcher.state import NO_SLOT, PARK_REVIEW, PlanApprovalRequest, Stage
 
-from tests.test_main import (FakeNotifier, FakeSessions, deps, make_task,
+from tests.test_main import (FakeSessions, deps, make_task,
                              patch_usage, patch_workspace)
 from tests.test_plan_review_gate_acceptance import (
     GATE, ISSUE, SPEC, SUMMARY, _arm, _done, _folder_files, _plan_task, _ready,
@@ -208,23 +208,20 @@ def test_plan_launch_from_spec_still_sets_stage_plan(tmp_path, monkeypatch):
     assert _task(c).stage is Stage.PLAN
 
 
-def test_done_from_a_gated_task_in_stage_plan_parks_with_a_clear_note(tmp_path, monkeypatch):
+def test_done_from_a_gated_task_in_stage_plan_is_bounced(tmp_path, monkeypatch):
+    """#132 ticket 05: no "gate state was lost" park; a gated task's plan
+    `done` outside the gate is bounced like any unapproved one."""
     c = _setup(tmp_path, monkeypatch)
     wt = _plan_task(c, tmp_path, Stage.PLAN, git=False, tickets=1, gated=True)
     _done(wt)
     sess = FakeSessions(alive={ISSUE})
-    d = deps(sess=sess)
 
-    main.run_pass(c, d)
+    main.run_pass(c, deps(sess=sess))
 
-    assert sess.resumed == [] and _implement_spawns(sess) == []
-    assert "plan_retry" not in d.notifier.sent
+    (resume,) = sess.resumed
+    assert PLAN_NO_APPROVAL in resume[1] and _implement_spawns(sess) == []
     t = _task(c)
-    assert t.park == PARK_HUMAN and t.plan_retries == 0
-    note = " ".join(t.park_note.lower().split())
-    assert "gate state was lost" in note
-    assert "standard" in note
-    assert "by hand" in note and "implement" in note
+    assert (t.stage, t.park, t.plan_slips) == (Stage.PLAN, "", 1)
 
 
 def test_done_from_an_ungated_task_in_stage_plan_still_bounces(tmp_path, monkeypatch):

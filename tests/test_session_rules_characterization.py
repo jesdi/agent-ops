@@ -607,12 +607,14 @@ def test_an_unapproved_plan_done_is_bounced_then_parked(c):
     assert (now(c).park, now(c).park_reason) == (PARK_HUMAN, "bad signal")
 
 
-def test_a_plan_done_that_lost_its_gate_parks(c):
+def test_a_gated_plan_done_is_bounced_like_any_unapproved_done(c):
+    """#132 ticket 05 deleted the "gate state was lost" park: `gated` on a
+    plan-stage task no longer changes what its `done` gets."""
     wt = task(c, stage=Stage.PLAN, gated=True)
     signal(wt, "done", stage="plan")
-    run(c)
-    t = now(c)
-    assert t.park == PARK_HUMAN and "gate state was lost" in t.park_note
+    d = run(c)
+    assert (now(c).plan_slips, now(c).park) == (1, "") and len(d.sessions.resumed) == 1
+    assert "accepted only after the operator has approved" in d.sessions.resumed[0][1]
 
 
 def test_an_approved_plan_starts_one_implement_session(c):
