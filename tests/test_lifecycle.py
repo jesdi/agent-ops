@@ -19,7 +19,7 @@ from dispatcher.lifecycle import (TABLE, AcquireSlot, At, CancelIssue, Cause,
                                   Transition, TypeLoginCode, WakeBlocked,
                                   decide, graph, legacy_view, next_transitions,
                                   occupies, operator_request)
-from dispatcher.machine import Notify
+from dispatcher.lifecycle import Notify
 from dispatcher.state import (AnswersRequest, PlanApprovalRequest, Stage,
                               TaskState)
 
@@ -110,7 +110,7 @@ def test_a_task_exposes_its_status_view_with_the_stage_it_belongs_to():
 @pytest.mark.parametrize("shape", [
     dict(park="awaiting-ci", ci_run_id=0),
     dict(park="parked", park_reason="no such reason"),
-    dict(stage=S.AWAITING_PLAN_REVIEW),
+    dict(stage=S.AWAITING_PLAN_REVIEW, operator_request=ANSWERS),
 ])
 def test_a_shape_the_table_does_not_classify_is_refused(shape):
     with pytest.raises(ValueError):
@@ -300,7 +300,8 @@ def test_a_claim_waiting_on_the_app_spawns_spec_once_admitted():
 
 def test_implement_done_launches_review_once_admitted():
     got = decide(At(S.REVIEW, waking(None, "next-stage")), Event(E.RESUME_ADMITTED))
-    assert got == Transition(RUNNING, S.REVIEW, (AcquireSlot(), RespawnStage(S.REVIEW)))
+    assert got == Transition(RUNNING, S.REVIEW, (AcquireSlot(), RespawnStage(S.REVIEW),
+                                                 Notify("review_started")))
 
 
 def test_reply_at_the_gate_ends_the_session_and_wakes_through_the_review_park():
@@ -408,7 +409,8 @@ def test_next_transitions_reads_a_task_through_its_legacy_view():
 def test_graph_draws_every_transition_row_and_the_stage_progression():
     g = graph()
     transitions = [r for r in TABLE if isinstance(r.to, Kind)]
-    assert len(g["status"]["edges"]) == len(transitions)
+    via = [k for r in TABLE if isinstance(r.to, lifecycle.Via) for k in r.to.kinds]
+    assert len(g["status"]["edges"]) == len(transitions) + len(via)
     assert set(g["status"]["nodes"]) == {k.value for k in Kind}
     assert ("pr-open", "resume-admitted", "always", "address-review") in g["stage"]["edges"]
     assert ("queued", "resume-admitted", "always", "spec") in g["stage"]["edges"]

@@ -6,17 +6,22 @@ fields; the migration command applies the same function to every task file.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
+from pathlib import Path
 from typing import Callable, NamedTuple
 
-from dispatcher.machine import Notify
-from dispatcher.state import (PARK_CI, PARK_HUMAN, PARK_LOGIN,
-                              PARK_WAKE, WHY_ACCESS, WHY_BAD_SIGNAL, WHY_CONFIG,
-                              WHY_DECISION, WHY_LOOP_CAP, WHY_OPERATOR,
-                              WHY_STALLED, AnswersRequest, OperatorRequest,
-                              PlanApprovalRequest, Stage, TaskState,
-                              implement_done)
+from dispatcher.artifacts import CheckResult, PlanRevision
+from dispatcher.loops import (Decision, Loop, ReportedRound, Retry, evaluate,
+                              retry_left, unattended_rounds_used)
+from dispatcher.loops import Outcome as Rounds
+from dispatcher.models import IMPLEMENT_PICK
+from dispatcher.state import (PARK_CI, PARK_HUMAN, PARK_LOGIN, PARK_REVIEW,
+                              PARK_WAKE, RESPAWNABLE_STAGES, WHY_ACCESS, WHY_BAD_SIGNAL,
+                              WHY_CONFIG, WHY_DECISION, WHY_LOOP_CAP, WHY_OPERATOR,
+                              WHY_STALLED, AnswersRequest, BackgroundWait, LoopCaps,
+                              OperatorRequest, PlanApprovalRequest, Stage, StageSignal,
+                              TaskState, end, implement_done, park, unpark)
 
 
 class Kind(str, Enum):
@@ -223,19 +228,128 @@ def _at_pr(t: TaskState) -> Status:
 
 
 def _at_gate(t: TaskState) -> Status:
-    """A live plan session at the review gate, held on its request."""
-    if t.operator_request is None or t.operator_request.kind != "plan-approval":
-        raise ValueError(f"task {t.repository}#{t.issue}: at the plan gate with no request")
+    """A live plan session at the review gate, held on its request; one that
+    reworks the plan (its request disarmed) or was respawned runs."""
+    if t.operator_request is None:
+        return Status(Kind.RUNNING)
+    if t.operator_request.kind != "plan-approval":
+        raise ValueError(f"task {t.repository}#{t.issue}: at the plan gate with "
+                         f"an {t.operator_request.kind} request")
     return Status(Kind.HELD_PLAN_APPROVAL, path=t.operator_request.path,
                   fingerprint=t.operator_request.fingerprint)
+
+
+# The park_reason spelling of each HumanReason, the inverse of _HUMAN_REASONS.
+_WHY = {HumanReason.DECISION: WHY_DECISION, HumanReason.STALLED: WHY_STALLED,
+        HumanReason.LOOP_CAP: WHY_LOOP_CAP, HumanReason.BAD_SIGNAL: WHY_BAD_SIGNAL,
+        HumanReason.CONFIG: WHY_CONFIG, HumanReason.OPERATOR: WHY_OPERATOR}
+
+
+def legacy_fields(t: TaskState, stage: Stage, status: Status) -> TaskState:
+    """`t` with (stage, status) written to today's park fields through the
+    doors: the inverse of legacy_view for what the session events enter.
+    Expand phase only (design "The move"); storing the status replaces it."""
+    t = _without_implement_pick(t, stage)
+    return _ENCODE[status.kind](t, stage, status)
+
+
+def _without_implement_pick(t: TaskState, stage: Stage) -> TaskState:
+    """Implement is done once its pick is gone (state.implement_done)."""
+    if t.stage is not Stage.IMPLEMENT or stage is not Stage.REVIEW:
+        return t
+    return replace(t, picks={k: v for k, v in t.picks.items() if k != IMPLEMENT_PICK})
+
+
+def _gate_stage(t: TaskState, stage: Stage) -> Stage:
+    """A plan session at the gate, or of a task that waited there, runs there."""
+    at_gate = t.gated or t.stage is Stage.AWAITING_PLAN_REVIEW
+    return Stage.AWAITING_PLAN_REVIEW if stage is Stage.PLAN and at_gate else stage
+
+
+def _at_stage(t: TaskState, stage: Stage) -> TaskState:
+    return replace(t, stage=_gate_stage(t, stage))
+
+
+def _encode_running(t: TaskState, stage: Stage, status: Status) -> TaskState:
+    return unpark(_at_stage(t, stage))
+
+
+def _encode_held(t: TaskState, stage: Stage, status: Status) -> TaskState:
+    request = PlanApprovalRequest(status.path, fingerprint=status.fingerprint)
+    return replace(unpark(t, request=request), stage=Stage.AWAITING_PLAN_REVIEW)
+
+
+def _encode_login(t: TaskState, stage: Stage, status: Status) -> TaskState:
+    return park(_at_stage(t, stage), PARK_LOGIN, note=status.note)
+
+
+def _encode_human(t: TaskState, stage: Stage, status: Status) -> TaskState:
+    return park(_at_stage(t, stage), PARK_HUMAN, note=status.note, reason=_WHY[status.reason])
+
+
+def _encode_answers(t: TaskState, stage: Stage, status: Status) -> TaskState:
+    request = AnswersRequest(status.path, fingerprint=status.fingerprint)
+    return park(_at_stage(t, stage), PARK_HUMAN, note=status.note, reason=WHY_DECISION,
+                request=request)
+
+
+def _encode_review(t: TaskState, stage: Stage, status: Status) -> TaskState:
+    request = PlanApprovalRequest(status.path, fingerprint=status.fingerprint)
+    return replace(park(t, PARK_REVIEW, note=status.note, request=request),
+                   stage=Stage.AWAITING_PLAN_REVIEW)
+
+
+def _encode_ci(t: TaskState, stage: Stage, status: Status) -> TaskState:
+    return park(_at_stage(t, stage), PARK_CI, ci_run_id=status.run_id)
+
+
+def _encode_pr(t: TaskState, stage: Stage, status: Status) -> TaskState:
+    return replace(unpark(t), stage=Stage.PR_OPEN)
+
+
+def _encode_waking(t: TaskState, stage: Stage, status: Status) -> TaskState:
+    """Only the wait for the review launch is entered by a session event."""
+    if status.cause is not Cause.NEXT_STAGE:
+        raise ValueError(f"no legacy shape for waking({status.cause})")
+    return replace(unpark(t), stage=Stage.IMPLEMENT)
+
+
+def _encode_failed(t: TaskState, stage: Stage, status: Status) -> TaskState:
+    """A crash remembers the stage Resume respawns; any other failure is not
+    resumable in the legacy shape."""
+    launched = Stage.ADDRESS_REVIEW if stage is Stage.PR_OPEN else stage
+    crashed = status.reason in (FailReason.SESSION_CRASH, FailReason.TASK_CRASH)
+    return end(t, Stage.FAILED,
+               crashed_stage=launched.value if crashed and launched in RESPAWNABLE_STAGES
+               else "")
+
+
+def _no_encoding(t: TaskState, stage: Stage, status: Status) -> TaskState:
+    raise ValueError(f"no session event enters {status.kind.value}")
+
+
+_ENCODE = {Kind.RUNNING: _encode_running, Kind.HELD_PLAN_APPROVAL: _encode_held,
+           Kind.HELD_LOGIN: _encode_login, Kind.PARKED_HUMAN: _encode_human,
+           Kind.PARKED_ANSWERS: _encode_answers, Kind.PARKED_ACCESS: _no_encoding,
+           Kind.PARKED_CI: _encode_ci, Kind.PARKED_REVIEW: _encode_review,
+           Kind.PARKED_PR: _encode_pr, Kind.WAKING: _encode_waking,
+           Kind.FAILED: _encode_failed, Kind.CANCELED: _no_encoding,
+           Kind.DONE: _no_encoding}
 
 
 
 # ---- Events ---------------------------------------------------------------
 
 class EventType(str, Enum):
-    """What can happen to a task (requirement 6). Session events come with
-    the session-signal path."""
+    """What can happen to a task (requirement 6)."""
+    SESSION_SIGNAL = "session-signal"
+    SESSION_DIED = "session-died"
+    SESSION_IDLE = "session-idle"
+    SESSION_WAITING = "session-waiting"
+    LAUNCH_FAILED = "launch-failed"
+    TASK_CRASHED = "task-crashed"
+    GRACE_EXPIRED = "grace-expired"
+    TRACK_UNCONFIGURED = "track-unconfigured"
     OP_RESUME = "op-resume"
     OP_REPLY = "op-reply"
     OP_ANSWERS = "op-answers"
@@ -255,6 +369,36 @@ class EventType(str, Enum):
     PR_CLOSED = "pr-closed"
 
 
+class Pane(str, Enum):
+    """What herdr and the pane say right before a poke is typed."""
+    UNSEEN = ""          # not looked at yet: a poke is due
+    CLEAR = "clear"      # a stopped session at its composer
+    UNKNOWN = "unknown"  # herdr or the pane cannot be read: hold
+    WORKING = "working"  # the session started a turn after the idle read
+    PROMPT = "prompt"    # a permission, trust or login prompt
+
+
+@dataclass(frozen=True)
+class Session:
+    """What the rules of a session event read: the stage signal and the facts
+    classify gathered from the task and the worktree for it."""
+    signal: StageSignal | None = None
+    round: Decision | None = None        # a working report's round the policy counts
+    at_gate: bool = False                # the plan session runs at the review gate
+    gated: bool = False                  # the task waited at the gate once
+    retries: frozenset[Retry] = frozenset()   # the budgets with a retry left
+    rounds_used: bool = False            # the gate's unattended rounds are used up
+    respawn_pending: bool = False        # a gate respawn prepaid the next round
+    armed: bool = False                  # the request is armed for the plan on disk
+    skips_gate: bool = False
+    asks: bool = False                   # a park for answers marks the task as asking
+    bad_track: str = ""                  # why a done report's track is refused
+    tickets: CheckResult | None = None
+    revision: PlanRevision | None = None
+    spec: CheckResult | None = None
+    answers: tuple[str, str] | None = None   # the answers page: (path, fingerprint)
+
+
 @dataclass(frozen=True)
 class Event:
     """An event and the facts the executor read for it (decide reads no file,
@@ -268,6 +412,13 @@ class Event:
     model: str = ""                # the model override
     bypass_usage: bool = False     # launch past the usage gate
     code: str = field(default="", repr=False)  # never logged
+    session: Session | None = None   # what the session's rules read
+    note: str = ""                 # the question a park asks the operator
+    launch_denied: bool = False    # the launch the rule names is not admitted now
+    login: str = ""                # the pane is at a login prompt: its URL
+    pane: Pane = Pane.UNSEEN       # the look before a poke
+    record: tuple[float, int] | None = None  # a background report to record: (reported, seq)
+    stage: Stage | None = None     # the stage whose launch raised
 
     def __post_init__(self) -> None:
         stray = [name for name, types in _CARRIED.items()
@@ -276,13 +427,27 @@ class Event:
             raise ValueError(f"{self.type.value} carries no {', '.join(stray)}")
 
 
+def carries(event_type: EventType, fact: str) -> bool:
+    """Can an event of `event_type` carry `fact`?"""
+    return event_type in _CARRIED[fact]
+
+
+_RUNNING_SESSION = {EventType.SESSION_SIGNAL, EventType.SESSION_IDLE,
+                    EventType.SESSION_WAITING}
 _CARRIED = {"blocked": {EventType.RESUME_ADMITTED},
             "exhausted": {EventType.CI_FINISHED, EventType.PR_CHECK_FAILED,
                           EventType.PR_CONFLICT},
             "this_pass": {EventType.CANDIDATE_RANKED},
             "left_login_prompt": {EventType.OP_LOGIN_CODE},
             "model": {EventType.OP_RESUME}, "bypass_usage": {EventType.OP_RESUME},
-            "code": {EventType.OP_LOGIN_CODE}}
+            "code": {EventType.OP_LOGIN_CODE},
+            "session": {*_RUNNING_SESSION, EventType.SESSION_DIED},
+            "note": {*_RUNNING_SESSION, EventType.TRACK_UNCONFIGURED},
+            "launch_denied": {EventType.SESSION_SIGNAL, EventType.SESSION_DIED},
+            "login": {*_RUNNING_SESSION, EventType.TRACK_UNCONFIGURED},
+            "pane": {EventType.SESSION_IDLE},
+            "record": {EventType.SESSION_WAITING},
+            "stage": {EventType.LAUNCH_FAILED}}
 
 
 # ---- Outcomes and actions ---------------------------------------------------
@@ -326,8 +491,10 @@ class ContinueSession:
 
 @dataclass(frozen=True)
 class RespawnStage:
-    """Start `stage` afresh in the same worktree, never --continue."""
+    """Start `stage` afresh in the same worktree, never --continue.
+    `tickets`: the checked ticket set an implement start records."""
     stage: Stage
+    tickets: int = 0
 
 
 @dataclass(frozen=True)
@@ -383,9 +550,95 @@ class TypeLoginCode:
     code: str = field(repr=False)  # never logged
 
 
+@dataclass(frozen=True)
+class Notify:
+    """Sent after the commit, never for a transition that did not commit."""
+    template: str
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class RetryStage:
+    """Resume the session in place with why its signal was rejected,
+    spending one retry of `retry` (loops.Retry)."""
+    stage: Stage
+    reason: str
+    retry: Retry
+
+
+@dataclass(frozen=True)
+class PublishSpec:
+    """Commit and push the task's spec folder; `review` also links it on the
+    issue as a plan that waits for review."""
+    review: bool = True
+
+
+@dataclass(frozen=True)
+class ApplyRound:
+    """Write a loop round's counter (loops.Decision.apply_to)."""
+    decision: Decision
+
+
+POKE_TEXT = ("Check your background terminals. If the work finished, continue the stage. "
+             "If it is still running, wait for it. If you need the operator, set the stage "
+             "status to blocked with a note.")
+
+
+@dataclass(frozen=True)
+class Poke:
+    """Type `text` into a stopped session's pane."""
+    text: str = POKE_TEXT
+
+
+@dataclass(frozen=True)
+class EndPokeStretch:
+    """The live session moved on: the next poke starts a new clock."""
+
+
+@dataclass(frozen=True)
+class RecordBackgroundWait:
+    """Record the background report seen with herdr's counter at `seq`."""
+    reported: float
+    seq: int
+
+
+@dataclass(frozen=True)
+class ReportCrash:
+    """A session died mid-stage: release the card, file the failure report."""
+
+
+@dataclass(frozen=True)
+class ReportTaskCrash:
+    """A task's turn raised: release the card, file the failure report."""
+
+
+@dataclass(frozen=True)
+class MarkAsked:
+    """A spec or plan session parked for answers (TaskState.asked)."""
+
+
+@dataclass(frozen=True)
+class EnterGate:
+    """Record a review round at the plan gate (loops.gate_fields)."""
+
+
+@dataclass(frozen=True)
+class LinkPR:
+    """Record the PR the review signal links."""
+
+
+@dataclass(frozen=True)
+class ClearTurnMarkers:
+    """Drop the session's waiting and background markers and its poke
+    stretch: the pane stays, its turn is over."""
+
+
 Action = (AcquireSlot | ReleaseSlot | EndSession | ContinueSession | RespawnStage
           | SpawnAddressReview | WakeBlocked | SetResumeOverride | ResetRounds | ReleaseCard
-          | CancelIssue | FinishMerged | SweepTombstone | Flush | TypeLoginCode | Notify)
+          | CancelIssue | FinishMerged | SweepTombstone | Flush | TypeLoginCode | Notify
+          | RetryStage | PublishSpec | ApplyRound | Poke | EndPokeStretch
+          | RecordBackgroundWait | ReportCrash | ReportTaskCrash | MarkAsked | EnterGate
+          | LinkPR | ClearTurnMarkers)
 
 
 # ---- The table --------------------------------------------------------------
@@ -419,6 +672,11 @@ def ended_this_pass(f: Facts) -> bool:
 
 def launch_blocked(f: Facts) -> bool:
     return bool(f.event.blocked)
+
+
+def next_stage(f: Facts) -> bool:
+    """Review waits to launch after implement."""
+    return f.status.cause is Cause.NEXT_STAGE
 
 
 def respawns(f: Facts) -> bool:
@@ -488,7 +746,345 @@ def _login_code(f: Facts) -> TypeLoginCode:
     return TypeLoginCode(f.event.code)
 
 
-Outcome = Kind | Ignore | Reject
+# ---- The stage sub-function: a running session's report, death and silence ---
+
+PLAN_NO_APPROVAL = ('status "done" is accepted only after the operator has '
+                    'approved the plan at the review gate; write the review '
+                    'page and report status "awaiting-review" with the '
+                    'page path as "artifact", then wait for the reply')
+SPEC_NO_REVIEW = ('the spec stage has no review gate and status '
+                  '"awaiting-review" is not valid in it; once stage 1 is '
+                  'committed and pushed, report status "done" with the '
+                  'spec.md path as "artifact" and a "track"')
+STOPPED_NOTE = "(session stopped mid-stage waiting for input)"
+GATE_STOPPED = "plan session stopped at the review gate"
+PLAN_READY = "plan ready for review"
+_WAITS_FOR_LAUNCH = Ignore("the launch waits for admission")
+
+
+def _session(f: Facts) -> Session:
+    return f.event.session or Session()
+
+
+def _asking(f: Facts, reason: HumanReason, note: str, *before: Action) -> Transition:
+    """The session ends and the operator is asked."""
+    return Transition(Status(Kind.PARKED_HUMAN, reason=reason, note=note), f.stage,
+                      (*before, EndSession(), Notify("parked_question", note)))
+
+
+def _review_parked(f: Facts, path: str, fingerprint: str, note: str,
+                   template: str) -> Transition:
+    """The plan waits for review with no session: its slot goes back."""
+    return Transition(Status(Kind.PARKED_REVIEW, path=path, fingerprint=fingerprint,
+                             note=note), f.stage,
+                      (PublishSpec(review=False), EndSession(), Notify(template)))
+
+
+def _failed_artifact(f: Facts, reason: str) -> Transition:
+    return Transition(Status(Kind.FAILED, reason=FailReason.ARTIFACT), f.stage,
+                      (ClearTurnMarkers(), Notify("artifact_failed", reason)))
+
+
+def _rounds(f: Facts) -> tuple[Action, ...]:
+    d = _session(f).round
+    return (ApplyRound(d),) if d else ()
+
+
+def _exhausted(f: Facts) -> Transition | None:
+    """A loop round past its cap parks before anything else the event does."""
+    d = _session(f).round
+    if d is None or d.outcome is not Rounds.EXHAUSTED:
+        return None
+    note = f"{d.loop.value} loop exceeded its cap of {d.cap} rounds"
+    return _asking(f, HumanReason.LOOP_CAP, note + (f" ({d.detail})" if d.detail else ""),
+                   ApplyRound(d))
+
+
+def _stalled(f: Facts, reason: HumanReason, note: str) -> Transition:
+    return _exhausted(f) or _asking(f, reason, note, *_rounds(f))
+
+
+def _working(f: Facts, *then: Action) -> Transition | Ignore:
+    """A working session: its round counted, a request at the gate disarmed
+    (the plan is being reworked), then `then`."""
+    exhausted = _exhausted(f)
+    if exhausted:
+        return exhausted
+    status = Status(Kind.RUNNING) if f.status.kind is Kind.HELD_PLAN_APPROVAL else f.status
+    actions = (*_rounds(f), *then)
+    if not actions and status == f.status:
+        return Ignore("the session works")
+    return Transition(status, f.stage, actions)
+
+
+def _bounce(f: Facts, retry: Retry, reason: str) -> Transition | Ignore:
+    """A rejected signal: the session is resumed with the reason while its
+    retry lasts, then the task parks."""
+    if retry not in _session(f).retries:
+        return _asking(f, HumanReason.BAD_SIGNAL, reason)
+    if f.event.launch_denied:   # the plan on offer is rejected all the same
+        return _disarmed(f) if f.status.kind is Kind.HELD_PLAN_APPROVAL else _WAITS_FOR_LAUNCH
+    told = (Notify("plan_retry", reason),) if f.stage is Stage.PLAN else ()
+    return Transition(Status(Kind.RUNNING), f.stage,
+                      (RetryStage(f.stage, reason, retry), *told))
+
+
+def _disarmed(f: Facts) -> Transition:
+    return Transition(Status(Kind.RUNNING), f.stage)
+
+
+def _check_failed(f: Facts, result: CheckResult) -> Transition | Ignore | None:
+    """A ticket set (or plan revision) that fails its check: retried in the
+    session once, then the task fails. None when it passes."""
+    if result.ok:
+        return None
+    if Retry.PLAN_TICKETS in _session(f).retries:
+        return _bounce(f, Retry.PLAN_TICKETS, result.reason)
+    return _failed_artifact(f, result.reason)
+
+
+def _plan_check(s: Session) -> CheckResult:
+    """The ticket check, and that the plan reads as one revision."""
+    tickets = s.tickets or CheckResult(False, "no ticket check")
+    problem = s.revision.problem if s.revision else "no plan revision"
+    return CheckResult(False, problem) if tickets.ok and problem else tickets
+
+
+def _implement(f: Facts, *before: Action) -> Transition | Ignore:
+    """One implement session works the checked ticket set."""
+    if f.event.launch_denied:
+        return _WAITS_FOR_LAUNCH
+    n = _session(f).tickets.count
+    return Transition(Status(Kind.RUNNING), Stage.IMPLEMENT,
+                      (*before, RespawnStage(Stage.IMPLEMENT, tickets=n),
+                       Notify("implement_started", f"{n} ticket(s)")))
+
+
+def _review_round(f: Facts) -> Transition:
+    """The plan is held at the gate for the operator, the session kept."""
+    s = _session(f)
+    held = Status(Kind.HELD_PLAN_APPROVAL, path=s.revision.path,
+                  fingerprint=s.revision.fingerprint)
+    return Transition(held, Stage.PLAN, (EnterGate(), PublishSpec(),
+                                         Notify("awaiting_plan_review", s.signal.note)))
+
+
+def _plan_ready(f: Facts) -> Transition | Ignore:
+    """The plan stage's ready report: nothing reaches the operator, and no
+    implement session starts, before the ticket check."""
+    s = _session(f)
+    failed = _check_failed(f, _plan_check(s))
+    if failed:
+        return failed
+    if s.skips_gate:
+        return _implement(f, PublishSpec(review=False))
+    return _review_round(f)
+
+
+def _gate_ready(f: Facts) -> Transition | Ignore:
+    """A ready report at the gate: an armed plan waits for the operator (or
+    its grace time, GRACE_EXPIRED); anything else is a new review round while
+    unattended rounds are left."""
+    s = _session(f)
+    if s.armed:
+        return Ignore("the armed plan waits for the operator")
+    failed = _check_failed(f, _plan_check(s))
+    if failed:
+        return failed
+    if s.rounds_used and not s.respawn_pending:
+        return _review_parked(f, s.revision.path, s.revision.fingerprint, PLAN_READY,
+                              "plan_parked")
+    return _review_round(f)
+
+
+def _ready(f: Facts) -> Transition | Ignore:
+    """awaiting-review, by the stage it arrives in."""
+    if _session(f).at_gate:
+        return _gate_ready(f)
+    if f.stage is Stage.PLAN:
+        return _plan_ready(f)
+    if f.stage is Stage.SPEC:
+        return _bounce(f, Retry.SPEC_SIGNAL, SPEC_NO_REVIEW)
+    return Ignore("the stage has no review gate")
+
+
+def _approved(f: Facts) -> Transition | Ignore:
+    """The operator's approval, reported by the plan session at the gate."""
+    s = _session(f)
+    if s.bad_track:
+        return _bounce(f, Retry.PLAN_SIGNAL, s.bad_track)
+    return _check_failed(f, s.tickets or CheckResult(False, "no ticket check")) \
+        or _implement(f)
+
+
+def _plan_done(f: Facts) -> Transition | Ignore:
+    s = _session(f)
+    if s.at_gate:
+        return _approved(f)
+    if s.gated:
+        return _asking(f, HumanReason.BAD_SIGNAL, (
+            f"The gate state was lost: this task waited at the plan gate, "
+            f"but it is in stage plan and reports done with track "
+            f"{s.signal.track or 'none'!r}. Move it to implement by hand."))
+    return _bounce(f, Retry.PLAN_SIGNAL, PLAN_NO_APPROVAL)
+
+
+def _spec_done(f: Facts) -> Transition | Ignore:
+    s = _session(f)
+    if s.bad_track:
+        return _bounce(f, Retry.SPEC_SIGNAL, s.bad_track)
+    if not s.spec.ok:
+        return _failed_artifact(f, s.spec.reason)
+    if f.event.launch_denied:
+        return _WAITS_FOR_LAUNCH
+    return Transition(Status(Kind.RUNNING), Stage.PLAN, (RespawnStage(Stage.PLAN),))
+
+
+def _implement_done(f: Facts) -> Transition:
+    """Review follows implement; a denied launch waits as waking(next-stage)."""
+    if f.event.launch_denied:
+        return Transition(Status(Kind.WAKING, cause=Cause.NEXT_STAGE), Stage.REVIEW)
+    return Transition(Status(Kind.RUNNING), Stage.REVIEW,
+                      (RespawnStage(Stage.REVIEW),
+                       Notify("review_started", _session(f).signal.note)))
+
+
+def _pr_opened(template: str) -> Callable[[Facts], Transition]:
+    def opened(f: Facts) -> Transition:
+        return Transition(Status(Kind.PARKED_PR), Stage.PR_OPEN,
+                          (LinkPR(), Notify(template, _session(f).signal.note)))
+    return opened
+
+
+_DONE: dict[Stage, Callable[[Facts], Transition | Ignore]] = {
+    Stage.SPEC: _spec_done, Stage.PLAN: _plan_done, Stage.IMPLEMENT: _implement_done,
+    Stage.REVIEW: _pr_opened("pr_opened"), Stage.ADDRESS_REVIEW: _pr_opened("pr_updated")}
+
+
+def _done(f: Facts) -> Transition | Ignore:
+    rule = _DONE.get(f.stage)
+    return rule(f) if rule else Ignore("no stage follows")
+
+
+def _awaiting_ci(f: Facts) -> Transition:
+    run_id = _session(f).signal.run_id
+    if run_id <= 0:
+        return _failed_artifact(f, "awaiting-ci without run_id")
+    return Transition(Status(Kind.PARKED_CI, run_id=run_id), f.stage, (EndSession(),))
+
+
+def _blocked(f: Facts) -> Transition:
+    return _asking(f, HumanReason.DECISION, _session(f).signal.note)
+
+
+def _awaiting_answers(f: Facts) -> Transition:
+    """A questionnaire, prototype or wizard: the page the operator answers."""
+    s = _session(f)
+    asked = (MarkAsked(),) if s.asks else ()
+    note = s.signal.note
+    if s.answers is None:
+        note = (note + "\n\n[malformed awaiting-answers: no usable artifact path]").strip()
+        return _asking(f, HumanReason.DECISION, note, *asked)
+    path, fingerprint = s.answers
+    return Transition(Status(Kind.PARKED_ANSWERS, path=path, fingerprint=fingerprint,
+                             note=note), f.stage,
+                      (*asked, EndSession(), Notify("parked_question", note)))
+
+
+_SIGNALS: dict[str, Callable[[Facts], Transition | Ignore]] = {
+    "awaiting-ci": _awaiting_ci, "blocked": _blocked, "awaiting-answers": _awaiting_answers,
+    "working": _working, "awaiting-review": _ready, "done": _done}
+
+
+def on_signal(f: Facts) -> Transition | Ignore:
+    """running + session-signal (requirement 15): today's rules by status."""
+    signal = _session(f).signal
+    if signal is None:
+        return Ignore("no signal")
+    rule = _SIGNALS.get(signal.status)
+    return rule(f) if rule else Ignore(f"unknown signal status {signal.status!r}")
+
+
+_POKE = {Pane.UNSEEN: (Poke(),), Pane.CLEAR: (Poke(),), Pane.UNKNOWN: (),
+         Pane.WORKING: (EndPokeStretch(),)}
+
+
+def on_idle(f: Facts) -> Transition | Ignore:
+    """A silent session parks stalled (the note says why); a stopped one is
+    poked, unless the look before the poke finds it at a prompt."""
+    if f.event.note:
+        return _stalled(f, HumanReason.STALLED, f.event.note)
+    if f.event.pane is Pane.PROMPT:
+        return _stalled(f, HumanReason.DECISION, STOPPED_NOTE)
+    return _working(f, *_POKE[f.event.pane])
+
+
+def on_waiting(f: Facts) -> Transition | Ignore:
+    """A background wait holds the task running; past its cap it parks."""
+    if f.event.note:
+        return _stalled(f, HumanReason.STALLED, f.event.note)
+    recorded = (RecordBackgroundWait(*f.event.record),) if f.event.record else ()
+    actions = (*_rounds(f), *recorded)
+    if not actions:
+        return Ignore("the background wait holds")
+    return _exhausted(f) or Transition(f.status, f.stage, actions)
+
+
+def on_died(f: Facts) -> Transition | Ignore:
+    """A dead session crashes its stage; at the gate the plan session is
+    respawned while unattended rounds remain."""
+    if _session(f).at_gate:
+        return _gate_died(f)
+    return Transition(Status(Kind.FAILED, reason=FailReason.SESSION_CRASH), f.stage,
+                      (ReportCrash(), EndSession(), Notify("session_crashed")))
+
+
+def _gate_died(f: Facts) -> Transition | Ignore:
+    if not _session(f).rounds_used:
+        if f.event.launch_denied:
+            return _WAITS_FOR_LAUNCH
+        return Transition(Status(Kind.RUNNING), Stage.PLAN, (RespawnStage(Stage.PLAN),))
+    if not f.status.path:   # a rework session: no plan is on offer
+        return Transition(Status(Kind.PARKED_HUMAN, reason=HumanReason.STALLED,
+                                 note=GATE_STOPPED), f.stage,
+                          (EndSession(), Notify("plan_session_stopped")))
+    return _review_parked(f, f.status.path, f.status.fingerprint, GATE_STOPPED,
+                          "plan_session_stopped")
+
+
+def on_launch_failed(f: Facts) -> Transition:
+    """The hand-over is accepted; only the launch failed: the task fails at
+    the stage that could not start, which Resume starts."""
+    return Transition(Status(Kind.FAILED, reason=FailReason.TASK_CRASH),
+                      f.event.stage or f.stage, (ReportTaskCrash(),))
+
+
+def _grace_park(f: Facts) -> Status:
+    return Status(Kind.PARKED_REVIEW, path=f.status.path,
+                  fingerprint=f.status.fingerprint, note=PLAN_READY)
+
+
+def _config_park(f: Facts) -> Status:
+    return Status(Kind.PARKED_HUMAN, reason=HumanReason.CONFIG, note=f.event.note)
+
+
+def _config_question(f: Facts) -> Notify:
+    return Notify("parked_question", f.event.note)
+
+
+@dataclass(frozen=True)
+class Via:
+    """A row whose answer a rule function gives from the facts (the stage
+    sub-function); `kinds` are the statuses it can enter."""
+    rule: Callable[[Facts], Transition | Ignore]
+    kinds: tuple[Kind, ...]
+
+    @property
+    def value(self) -> str:
+        return self.rule.__name__
+
+
+Outcome = Kind | Ignore | Reject | Via
 
 
 @dataclass(frozen=True)
@@ -563,7 +1159,37 @@ _RESUMABLE_PARKS = _WAITS + (K.PARKED_CI,)
 _PR_POKES = tuple(_PR_ATTENTION)
 _ENDED_REJECT = Reject("the task has ended")
 
+_SESSIONS = (K.RUNNING, K.HELD_PLAN_APPROVAL)   # a session runs that a pass drives
+_DRIVEN = (*_SESSIONS, K.WAKING)
+_NO_SESSION = Ignore("no session runs")
+_SIGNALLED = (K.RUNNING, K.HELD_PLAN_APPROVAL, K.HELD_LOGIN, K.PARKED_HUMAN,
+              K.PARKED_ANSWERS, K.PARKED_CI, K.PARKED_REVIEW, K.PARKED_PR, K.WAKING,
+              K.FAILED)
+_PARKS = (K.RUNNING, K.HELD_PLAN_APPROVAL, K.HELD_LOGIN, K.PARKED_HUMAN, K.PARKED_REVIEW)
+
 TABLE: tuple[Row, ...] = _complete([
+    # Session events (requirements 15, 20). classify picks one per pass.
+    *_rows(_SESSIONS, [E.SESSION_SIGNAL], Via(on_signal, _SIGNALLED)),
+    *_rest([E.SESSION_SIGNAL], _NO_SESSION),
+    *_rows(_SESSIONS, [E.SESSION_IDLE], Via(on_idle, _PARKS)),
+    *_rest([E.SESSION_IDLE], _NO_SESSION),
+    *_rows(_SESSIONS, [E.SESSION_WAITING], Via(on_waiting, _PARKS)),
+    *_rest([E.SESSION_WAITING], _NO_SESSION),
+    *_rows(_SESSIONS, [E.SESSION_DIED],
+           Via(on_died, (K.FAILED, K.RUNNING, K.PARKED_REVIEW, K.PARKED_HUMAN))),
+    *_rest([E.SESSION_DIED], _NO_SESSION),
+    Row(K.HELD_PLAN_APPROVAL, E.GRACE_EXPIRED, K.PARKED_REVIEW, build=_grace_park,
+        actions=(PublishSpec(review=False), EndSession(), Notify("plan_parked"))),
+    *_rest([E.GRACE_EXPIRED], Ignore("not held at the plan gate")),
+    *_rows(_DRIVEN, [E.TRACK_UNCONFIGURED], K.PARKED_HUMAN, build=_config_park,
+           actions=(EndSession(),), derive=(_config_question,)),
+    *_rest([E.TRACK_UNCONFIGURED], Ignore("not driven")),
+    *_rows(_DRIVEN, [E.LAUNCH_FAILED], Via(on_launch_failed, (K.FAILED,))),
+    *_rest([E.LAUNCH_FAILED], Ignore("no launch was due")),
+    *_rows(_LIVE, [E.TASK_CRASHED], K.FAILED, build=_failed(FailReason.TASK_CRASH),
+           actions=(ReportTaskCrash(),)),
+    *_rest([E.TASK_CRASHED], Ignore("the task has ended")),
+
     # op-reply: the message is queued before decide; a wake delivers it.
     *_rows(_WAITS, [E.OP_REPLY], K.WAKING, build=_wake(Cause.REPLY), actions=(ResetRounds(),)),
     Row(K.HELD_PLAN_APPROVAL, E.OP_REPLY, K.WAKING, build=_wake_through_review,
@@ -622,6 +1248,8 @@ TABLE: tuple[Row, ...] = _complete([
         actions=(SpawnAddressReview(),)),
     Row(K.WAKING, E.RESUME_ADMITTED, K.RUNNING, move=(Stage.QUEUED, Stage.SPEC),
         actions=(RespawnStage(Stage.SPEC),)),
+    Row(K.WAKING, E.RESUME_ADMITTED, K.RUNNING, guard=next_stage,
+        actions=(RespawnStage(Stage.REVIEW), Notify("review_started"))),
     Row(K.WAKING, E.RESUME_ADMITTED, K.RUNNING, guard=respawns, derive=(_respawn_here,)),
     Row(K.WAKING, E.RESUME_ADMITTED, K.RUNNING, actions=(ContinueSession(),)),
     *_rest([E.RESUME_ADMITTED], Ignore("not waking")),
@@ -675,13 +1303,34 @@ def decide(task: TaskState | At, event: Event) -> Transition | Ignore | Reject:
     network or session."""
     at = _at(task)
     facts = Facts(at.stage, at.status, event)
-    row = _match(facts)
+    got = _answer(_match(facts), facts)
+    if not isinstance(got, Transition):
+        return got
+    got = _held_for_login(facts, got)
+    return replace(got, actions=_with_slot(at.status, got.status, got.actions))
+
+
+def _answer(row: Row, f: Facts) -> Transition | Ignore | Reject:
+    if isinstance(row.to, Via):
+        return row.to.rule(f)
     if not isinstance(row.to, Kind):
         return row.to
-    status = row.build(facts) if row.build else Status(row.to)
-    actions = row.actions + tuple(d(facts) for d in row.derive)
-    return Transition(status, row.move[1] if row.move else at.stage,
-                      _with_slot(at.status, status, actions))
+    status = row.build(f) if row.build else Status(row.to)
+    return Transition(status, row.move[1] if row.move else f.stage,
+                      row.actions + tuple(d(f) for d in row.derive))
+
+
+_LOGIN_HOLDS = (Kind.PARKED_HUMAN, Kind.PARKED_ANSWERS)
+
+
+def _held_for_login(f: Facts, t: Transition) -> Transition:
+    """A park of a live session at a login prompt holds it there instead:
+    the pane is where the code is typed. Its round is still counted."""
+    if not f.event.login or t.status.kind not in _LOGIN_HOLDS:
+        return t
+    kept = tuple(a for a in t.actions if isinstance(a, ApplyRound))
+    return Transition(Status(Kind.HELD_LOGIN, note=t.status.note), t.stage,
+                      (*kept, ClearTurnMarkers(), Notify("needs_relogin", t.status.note)))
 
 
 def _match(f: Facts) -> Row:
@@ -715,15 +1364,19 @@ def next_transitions(task: TaskState | At) -> list[Edge]:
     decides it (with the event's plain facts), when that row is a transition."""
     at = _at(task)
     rows = (_match(Facts(at.stage, at.status, Event(e))) for e in EventType)
-    return [_edge(r) for r in rows if isinstance(r.to, Kind)]
+    return [e for r in rows for e in _edges(r)]
 
 
 def graph() -> dict:
     """Every transition row as an edge between status kinds, and every stage
     move as an edge between stages."""
-    rows = [r for r in TABLE if isinstance(r.to, Kind)]
-    return {"status": {"nodes": [k.value for k in Kind], "edges": [_edge(r) for r in rows]},
+    rows = [r for r in TABLE if isinstance(r.to, (Kind, Via))]
+    return {"status": {"nodes": [k.value for k in Kind], "edges": _status_edges(rows)},
             "stage": {"nodes": [s.value for s in PIPELINE], "edges": _stage_edges(rows)}}
+
+
+def _status_edges(rows: list[Row]) -> list[Edge]:
+    return [e for r in rows for e in _edges(r)]
 
 
 def _stage_edges(rows: list[Row]) -> list[Edge]:
@@ -731,5 +1384,218 @@ def _stage_edges(rows: list[Row]) -> list[Edge]:
             for r in rows if r.move]
 
 
-def _edge(r: Row) -> Edge:
-    return Edge(r.source.value, r.event.value, r.guard.__name__, r.to.value)
+def _edges(r: Row) -> list[Edge]:
+    """A transition row's edge; one per status a rule row can enter."""
+    if isinstance(r.to, Via):
+        return [Edge(r.source.value, r.event.value, r.to.value, k.value) for k in r.to.kinds]
+    if isinstance(r.to, Kind):
+        return [Edge(r.source.value, r.event.value, r.guard.__name__, r.to.value)]
+    return []
+
+
+# ---- classify: one session event per driven task per pass --------------------
+
+class BackgroundView(NamedTuple):
+    """What a pass knows about a task's background wait."""
+    wait: BackgroundWait
+    agent: tuple[str, int] | None   # herdr (status, state-change counter); None = unknown
+    now: float
+    cap: int                        # background_wait_seconds
+
+
+class Reads(NamedTuple):
+    """What the worktree says about a report, read by the executor."""
+    tickets: CheckResult | None = None
+    revision: PlanRevision | None = None    # of the report's review page
+    spec: CheckResult | None = None
+    page_questions: int | None = None       # question blocks on the prescribed page it names
+    answers: tuple[str, str] | None = None  # (path, fingerprint) of an answers page
+
+
+class Observation(NamedTuple):
+    """Everything a pass saw of one driven task; classify reads only this."""
+    task: TaskState
+    signal: StageSignal | None
+    alive: bool
+    waiting: bool                   # the session ended its turn waiting for input
+    idle: float | None
+    stall_after: float              # 0: liveness detection is off
+    background: BackgroundView | None
+    now: float
+    poke_cap: int
+    gone: str = ""                  # why the task's track cannot run
+    grace_elapsed: bool = False
+    caps: LoopCaps = LoopCaps()
+    tracks: frozenset[str] | None = None   # None: a done report's track is not checked
+    gate_free: frozenset[str] = frozenset()
+    reads: Reads = Reads()
+
+
+def config_note(why: str) -> str:
+    """The question of a task the config strands."""
+    return (f"{why}; restore it in the console's model settings or targets.yaml, "
+            f"or run the task with a model override")
+
+
+def classify(o: Observation) -> Event | None:
+    """The one session event of this pass, by precedence (_PRECEDENCE): a
+    track gone; a background wait in force; a dead session (unless it left a
+    `done`); a silent session past the stall time; a stopped session (its
+    waiting marker); the gate's grace time; the stage signal. None: nothing
+    happened. A waiting marker outranks a background marker (no wait is in
+    force), and a wait in force holds off the stall."""
+    return next((e for e in (rule(o) for rule in _PRECEDENCE) if e is not None), None)
+
+
+def _working_signal(o: Observation) -> bool:
+    return o.signal is not None and o.signal.status == "working"
+
+
+def _track_gone(o: Observation) -> Event | None:
+    return Event(EventType.TRACK_UNCONFIGURED, note=config_note(o.gone)) if o.gone else None
+
+
+def _in_background(o: Observation) -> Event | None:
+    """A background marker decides the pass only for a live session whose
+    signal says working and that left no waiting marker; None also once
+    herdr's counter moved (a new turn: today's rules decide)."""
+    if o.background is None or not o.alive or o.waiting or not _working_signal(o):
+        return None
+    facts = _wait_facts(o.task, o.background)
+    if facts is None:
+        return None
+    return Event(EventType.SESSION_WAITING, session=Session(o.signal, _round(o)), **facts)
+
+
+def _wait_facts(t: TaskState, view: BackgroundView) -> dict | None:
+    if view.agent is None:
+        return {}   # herdr cannot be asked: hold
+    status, seq = view.agent
+    if view.wait.reported != t.background_reported:
+        return {} if status == "working" else {"record": (view.wait.reported, seq)}
+    if seq != t.background_seq:
+        return None
+    if view.now - view.wait.since > view.cap:
+        return {"note": f"(background work still running after {view.cap // 60}m — cap reached)"}
+    return {}
+
+
+def _dead(o: Observation) -> Event | None:
+    if o.alive or (o.signal is not None and o.signal.status == "done"):
+        return None
+    t = o.task
+    return Event(EventType.SESSION_DIED, session=Session(
+        at_gate=t.stage is Stage.AWAITING_PLAN_REVIEW, rounds_used=unattended_rounds_used(t)))
+
+
+def _past_stall(o: Observation) -> bool:
+    return o.alive and o.stall_after > 0 and o.idle is not None and o.idle > o.stall_after
+
+
+def _silent(o: Observation) -> Event | None:
+    """No output past the stall time; gated statuses are idle by design."""
+    if not _past_stall(o) or (o.signal is not None and (o.waiting or not _working_signal(o))):
+        return None
+    note = (f"(no session output for {int(o.stall_after) // 60}m — "
+            f"likely login/trust prompt or hang)")
+    return Event(EventType.SESSION_IDLE, note=note, session=Session(o.signal))
+
+
+def _at_composer(o: Observation) -> bool:
+    """Live, waiting marker, signal working, herdr not working (idle above
+    0), liveness detection on."""
+    return (_working_signal(o) and o.waiting and o.alive and o.stall_after > 0
+            and bool(o.idle))
+
+
+def _poke_cap_note(o: Observation) -> str:
+    """Why the pokes stop: the first of this stretch is older than the cap."""
+    t = o.task
+    if not t.poked_since or o.now - t.poked_since <= o.poke_cap:
+        return ""
+    return (f"(poked {t.pokes} times over {o.poke_cap // 60}m — "
+            f"stopped mid-stage without a stage signal)")
+
+
+def _stopped(o: Observation) -> Event | None:
+    """A live session that ended its turn mid-stage: poked on every pass
+    until the cap."""
+    if not _at_composer(o):
+        return None
+    return Event(EventType.SESSION_IDLE, note=_poke_cap_note(o), session=_facts(o))
+
+
+def _grace(o: Observation) -> Event | None:
+    """An armed plan whose review the operator left past the grace time."""
+    if (o.signal is None or o.signal.status != "awaiting-review"
+            or not o.grace_elapsed or not _facts(o).armed):
+        return None
+    return Event(EventType.GRACE_EXPIRED)
+
+
+def _reported(o: Observation) -> Event | None:
+    return Event(EventType.SESSION_SIGNAL, session=_facts(o)) if o.signal else None
+
+
+_PRECEDENCE = (_track_gone, _in_background, _dead, _silent, _stopped, _grace, _reported)
+
+
+def _round(o: Observation) -> Decision | None:
+    """The loop round a working report names, when the policy counts it."""
+    if not _working_signal(o):
+        return None
+    try:
+        loop = Loop(o.signal.loop)
+    except ValueError:
+        return None
+    d = evaluate(o.task, ReportedRound(loop, o.signal.round), o.caps)
+    return None if d.outcome is Rounds.UNCHANGED else d
+
+
+def _facts(o: Observation) -> Session:
+    t, r = o.task, o.reads
+    at_gate = t.stage is Stage.AWAITING_PLAN_REVIEW
+    return Session(
+        signal=o.signal, round=_round(o), at_gate=at_gate, gated=t.gated,
+        retries=frozenset(x for x in Retry if retry_left(t, x)),
+        rounds_used=unattended_rounds_used(t), respawn_pending=t.gate_respawn_pending,
+        armed=_armed(t.operator_request, r.revision),
+        skips_gate=_skips_gate(o), asks=t.stage in (Stage.SPEC, Stage.PLAN),
+        bad_track=_bad_track(o.signal, o.tracks, optional=at_gate),
+        tickets=r.tickets, revision=r.revision, spec=r.spec, answers=r.answers)
+
+
+def _armed(request: OperatorRequest | None, revision: PlanRevision | None) -> bool:
+    """Is the request armed for the plan revision on disk? A request with no
+    fingerprint is for no plan, and a revision that cannot be told matches
+    no request."""
+    return (request is not None and revision is not None and bool(revision.fingerprint)
+            and (request.path, request.fingerprint) == (revision.path, revision.fingerprint))
+
+
+def _skips_gate(o: Observation) -> bool:
+    """The gate skip, decided by the dispatcher alone: a task that never
+    waited at the gate, on a gate-free track, no questionnaire asked, and a
+    count of 0 question blocks that the prescribed review page confirms."""
+    t = o.task
+    return (not t.gated and t.track in o.gate_free and not t.asked
+            and o.signal is not None and o.signal.open_questions == 0
+            and o.reads.page_questions == 0)
+
+
+def _bad_track(signal: StageSignal | None, tracks: frozenset[str] | None,
+               optional: bool) -> str:
+    """Why a report's track is refused; "" when it is a configured one, when
+    validation is off, or when it is left out where `optional` (an approval:
+    the task keeps its track)."""
+    if signal is None or tracks is None or signal.track in tracks:
+        return ""
+    if optional and not signal.track:
+        return ""
+    return f"stage.json names track {signal.track!r}; it must be one of {sorted(tracks)}"
+
+
+def artifact_path(t: TaskState, signal: StageSignal) -> Path:
+    """The signal's artifact, resolved against the worktree."""
+    p = Path(signal.artifact)
+    return p if p.is_absolute() else Path(t.worktree) / p
