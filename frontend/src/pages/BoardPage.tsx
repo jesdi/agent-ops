@@ -180,28 +180,22 @@ function columnViews(columns: Column[], degraded: QueueDegraded,
   }))
 }
 
-/** The full board when it has arrived, else the saved-cards snapshot. */
+/** The full board when it has arrived, else the saved-cards snapshot, settled
+ * into the one state the page renders. */
 function useBoardData() {
   const boardQuery = useTasks()
   const snapshotQuery = useBoardSnapshot(!boardQuery.data)
   const board = boardQuery.data ?? snapshotQuery.data
-  return { boardQuery, snapshotQuery, board, columns: board?.columns ?? [] }
-}
-
-type Settled = { isPending: boolean; error: Error | null }
-
-function boardLoading(board: unknown, projectPending: boolean, a: Settled, b: Settled) {
-  return projectPending || (!board && [a, b].some((q) => q.isPending))
-}
-
-/** What stands in for the board until it can render. */
-function boardMessage(board: unknown, projectPending: boolean, a: Settled, b: Settled): ReactNode {
-  if (boardLoading(board, projectPending, a, b)) return <p className="p-4 text-ink-muted">loading board…</p>
-  return <p className="p-4 text-failed-fg">board unavailable: {a.error?.message ?? b.error?.message}</p>
+  const state = board
+    ? ({ kind: 'ready', board } as const)
+    : boardQuery.isPending || snapshotQuery.isPending
+      ? ({ kind: 'loading' } as const)
+      : ({ kind: 'unavailable', message: boardQuery.error?.message ?? snapshotQuery.error?.message } as const)
+  return { boardQuery, state, columns: board?.columns ?? [] }
 }
 
 export function BoardPage() {
-  const { boardQuery, snapshotQuery, board, columns } = useBoardData()
+  const { boardQuery, state, columns } = useBoardData()
   const intentsQuery = usePendingIntents()
   const queue = useQueueActions()
   const wontDo = useWontDo()
@@ -213,7 +207,9 @@ export function BoardPage() {
   const inRow = views.filter((v) => v.count > 0)
   const tabs = useActiveColumn(inRow.map((v) => v.column.key), boardQuery.data !== undefined)
 
-  if (!board || project.pending) return boardMessage(board, project.pending, boardQuery, snapshotQuery)
+  if (project.pending || state.kind === 'loading') return <p className="p-4 text-ink-muted">loading board…</p>
+  if (state.kind === 'unavailable') return <p className="p-4 text-failed-fg">board unavailable: {state.message}</p>
+  const { board } = state
 
   const pendingByKey = pendingIntentsByKey(intentsQuery.data?.intents ?? [])
 
