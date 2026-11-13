@@ -99,9 +99,12 @@ def test_the_view_reads_each_legacy_shape_as_the_migration_table_names(shape, st
     assert legacy_view(task(**shape)) == (stage, status)
 
 
-def test_a_task_exposes_its_status_view():
+def test_a_task_exposes_its_status_view_with_the_stage_it_belongs_to():
     t = task(park="parked", park_reason="decision", park_note="which DB?")
-    assert t.status == human("decision", "which DB?")
+    assert t.at == At(S.IMPLEMENT, human("decision", "which DB?"))
+    done = task(implement_providers=["anthropic"])
+    assert done.at == At(S.REVIEW, waking(None, "next-stage"))
+    assert not hasattr(done, "status")  # never paired with the raw stage
 
 
 @pytest.mark.parametrize("shape", [

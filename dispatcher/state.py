@@ -21,7 +21,7 @@ from dispatcher.models import (FEEDBACK_PICK, IMPLEMENT_PICK, Entry,
                                review_avoid)
 
 if TYPE_CHECKING:
-    from dispatcher.lifecycle import Status
+    from dispatcher.lifecycle import At
 
 
 class Stage(str, Enum):
@@ -264,11 +264,14 @@ class TaskState:
     operator_request: "OperatorRequest | None" = None
 
     @property
-    def status(self) -> "Status":
-        """The lifecycle status read from the park fields (#132): a view until
-        the status is stored, then the stored field replaces it."""
+    def at(self) -> "At":
+        """The lifecycle (stage, status) read from the park fields (#132): the
+        ticket's `TaskState.status` view, as `at.status`. The view can rewrite
+        the stage (implement done is review, waking), so the status comes only
+        with its stage: `self.stage` beside it can name an impossible pair. A
+        view until the status is stored, then the stored fields replace it."""
         from dispatcher.lifecycle import legacy_view  # lifecycle imports this module
-        return legacy_view(self)[1]
+        return legacy_view(self)
 
     @property
     def continued_stage(self) -> Stage:

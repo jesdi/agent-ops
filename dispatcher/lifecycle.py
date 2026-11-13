@@ -96,9 +96,8 @@ class At(NamedTuple):
 
 
 def _at(task: TaskState | At) -> At:
-    """`task` as (stage, status): read through legacy_view until the status
-    is stored on the task."""
-    return task if isinstance(task, At) else legacy_view(task)
+    """`task` as (stage, status), never its raw stage beside its status."""
+    return task if isinstance(task, At) else task.at
 
 
 _OCCUPYING = frozenset({Kind.RUNNING, Kind.HELD_PLAN_APPROVAL, Kind.HELD_LOGIN})
