@@ -504,8 +504,38 @@ class Row:
                 and (self.move is None or self.move[0] is f.stage) and self.guard(f))
 
 
+    @property
+    def unconditional(self) -> bool:
+        """Does the row decide its pair whatever the facts and the stage?"""
+        return self.guard is always and self.move is None
+
+
 def _rows(kinds, events, to: Outcome, **kw) -> list[Row]:
     return [Row(k, e, to, **kw) for k in kinds for e in events]
+
+
+@dataclass(frozen=True)
+class _Rest:
+    """`to` for every kind no row above decides unconditionally for `event`."""
+    event: EventType
+    to: Ignore | Reject
+
+
+def _rest(events, to: Ignore | Reject) -> list[_Rest]:
+    return [_Rest(e, to) for e in events]
+
+
+def _complete(entries: list[Row | _Rest]) -> tuple[Row, ...]:
+    """The rows, each _Rest expanded against the rows before it."""
+    rows: list[Row] = []
+    for entry in entries:
+        rows += _remaining(rows, entry) if isinstance(entry, _Rest) else [entry]
+    return tuple(rows)
+
+
+def _remaining(rows: list[Row], rest: _Rest) -> list[Row]:
+    decided = {r.source for r in rows if r.event is rest.event and r.unconditional}
+    return [Row(k, rest.event, rest.to) for k in Kind if k not in decided]
 
 
 K, E = Kind, EventType
@@ -515,20 +545,18 @@ _WAITS = (K.PARKED_HUMAN, K.PARKED_ANSWERS, K.PARKED_REVIEW, K.PARKED_ACCESS)
 _REQUEST_WAITS = (K.PARKED_ANSWERS, K.PARKED_REVIEW)
 _RESUMABLE_PARKS = _WAITS + (K.PARKED_CI,)
 _PR_POKES = tuple(_PR_ATTENTION)
-_NOT_PARKED = Reject("the task is not parked")
 _ENDED_REJECT = Reject("the task has ended")
 
-TABLE: tuple[Row, ...] = tuple([
+TABLE: tuple[Row, ...] = _complete([
     # op-reply: the message is queued before decide; a wake delivers it.
     *_rows(_WAITS, [E.OP_REPLY], K.WAKING, build=_wake(Cause.REPLY), actions=(ResetRounds(),)),
     Row(K.HELD_PLAN_APPROVAL, E.OP_REPLY, K.WAKING, build=_wake_through_review,
         actions=(EndSession(), ResetRounds())),
-    *_rows((K.RUNNING, K.HELD_LOGIN, K.PARKED_CI, K.PARKED_PR, K.WAKING), [E.OP_REPLY],
-           Ignore("the session reads the message on its next resume")),
     Row(K.FAILED, E.OP_REPLY, Reject("reopen the PR on GitHub or re-queue the issue"),
         guard=pr_closed),
     Row(K.FAILED, E.OP_REPLY, Ignore("the message waits for a resume")),
     *_rows((K.CANCELED, K.DONE), [E.OP_REPLY], Ignore("the task has ended")),
+    *_rest([E.OP_REPLY], Ignore("the session reads the message on its next resume")),
 
     # op-answers
     *_rows(_REQUEST_WAITS, [E.OP_ANSWERS], K.WAKING, build=_wake(Cause.REPLY),
@@ -536,8 +564,7 @@ TABLE: tuple[Row, ...] = tuple([
     Row(K.HELD_PLAN_APPROVAL, E.OP_ANSWERS, K.WAKING, build=_wake_through_review,
         actions=(EndSession(), ResetRounds())),
     Row(K.WAKING, E.OP_ANSWERS, Reject("session busy")),
-    *_rows([k for k in K if k not in _REQUEST_WAITS + (K.HELD_PLAN_APPROVAL, K.WAKING)],
-           [E.OP_ANSWERS], Reject("no open request")),
+    *_rest([E.OP_ANSWERS], Reject("no open request")),
 
     # op-resume
     *_rows(_RESUMABLE_PARKS, [E.OP_RESUME], K.WAKING, build=_wake(Cause.RESUME),
@@ -548,31 +575,28 @@ TABLE: tuple[Row, ...] = tuple([
     Row(K.FAILED, E.OP_RESUME, K.WAKING, build=_wake(Cause.RESUME), actions=(ResetRounds(),),
         derive=(_resume_override,)),
     Row(K.WAKING, E.OP_RESUME, K.WAKING, build=_stay, derive=(_resume_override,)),
-    *_rows((K.RUNNING, K.HELD_PLAN_APPROVAL, K.HELD_LOGIN, K.PARKED_PR), [E.OP_RESUME],
-           _NOT_PARKED),
     *_rows((K.CANCELED, K.DONE), [E.OP_RESUME], _ENDED_REJECT),
+    *_rest([E.OP_RESUME], Reject("the task is not parked")),
 
     # op-kill, op-cancel, op-park
     *_rows(_LIVE, [E.OP_KILL], K.FAILED, build=_failed(FailReason.KILLED),
            actions=(EndSession(), ReleaseCard())),
-    *_rows(_ENDS, [E.OP_KILL], _ENDED_REJECT),
+    *_rest([E.OP_KILL], _ENDED_REJECT),
     *_rows(_LIVE + (K.FAILED,), [E.OP_CANCEL], K.CANCELED,
            actions=(EndSession(), CancelIssue())),
     Row(K.CANCELED, E.OP_CANCEL, Ignore("already canceled")),
-    Row(K.DONE, E.OP_CANCEL, _ENDED_REJECT),
+    *_rest([E.OP_CANCEL], _ENDED_REJECT),
     Row(K.RUNNING, E.OP_PARK, K.PARKED_HUMAN, build=_human(HumanReason.OPERATOR, "parked by operator"),
         actions=(EndSession(),)),
     Row(K.HELD_PLAN_APPROVAL, E.OP_PARK, K.PARKED_REVIEW, build=_review_park,
         actions=(EndSession(),)),
-    *_rows([k for k in K if k not in (K.RUNNING, K.HELD_PLAN_APPROVAL)], [E.OP_PARK],
-           Reject("only a running task or one at the plan gate can be parked")),
+    *_rest([E.OP_PARK], Reject("only a running task or one at the plan gate can be parked")),
 
     # op-login-code: the pane is re-verified by the executor (left_login_prompt).
     Row(K.HELD_LOGIN, E.OP_LOGIN_CODE, Reject("no longer at a login prompt — code not typed"),
         guard=left_login_prompt),
     Row(K.HELD_LOGIN, E.OP_LOGIN_CODE, K.RUNNING, derive=(_login_code,)),
-    *_rows([k for k in K if k is not K.HELD_LOGIN], [E.OP_LOGIN_CODE],
-           Reject("the task is not held at a login prompt")),
+    *_rest([E.OP_LOGIN_CODE], Reject("the task is not held at a login prompt")),
 
     # resume-admitted: the launch mode (requirement 11).
     Row(K.WAKING, E.RESUME_ADMITTED, K.WAKING, guard=launch_blocked, build=_stay,
@@ -583,7 +607,7 @@ TABLE: tuple[Row, ...] = tuple([
         actions=(RespawnStage(Stage.SPEC),)),
     Row(K.WAKING, E.RESUME_ADMITTED, K.RUNNING, guard=respawns, derive=(_respawn_here,)),
     Row(K.WAKING, E.RESUME_ADMITTED, K.RUNNING, actions=(ContinueSession(),)),
-    *_rows([k for k in K if k is not K.WAKING], [E.RESUME_ADMITTED], Ignore("not waking")),
+    *_rest([E.RESUME_ADMITTED], Ignore("not waking")),
 
     # candidate-ranked (requirement 12)
     *_rows((K.FAILED, K.CANCELED), [E.CANDIDATE_RANKED], Ignore("ended in this pass"),
@@ -596,21 +620,20 @@ TABLE: tuple[Row, ...] = tuple([
     Row(K.FAILED, E.CANDIDATE_RANKED, K.WAKING, build=_wake(Cause.RANKED), actions=(ResetRounds(),)),
     Row(K.CANCELED, E.CANDIDATE_RANKED, K.CANCELED, actions=(SweepTombstone(),)),
     Row(K.DONE, E.CANDIDATE_RANKED, Reject("the task is done")),
-    *_rows(_LIVE, [E.CANDIDATE_RANKED], Ignore("the issue has a live task")),
+    *_rest([E.CANDIDATE_RANKED], Ignore("the issue has a live task")),
 
     # flush-due: the executor raises it past the retention window.
     *[Row(k, E.FLUSH_DUE, k, build=_stay, actions=(Flush(),)) for k in _ENDS],
-    *_rows(_LIVE, [E.FLUSH_DUE], Ignore("not finished")),
+    *_rest([E.FLUSH_DUE], Ignore("not finished")),
 
     # ci-finished: a failed run spent a ci round (loops) before the event.
     Row(K.PARKED_CI, E.CI_FINISHED, K.PARKED_HUMAN, guard=loop_exhausted,
         build=_human(HumanReason.LOOP_CAP), actions=(Notify("parked_question"),)),
     Row(K.PARKED_CI, E.CI_FINISHED, K.WAKING, build=_wake(Cause.CI)),
-    *_rows([k for k in K if k is not K.PARKED_CI], [E.CI_FINISHED], Ignore("not waiting for CI")),
+    *_rest([E.CI_FINISHED], Ignore("not waiting for CI")),
 
     Row(K.PARKED_ACCESS, E.ACCESS_REACHED, K.WAKING, build=_wake(Cause.ACCESS)),
-    *_rows([k for k in K if k is not K.PARKED_ACCESS], [E.ACCESS_REACHED],
-           Ignore("not waiting for access")),
+    *_rest([E.ACCESS_REACHED], Ignore("not waiting for access")),
 
     # PR events (requirement 13)
     Row(K.PARKED_PR, E.PR_FEEDBACK, K.WAKING, build=_wake_for_pr,
@@ -619,13 +642,12 @@ TABLE: tuple[Row, ...] = tuple([
            guard=loop_exhausted, build=_human(HumanReason.LOOP_CAP), actions=(Notify("parked_question"),)),
     *_rows([K.PARKED_PR], (E.PR_CHECK_FAILED, E.PR_CONFLICT), K.WAKING, build=_wake_for_pr,
            actions=(Notify("pr_attention"),)),
-    *_rows([k for k in K if k is not K.PARKED_PR], _PR_POKES,
-           Ignore("the PR is acted on only while parked on it")),
+    *_rest(_PR_POKES, Ignore("the PR is acted on only while parked on it")),
     *_rows(_LIVE, [E.PR_MERGED], K.DONE, actions=(EndSession(), FinishMerged(),
                                                  Notify("task_done"))),
     *_rows(_LIVE, [E.PR_CLOSED], K.FAILED, build=_failed(FailReason.PR_CLOSED),
            actions=(EndSession(), Notify("pr_closed"))),
-    *_rows(_ENDS, (E.PR_MERGED, E.PR_CLOSED), Ignore("the task has ended")),
+    *_rest((E.PR_MERGED, E.PR_CLOSED), Ignore("the task has ended")),
 ])
 
 
