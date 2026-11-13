@@ -1405,19 +1405,22 @@ def _wake_reached(cfg: Config, deps: Deps) -> None:
         save(cfg.state_dir, replace(wake(task), updated_at=_now()))
 
 
-def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
-                  dry_run: bool = False) -> None:
-    """Box-wide, oldest wake first across every repository: capacity is shared,
-    so repository listing order must not decide whose approved work waits."""
+def _admissions(cfg: Config, deps: Deps, wants: Callable[[TaskState], bool],
+                choose: Callable[[Repository, TaskState], tuple[Launch | None, str]]):
+    """Box-wide admission, oldest first across every repository: capacity is
+    shared, so repository listing order must not decide whose work waits.
+    Yields (repository, task, launch, gh_config) per admitted task, lazily:
+    capacity and slots are re-read after the caller acted on the previous
+    one. A refused task is marked and the iteration carries on."""
     repositories = {t.name: t for t in cfg.repositories}
-    woken = sorted(
+    candidates = sorted(
         [t for t in load_all(cfg.state_dir)
-         if t.repository in repositories and t.park == PARK_WAKE],
+         if t.repository in repositories and wants(t)],
         key=_oldest_first(cfg),
     )
-    for task in woken:
+    for task in candidates:
         repository = repositories[task.repository]
-        launch, why = _wake_launch(cfg, deps, repository, task, admit, order)
+        launch, why = choose(repository, task)
         if why:
             _park_stranded(cfg, deps, repository, task, why)
         if launch is None:
@@ -1425,20 +1428,32 @@ def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
         if _box_free(cfg, load_all(cfg.state_dir)) <= 0:
             _mark_wake_blocked(cfg, repository, task, "capacity full")
             continue
-        if task.slot == NO_SLOT:
-            # Parked tasks gave their slot back. Take any free one —
-            # worktrees are per-issue, and the spec and plan prompts name no
-            # slot port, so for a gate-parked task the number need not be
-            # the original.
-            slot = allocate_slot(load_all(cfg.state_dir),
-                                 max_slots(cfg.capacity))
+        others = [t for t in load_all(cfg.state_dir)
+                  if (t.repository, t.issue) != (task.repository, task.issue)]
+        if task.slot == NO_SLOT or any(holds_slot(t) and t.slot == task.slot
+                                       for t in others):
+            # Parked tasks gave their slot back, and a recorded slot another
+            # holder took is not ours. Take any free one: worktrees are
+            # per-issue, so the number need not be the original.
+            slot = allocate_slot(others, max_slots(cfg.capacity))
             if slot is None:
                 _mark_wake_blocked(cfg, repository, task, "no free slot")
-                continue  # stays parked, retried next pass
+                continue  # retried next pass
             task = replace(task, slot=slot)
         gh_config = _task_token(cfg, deps, repository, task)
         if gh_config is None:
-            continue   # stays woken (App error) or parked for access
+            continue   # stays as it was (App error) or parked for access
+        yield repository, task, launch, gh_config
+
+
+def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
+                  dry_run: bool = False) -> None:
+    """Resume every woken task the shared admission loop admits."""
+    admitted = _admissions(
+        cfg, deps, lambda t: t.park == PARK_WAKE,
+        lambda repository, task: _wake_launch(cfg, deps, repository, task,
+                                              admit, order))
+    for repository, task, launch, gh_config in admitted:
         try:
             _resume_one(cfg, deps, repository, task, launch, gh_config)
             # The wake's launch is the next launch: a stored one-shot
