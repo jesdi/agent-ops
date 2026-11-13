@@ -1176,11 +1176,17 @@ def _react_to_pr(cfg: Config, deps: Deps, repository: Repository, task: TaskStat
         _finish_merged_or_warn(cfg, deps, repository, task, dry_run)
     elif res.kind == "closed":
         _fail_closed_pr(cfg, deps, repository, task)
-    elif task.park or task.feedback_pending:
+    else:
+        _react_to_open_pr(cfg, deps, repository, task, res)
+
+
+def _react_to_open_pr(cfg: Config, deps: Deps, repository: Repository,
+                      task: TaskState, res: "pr_poll.PollResult") -> None:
+    if task.park or task.feedback_pending:
         # Parked: only merge/close still matter. Feedback pending: the round
         # already queued reads the PR afresh, so new feedback waits for it.
         return
-    elif res.kind == "feedback":
+    if res.kind == "feedback":
         _pr_feedback(cfg, deps, repository, task, res)
     elif res.kind in ("check-failed", "conflict"):
         _pr_attention(cfg, deps, repository, task, res)
