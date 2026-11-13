@@ -619,7 +619,7 @@ def test_a_gated_plan_done_is_bounced_like_any_unapproved_done(c):
 
 def test_an_approved_plan_starts_one_implement_session(c):
     wt = _at_the_gate(c)
-    approve_plan(wt, SPEC_PATH)
+    approve_plan(c, wt, SPEC_PATH)
     signal(wt, "done", stage="plan")
     d = run(c)
     t = now(c)
@@ -630,7 +630,7 @@ def test_an_approved_plan_starts_one_implement_session(c):
 
 def test_an_approval_naming_an_unknown_track_is_bounced(c):
     wt = _at_the_gate(c)
-    approve_plan(wt, SPEC_PATH)
+    approve_plan(c, wt, SPEC_PATH)
     signal(wt, "done", stage="plan", track="nope")
     d = run(c)
     assert now(c).plan_slips == 1 and d.sessions.spawned == []
@@ -639,7 +639,7 @@ def test_an_approval_naming_an_unknown_track_is_bounced(c):
 def test_an_approval_with_bad_tickets_retries(c):
     wt = _at_the_gate(c)
     (wt / ".agent" / "tickets" / "01-t1.md").write_text("# tiny\n")
-    approve_plan(wt, SPEC_PATH)
+    approve_plan(c, wt, SPEC_PATH)
     signal(wt, "done", stage="plan")
     d = run(c)
     assert now(c).plan_retries == 1 and len(d.sessions.resumed) == 1

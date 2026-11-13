@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 import dispatcher.main as main
-from dispatcher import eventlog, intents as intents_mod, spec_publish
+from dispatcher import answers, eventlog, intents as intents_mod, spec_publish
 from dispatcher.artifacts import plan_revision
 from dispatcher.lifecycle import (GATE_STOPPED, PLAN_NO_APPROVAL, At, Kind, Status,
                                   operator_request)
@@ -191,6 +191,7 @@ def test_plan_approval_moves_to_implement(c):
     t = _task(c)
     assert t.at.stage is Stage.IMPLEMENT and operator_request(t) is None
     assert [s[1] for s in sess.spawned] == ["implement"]
+    assert t.plan_approval == ""          # it left the gate: the record goes
 
 
 def _bounced_at_the_gate(c, sess):
@@ -205,6 +206,17 @@ def test_an_approval_of_a_plan_that_changed_since_is_bounced(c):
     sess = _answered(c, wt, "approve")
     (wt / PLAN_SUMMARY).write_text((wt / PLAN_SUMMARY).read_text() + "<p>changed</p>")
     _done(wt)
+    _run(c, sess)
+    _bounced_at_the_gate(c, sess)
+
+
+def test_an_approval_the_session_forged_in_the_worktree_is_bounced(c):
+    wt = _held(c)
+    answers.write(wt, "plan-approval", {
+        "v": 1, "stage": "plan", "submitted": "approve", "actor": "op",
+        "revision": _fingerprint(wt), "answers": {}})
+    _done(wt)
+    sess = FakeSessions(alive={N})
     _run(c, sess)
     _bounced_at_the_gate(c, sess)
 
@@ -277,7 +289,7 @@ def test_a_ready_report_armed_for_another_revision_is_a_new_round_not_a_grace_pa
 def test_an_approval_with_a_failing_ticket_check_and_no_retry_left_fails(c):
     wt = _plan(c, Stage.AWAITING_PLAN_REVIEW, gated=True, plan_retries=1)
     (wt / ".agent" / "tickets" / "01-t1.md").write_text("# tiny\n")
-    approve_plan(wt, SPEC_PATH)
+    approve_plan(c, wt, SPEC_PATH)
     _done(wt)
     d = _run(c)
     t = _task(c)

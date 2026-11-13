@@ -84,7 +84,7 @@ def run(tmp_path, monkeypatch, usages, implement=WRITTEN, review=None,
     wt = make_task(c, issue=42, stage=stage, picks=picks or {}, **task_kw)
     if stage is Stage.AWAITING_PLAN_REVIEW:
         write_tickets(wt, 1)
-        approve_plan(wt, task_kw.get("spec_path", ""))
+        approve_plan(c, wt, task_kw.get("spec_path", ""))
         signal = {"stage": "plan", "status": "done", "note": "1 ticket",
                   "artifact": ".agent/tickets"}
     else:

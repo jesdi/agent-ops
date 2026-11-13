@@ -250,8 +250,14 @@ def legacy_fields(t: TaskState, stage: Stage, status: Status) -> TaskState:
     """`t` with (stage, status) written to today's park fields through the
     doors: the inverse of legacy_view for what the session events enter.
     Expand phase only (design "The move"); storing the status replaces it."""
-    t = _without_implement_pick(t, stage)
-    return _ENCODE[status.kind](t, stage, status)
+    t = _ENCODE[status.kind](_without_implement_pick(t, stage), stage, status)
+    return _off_the_gate(t)
+
+
+def _off_the_gate(t: TaskState) -> TaskState:
+    """A task that left the gate keeps no plan approval: one is proof only
+    for the gate session's `done`."""
+    return t if t.stage is Stage.AWAITING_PLAN_REVIEW else replace(t, plan_approval="")
 
 
 def _without_implement_pick(t: TaskState, stage: Stage) -> TaskState:
@@ -271,7 +277,8 @@ def _encode_running(t: TaskState, stage: Stage, status: Status) -> TaskState:
 
 def _encode_held(t: TaskState, stage: Stage, status: Status) -> TaskState:
     request = PlanApprovalRequest(status.path, fingerprint=status.fingerprint)
-    return replace(unpark(t, request=request), stage=Stage.AWAITING_PLAN_REVIEW)
+    return replace(unpark(t, request=request), stage=Stage.AWAITING_PLAN_REVIEW,
+                   plan_approval="")
 
 
 def _encode_login(t: TaskState, stage: Stage, status: Status) -> TaskState:
@@ -291,7 +298,7 @@ def _encode_answers(t: TaskState, stage: Stage, status: Status) -> TaskState:
 def _encode_review(t: TaskState, stage: Stage, status: Status) -> TaskState:
     request = PlanApprovalRequest(status.path, fingerprint=status.fingerprint)
     return replace(park(t, PARK_REVIEW, note=status.note, request=request),
-                   stage=Stage.AWAITING_PLAN_REVIEW)
+                   stage=Stage.AWAITING_PLAN_REVIEW, plan_approval="")
 
 
 def _encode_ci(t: TaskState, stage: Stage, status: Status) -> TaskState:

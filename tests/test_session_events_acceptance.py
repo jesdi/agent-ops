@@ -373,6 +373,19 @@ def test_the_legacy_fields_read_back_as_the_status_they_store(stage, status):
     assert legacy_view(legacy_fields(t, stage, status)) == (stage, status)
 
 
+@pytest.mark.parametrize("stage, status, kept", [
+    (Stage.PLAN, Status(Kind.RUNNING), "fp"),     # a running gate session: a bounce
+    (Stage.PLAN, Status(Kind.HELD_PLAN_APPROVAL, path="r.html", fingerprint="fp2"), ""),
+    (Stage.PLAN, Status(Kind.PARKED_REVIEW, path="r.html", fingerprint="fp2", note="n"), ""),
+    (Stage.IMPLEMENT, Status(Kind.RUNNING), ""),
+    (Stage.PLAN, Status(Kind.FAILED, reason=FailReason.SESSION_CRASH), ""),
+])
+def test_the_plan_approval_lasts_only_until_the_task_leaves_the_round(stage, status, kept):
+    t = TaskState(issue=42, repository=T, stage=Stage.AWAITING_PLAN_REVIEW, slot=0,
+                  worktree="/w", branch="b", title="t", updated_at="", plan_approval="fp")
+    assert legacy_fields(t, stage, status).plan_approval == kept
+
+
 @pytest.mark.parametrize("status", [Status(Kind.PARKED_ACCESS), Status(Kind.DONE),
                                     Status(Kind.WAKING, cause=Cause.REPLY)])
 def test_a_status_no_session_event_enters_has_no_legacy_fields(status):

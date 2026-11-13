@@ -18,7 +18,7 @@ def _approved(tmp_path, tickets=3, sessions=None, **task_fields):
     config = cfg(tmp_path)
     wt = make_task(config, stage=Stage.AWAITING_PLAN_REVIEW, **task_fields)
     write_tickets(wt, tickets)
-    approve_plan(wt, task_fields.get("spec_path", ""))
+    approve_plan(config, wt, task_fields.get("spec_path", ""))
     (wt / ".agent" / "stage.json").write_text(json.dumps({
         "stage": "plan", "status": "done", "note": "approved", "artifact": ".agent/tickets",
     }))

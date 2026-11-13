@@ -83,7 +83,7 @@ def test_task_that_waited_never_skips_after_a_respawn(tmp_path, monkeypatch):
 
 def test_gate_free_task_that_waited_starts_implement_on_approval(tmp_path, monkeypatch):
     c, wt, sess = _waited_once(tmp_path, monkeypatch)
-    approve_plan(wt, SPEC)
+    approve_plan(c, wt, SPEC)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "plan", "status": "done"}))
     _pass(c, sess)

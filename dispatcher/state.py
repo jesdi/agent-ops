@@ -223,6 +223,12 @@ class TaskState:
     # _park_for_input in dispatcher/main.py, never cleared: it outlives the
     # session that asked.
     asked: bool = False
+    # The plan revision the operator approved: the revision of a drained
+    # `approve` intent (main._apply_answers_intent), the only proof a gate
+    # `done` reads. A session writes its worktree, never this task file.
+    # Cleared by end() and the gate transitions that stop it applying (a new
+    # review round, the move to implement); "" = nothing approved.
+    plan_approval: str = ""
     # Round counters, one per bounded loop. Owned by the dispatcher: a
     # session reports rounds but can never lower these.
     review_rounds: int = 0
@@ -337,7 +343,7 @@ def end(t: TaskState, stage: Stage, crashed_stage: str = "") -> TaskState:
     """t ended at the terminal `stage`: a terminal task is never parked and
     keeps no park field, except the stage a crash failed it out of."""
     return replace(t, **{**_NOT_PARKED, "crashed_stage": crashed_stage},
-                   stage=stage)
+                   stage=stage, plan_approval="")
 
 
 def launch_track(t: TaskState, policy: ModelPolicy) -> str:

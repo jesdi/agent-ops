@@ -46,7 +46,7 @@ def run_for(c, stage, gh=None, **task_fields):
     elif stage == "implement":
         wt = make_task(c, stage=Stage.AWAITING_PLAN_REVIEW, **task_fields)
         write_tickets(wt, 1)
-        approve_plan(wt, task_fields.get("spec_path", ""))
+        approve_plan(c, wt, task_fields.get("spec_path", ""))
         signal(wt, stage="plan", status="done", note="approved",
                artifact=".agent/tickets")
     elif stage == "review":

@@ -27,7 +27,7 @@ def test_a_provider_is_recorded_once_through_review(tmp_path, monkeypatch):
     wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW,
                    track="standard")
     write_tickets(wt, 3)
-    approve_plan(wt)
+    approve_plan(c, wt)
     sess = FakeSessions(alive={42})
     for sig in [{"stage": "plan", "status": "done", "note": "3 tickets",
                  "artifact": ".agent/tickets"},

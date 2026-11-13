@@ -76,7 +76,7 @@ def setup(tmp_path, monkeypatch, task_track, tickets, usages=None, **kw):
                    track=task_track)
     for n in range(1, tickets + 1):
         write_ticket(wt, n)
-    approve_plan(wt)
+    approve_plan(c, wt)
     return c, wt
 
 

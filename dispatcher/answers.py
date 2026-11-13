@@ -80,15 +80,16 @@ def discard_stale(worktree: str | Path, kind: str, revision: str) -> None:
         print(f"[warn] {name} not removed: {exc}", file=sys.stderr)
 
 
-def approved_revision(worktree: str | Path) -> str:
-    """The plan revision the operator approved: the plan-approval answers
-    file's `revision` when it was submitted as `approve`. "" for a draft, a
-    change request, a text answer a session wrote (it names no revision) or
-    a file that does not read. The file outlives the request, which the
-    wake that delivers it clears."""
-    doc = read(worktree, "plan-approval") or {}
-    revision = doc.get("revision")
-    return revision if doc.get("submitted") == "approve" and isinstance(revision, str) else ""
+def approval(task: TaskState, intent: intents.Intent) -> str:
+    """The plan revision the task records as approved once the drained
+    submission `intent` is applied: its revision for an `approve` of a
+    plan-approval request, "" for a change request. A submission to another
+    kind of request leaves the record as it is. The answers file carries the
+    selections to the session, never the approval: the session writes it."""
+    if task.operator_request.kind != "plan-approval":
+        return task.plan_approval
+    submit = intent.payload.get("submit")
+    return intent.payload.get("revision", "") if submit == "approve" else ""
 
 
 def _valid(intent: intents.Intent, revision: str) -> bool:

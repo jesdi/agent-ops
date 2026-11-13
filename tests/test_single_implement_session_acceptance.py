@@ -58,7 +58,7 @@ def _approved(c, issue=ISSUE):
     save(c.state_dir, dc_replace(_task(c, issue), branch=BRANCH,
                                  title="Export a portfolio as CSV"))
     write_tickets(wt, TICKETS)
-    approve_plan(wt, SPEC)
+    approve_plan(c, wt, SPEC)
     _signal(wt, stage="plan", status="done", note="approved",
             artifact=".agent/tickets", track="standard")
     return wt

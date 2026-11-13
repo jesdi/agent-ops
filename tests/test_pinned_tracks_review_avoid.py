@@ -38,7 +38,7 @@ def test_implement_on_one_provider_reviews_on_the_other(
     wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW,
                    track="standard")
     write_tickets(wt, 3)
-    approve_plan(wt)
+    approve_plan(c, wt)
     sess = FakeSessions(alive={42})
     signals = [{"stage": "plan", "status": "done", "note": "3 tickets",
                 "artifact": ".agent/tickets"},
@@ -86,7 +86,7 @@ def test_a_parked_implement_session_resumes_on_its_pick_without_a_second_provide
     wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW,
                    track="standard")
     write_tickets(wt, 2)
-    approve_plan(wt)
+    approve_plan(c, wt)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "plan", "status": "done", "note": "2 tickets",
          "artifact": ".agent/tickets"}))

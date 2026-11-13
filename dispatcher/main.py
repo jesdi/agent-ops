@@ -2355,11 +2355,13 @@ def _done_reads(task: TaskState, signal: StageSignal) -> Reads:
     tickets = check_tickets(Path(task.worktree) / TICKETS_DIR)
     if not at_gate(task):
         return Reads(tickets=tickets)
-    # The approval: what the operator approved, and the plan on disk now. The
-    # prescribed page, since the request that named it is gone by now.
+    # The approval: the revision the dispatcher recorded when it drained the
+    # operator's approve (never the worktree's answers file, which the
+    # session writes), and the plan on disk now. The prescribed page, since
+    # the request that named it is gone by now.
     return Reads(tickets=tickets,
                  revision=plan_revision(task.worktree, REVIEW_PAGE, task.spec_path),
-                 approval=answers.approved_revision(task.worktree))
+                 approval=task.plan_approval)
 
 
 def _answers_reads(task: TaskState, signal: StageSignal) -> Reads:
@@ -2687,6 +2689,7 @@ def _apply_answers_intent(cfg: Config, deps: Deps, task: TaskState | None,
     assert task is not None
     wake = answers.record(task, intent)
     if wake:
+        task = replace(task, plan_approval=answers.approval(task, intent))
         _queue_message(cfg, task.repository, task.issue, wake, intent.actor or "operator")
         _wake_for_queued_message(cfg, deps, task)
 

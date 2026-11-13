@@ -89,7 +89,7 @@ def test_wake_at_the_gate_with_no_session_record_keeps_the_gate_stage(tmp_path, 
 def test_approval_after_a_fresh_launch_starts_implement(tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
     wt, sess = _fresh_launch_from_the_gate(c, tmp_path)
-    _done(wt)
+    _done(c, wt)
     d = deps(sess=sess)
 
     main.run_pass(c, d)
@@ -105,7 +105,7 @@ def test_approval_after_a_fresh_launch_starts_implement(tmp_path, monkeypatch):
 def test_approval_with_a_new_track_after_a_fresh_launch(tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
     wt, sess = _fresh_launch_from_the_gate(c, tmp_path)
-    _done(wt, track="research")
+    _done(c, wt, track="research")
 
     main.run_pass(c, deps(sess=sess))
 
@@ -176,7 +176,7 @@ def test_crash_resume_of_a_gated_task_runs_in_stage_plan_and_its_done_is_bounced
 
     sess.alive_set.add(ISSUE)
     record_session(c, "plan", ISSUE)
-    _done(wt)                            # an approval of the plan on disk is there
+    _done(c, wt)                            # an approval of the plan on disk is there
     main.run_pass(c, deps(sess=sess))
 
     (resume,) = sess.resumed
@@ -217,7 +217,7 @@ def test_done_from_a_gated_task_in_stage_plan_is_bounced(tmp_path, monkeypatch):
     `done` outside the gate is bounced like any unapproved one."""
     c = _setup(tmp_path, monkeypatch)
     wt = _plan_task(c, tmp_path, Stage.PLAN, git=False, tickets=1, gated=True)
-    _done(wt)
+    _done(c, wt)
     sess = FakeSessions(alive={ISSUE})
 
     main.run_pass(c, deps(sess=sess))
@@ -232,7 +232,7 @@ def test_done_from_an_ungated_task_in_stage_plan_still_bounces(tmp_path, monkeyp
     c = _setup(tmp_path, monkeypatch)
     wt = _plan_task(c, tmp_path, Stage.PLAN, git=False, tickets=1, gated=False,
                     plan_retries=0)
-    _done(wt)
+    _done(c, wt)
     sess = FakeSessions(alive={ISSUE})
 
     main.run_pass(c, deps(sess=sess))

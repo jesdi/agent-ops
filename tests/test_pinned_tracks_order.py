@@ -118,7 +118,7 @@ def enter(c, issue, track, stage, **kw):
     wt = make_task(c, issue=issue, stage=gate, track=track, **kw)
     write_tickets(wt, 1)
     if stage is Stage.PLAN:
-        approve_plan(wt, kw.get("spec_path", ""))
+        approve_plan(c, wt, kw.get("spec_path", ""))
         sig = {"stage": "plan", "status": "done", "note": "1 ticket",
                "artifact": ".agent/tickets"}
     else:
