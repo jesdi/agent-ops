@@ -13,7 +13,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Callable, Iterator, Protocol
 
 from dispatcher.config import Config, referenced_providers
 from dispatcher.state import write_json_atomic
@@ -143,7 +143,8 @@ def _read_token(credentials_path: str | Path) -> str | None:
     if not p.exists():
         return None
     try:
-        return json.loads(p.read_text())["claudeAiOauth"]["accessToken"]
+        token = json.loads(p.read_text())["claudeAiOauth"]["accessToken"]
+        return token if isinstance(token, str) else None
     except (json.JSONDecodeError, KeyError, TypeError):
         return None
 
@@ -209,13 +210,7 @@ class AnthropicUsage:
         at = now()
         marker = cooldown_path(state_dir, self.name)
         cooling = _live_cooldowns(marker, at)
-        for token in self._candidates(state_dir):
-            try:
-                key = _token_key(token)
-            except UnicodeError:
-                continue  # malformed token; the next credential store may be live
-            if key in cooling:
-                continue
+        for token, key in self._candidates(state_dir, cooling):
             try:
                 windows = parse_anthropic(_http_get_json(
                     USAGE_URL, {"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT}))
@@ -231,11 +226,21 @@ class AnthropicUsage:
                 return ProviderUsage(self.name, "oauth", at, windows)
         return unavailable(self.name, at)
 
-    def _candidates(self, state_dir: Path) -> list[str]:
-        return [t for t in dict.fromkeys((
+    def _candidates(self, state_dir: Path,
+                    cooling: dict[str, float]) -> Iterator[tuple[str, str]]:
+        raw = (
             os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"),
             *map(_read_token, _credential_stores(state_dir, self._credentials_path)),
-        )) if isinstance(t, str) and t]
+        )
+        for token in dict.fromkeys(raw):
+            if not token:
+                continue
+            try:
+                key = _token_key(token)
+            except UnicodeError:
+                continue  # malformed token; the next credential store may be live
+            if key not in cooling:
+                yield token, key
 
 
 # ---- OpenAI (Codex) adapter -------------------------------------------------
