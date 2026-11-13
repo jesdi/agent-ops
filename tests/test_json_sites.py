@@ -160,3 +160,20 @@ def test_a_heartbeat_that_cannot_be_written_warns_and_leaves_no_temp_file(tmp_pa
     assert "[warn] heartbeat write failed:" in capsys.readouterr().err
     assert [p.name for p in sd.iterdir()] == ["pass.json"]
     assert (sd / "pass.json").is_dir()
+
+
+def test_mark_background_removes_the_waiting_marker_before_it_writes(tmp_path, monkeypatch):
+    sd = tmp_path / "state"
+    state.mark_waiting(sd, "portfolio_eval", ISSUE)
+    assert state.has_waiting(sd, "portfolio_eval", ISSUE)
+    seen = []
+    real = state.write_json_atomic
+
+    def spy(path, data, **kw):
+        seen.append(state.has_waiting(sd, "portfolio_eval", ISSUE))
+        return real(path, data, **kw)
+
+    monkeypatch.setattr(state, "write_json_atomic", spy)
+    state.mark_background(sd, "portfolio_eval", ISSUE, [{"id": "b1"}], now=1000.0)
+    assert seen == [False]
+    assert state.read_background(sd, "portfolio_eval", ISSUE) is not None
