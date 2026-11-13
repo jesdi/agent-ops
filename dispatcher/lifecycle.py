@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Callable, NamedTuple
 
+from dispatcher.machine import Notify
 from dispatcher.state import (PARK_CI, PARK_HUMAN, PARK_LOGIN,
                               PARK_WAKE, WHY_ACCESS, WHY_BAD_SIGNAL, WHY_CONFIG,
                               WHY_DECISION, WHY_LOOP_CAP, WHY_OPERATOR,
@@ -58,6 +60,18 @@ def attention(kind: str) -> str:
     return f"attention({kind})"
 
 
+class At(NamedTuple):
+    """Where a task is in its lifecycle."""
+    stage: Stage
+    status: Status
+
+
+def _at(task: TaskState | At) -> At:
+    """`task` as (stage, status): read through legacy_view until the status
+    is stored on the task."""
+    return task if isinstance(task, At) else legacy_view(task)
+
+
 _OCCUPYING = frozenset({Kind.RUNNING, Kind.HELD_PLAN_APPROVAL, Kind.HELD_LOGIN})
 
 
@@ -66,9 +80,9 @@ def occupies(status: Status) -> bool:
     return status.kind in _OCCUPYING
 
 
-def operator_request(t: TaskState) -> OperatorRequest | None:
+def operator_request(task: TaskState | At) -> OperatorRequest | None:
     """What the operator is asked for, derived from the status."""
-    return _request(legacy_view(t)[1])
+    return _request(_at(task).status)
 
 
 def _request(status: Status) -> OperatorRequest | None:
@@ -89,20 +103,20 @@ _HUMAN_REASONS = {WHY_DECISION: "decision", WHY_STALLED: "stalled",
 _REQUEST_PARKS = {"answers": Kind.PARKED_ANSWERS, "plan-approval": Kind.PARKED_REVIEW}
 
 
-def legacy_view(t: TaskState) -> tuple[Stage, Status]:
+def legacy_view(t: TaskState) -> At:
     """(stage, status) of a task stored with today's park fields: the table of
     the scenario "migration command rewrites each legacy shape". Raises
     ValueError on a shape that table does not classify."""
     if t.stage in _ENDED:
-        return _ended(t)
+        return At(*_ended(t))
     if t.stage in _RETIRED_STAGES:
-        return _retired(t)
+        return At(*_retired(t))
     stage = Stage.PLAN if t.stage is Stage.AWAITING_PLAN_REVIEW else t.stage
     if t.park == PARK_WAKE:
-        return stage, _woken(t)
+        return At(stage, _woken(t))
     if t.park:
-        return stage, _parked(t)
-    return _live(t)
+        return At(stage, _parked(t))
+    return At(*_live(t))
 
 
 def _ended(t: TaskState) -> tuple[Stage, Status]:
@@ -184,3 +198,406 @@ def _at_gate(t: TaskState) -> Status:
         raise ValueError(f"task {t.repository}#{t.issue}: at the plan gate with no request")
     return Status(Kind.HELD_PLAN_APPROVAL, path=t.operator_request.path,
                   fingerprint=t.operator_request.fingerprint)
+
+
+
+# ---- Events ---------------------------------------------------------------
+
+class EventType(str, Enum):
+    """What can happen to a task (requirement 6). Session events come with
+    the session-signal path."""
+    OP_RESUME = "op-resume"
+    OP_REPLY = "op-reply"
+    OP_ANSWERS = "op-answers"
+    OP_KILL = "op-kill"
+    OP_CANCEL = "op-cancel"
+    OP_PARK = "op-park"
+    OP_LOGIN_CODE = "op-login-code"
+    RESUME_ADMITTED = "resume-admitted"
+    CANDIDATE_RANKED = "candidate-ranked"
+    FLUSH_DUE = "flush-due"
+    CI_FINISHED = "ci-finished"
+    ACCESS_REACHED = "access-reached"
+    PR_FEEDBACK = "pr-feedback"
+    PR_CHECK_FAILED = "pr-check-failed"
+    PR_CONFLICT = "pr-conflict"
+    PR_MERGED = "pr-merged"
+    PR_CLOSED = "pr-closed"
+
+
+@dataclass(frozen=True)
+class Event:
+    """An event and the facts the executor read for it (decide reads no file,
+    clock or session). Every default is the plain case."""
+    type: EventType
+    blocked: str = ""              # resume-admitted: why the launch cannot start now
+    exhausted: bool = False        # ci-finished, pr-check-failed, pr-conflict: no ci round left
+    this_pass: bool = False        # candidate-ranked: the task ended in this pass
+    left_login_prompt: bool = False  # op-login-code: the pane shows no login prompt any more
+    model: str = ""                # op-resume: the model override
+    bypass_usage: bool = False     # op-resume: launch past the usage gate
+    code: str = ""                 # op-login-code: never logged
+
+
+# ---- Outcomes and actions ---------------------------------------------------
+
+@dataclass(frozen=True)
+class Transition:
+    status: Status
+    stage: Stage
+    actions: tuple = ()
+
+
+@dataclass(frozen=True)
+class Ignore:
+    reason: str
+
+
+@dataclass(frozen=True)
+class Reject:
+    reason: str
+
+
+@dataclass(frozen=True)
+class AcquireSlot:
+    """The task starts occupying: it takes a slot and a capacity unit."""
+
+
+@dataclass(frozen=True)
+class ReleaseSlot:
+    """The task stops occupying: slot = NO_SLOT."""
+
+
+@dataclass(frozen=True)
+class EndSession:
+    pass
+
+
+@dataclass(frozen=True)
+class ContinueSession:
+    """Resume the stage's recorded session with the queued messages."""
+
+
+@dataclass(frozen=True)
+class RespawnStage:
+    """Start `stage` afresh in the same worktree, never --continue."""
+    stage: Stage
+
+
+@dataclass(frozen=True)
+class SpawnAddressReview:
+    pass
+
+
+@dataclass(frozen=True)
+class WakeBlocked:
+    """The admitted wake has no capacity or slot (edge-triggered)."""
+    reason: str
+
+
+@dataclass(frozen=True)
+class SetResumeOverride:
+    model: str
+    bypass_usage: bool
+
+
+@dataclass(frozen=True)
+class ResetRounds:
+    """An operator wake: loops.reset(task, ResetCause.OPERATOR_WAKE)."""
+
+
+@dataclass(frozen=True)
+class ReleaseCard:
+    """Kill: the board card goes back to Ready."""
+
+
+@dataclass(frozen=True)
+class CancelIssue:
+    """Cancel: the card moves to Wont do, the issue closes as not planned."""
+
+
+@dataclass(frozen=True)
+class FinishMerged:
+    """Close the issue, board Done, collect artifacts, remove the worktree
+    and the branch, stamp done_at."""
+
+
+@dataclass(frozen=True)
+class SweepTombstone:
+    """Delete the ended task's file for a fresh claim of its issue."""
+
+
+@dataclass(frozen=True)
+class Flush:
+    """Retire a finished task past its retention window."""
+
+
+@dataclass(frozen=True)
+class TypeLoginCode:
+    code: str
+
+
+# ---- The table --------------------------------------------------------------
+
+class Facts(NamedTuple):
+    """What guards and builders read: the task's place and the event."""
+    stage: Stage
+    status: Status
+    event: Event
+
+
+Guard = Callable[[Facts], bool]
+
+
+def always(f: Facts) -> bool:
+    return True
+
+
+def pr_closed(f: Facts) -> bool:
+    return f.status.reason == "pr-closed"
+
+
+def unknown_at_queued(f: Facts) -> bool:
+    """A migrated failure with no known stage."""
+    return f.status.reason == "unknown" and f.stage is Stage.QUEUED
+
+
+def ended_this_pass(f: Facts) -> bool:
+    return f.event.this_pass
+
+
+def launch_blocked(f: Facts) -> bool:
+    return bool(f.event.blocked)
+
+
+def respawns(f: Facts) -> bool:
+    """The launch starts its stage afresh: after a failure, a claim, or the
+    stage that follows implement."""
+    origin = f.status.origin
+    return origin is None or origin.kind is Kind.FAILED
+
+
+def loop_exhausted(f: Facts) -> bool:
+    return f.event.exhausted
+
+
+def left_login_prompt(f: Facts) -> bool:
+    return f.event.left_login_prompt
+
+
+def _wake(cause: str) -> Callable[[Facts], Status]:
+    return lambda f: Status(Kind.WAKING, origin=f.status, cause=cause)
+
+
+def _wake_through_review(f: Facts) -> Status:
+    """The gate session ends: the task passes through parked(review)."""
+    origin = Status(Kind.PARKED_REVIEW, path=f.status.path,
+                    fingerprint=f.status.fingerprint, note=f.status.note)
+    return Status(Kind.WAKING, origin=origin, cause="reply")
+
+
+_PR_ATTENTION = {EventType.PR_FEEDBACK: "feedback", EventType.PR_CHECK_FAILED: "check-failed",
+                 EventType.PR_CONFLICT: "conflict"}
+
+
+def _wake_for_pr(f: Facts) -> Status:
+    return Status(Kind.WAKING, origin=f.status, cause=attention(_PR_ATTENTION[f.event.type]))
+
+
+def _stay(f: Facts) -> Status:
+    return f.status
+
+
+def _human(reason: str, note: str = "") -> Callable[[Facts], Status]:
+    return lambda f: Status(Kind.PARKED_HUMAN, reason=reason, note=note)
+
+
+def _failed(reason: str) -> Callable[[Facts], Status]:
+    return lambda f: Status(Kind.FAILED, reason=reason)
+
+
+def _respawn_here(f: Facts) -> RespawnStage:
+    return RespawnStage(f.stage)
+
+
+def _wake_blocked(f: Facts) -> WakeBlocked:
+    return WakeBlocked(f.event.blocked)
+
+
+def _resume_override(f: Facts) -> SetResumeOverride:
+    return SetResumeOverride(f.event.model, f.event.bypass_usage)
+
+
+def _login_code(f: Facts) -> TypeLoginCode:
+    return TypeLoginCode(f.event.code)
+
+
+Outcome = Kind | Ignore | Reject
+
+
+@dataclass(frozen=True)
+class Row:
+    """(from status kind, event type, named guard, to, stage move, actions).
+    `to` is the status kind a Transition enters, `build` its detail; an
+    Ignore or a Reject row has neither. `move` (from stage, to stage) applies
+    only at its from stage. An action is a value, or a function of the facts
+    that makes one. The first row whose guard passes decides."""
+    source: Kind
+    event: EventType
+    to: Outcome
+    guard: Guard = always
+    build: Callable[[Facts], Status] | None = None
+    move: tuple[Stage, Stage] | None = None
+    actions: tuple = ()
+
+
+def _rows(kinds, events, to: Outcome, **kw) -> list[Row]:
+    return [Row(k, e, to, **kw) for k in kinds for e in events]
+
+
+K, E = Kind, EventType
+_ENDS = (K.FAILED, K.CANCELED, K.DONE)
+_LIVE = tuple(k for k in K if k not in _ENDS)
+_WAITS = (K.PARKED_HUMAN, K.PARKED_ANSWERS, K.PARKED_REVIEW, K.PARKED_ACCESS)
+_REQUEST_WAITS = (K.PARKED_ANSWERS, K.PARKED_REVIEW)
+_RESUMABLE_PARKS = _WAITS + (K.PARKED_CI,)
+_PR_POKES = (E.PR_FEEDBACK, E.PR_CHECK_FAILED, E.PR_CONFLICT)
+_OPERATOR_RESUME = (ResetRounds(), _resume_override)
+_NOT_PARKED = Reject("the task is not parked")
+_ENDED_REJECT = Reject("the task has ended")
+
+TABLE: tuple[Row, ...] = tuple([
+    # op-reply: the message is queued before decide; a wake delivers it.
+    *_rows(_WAITS, [E.OP_REPLY], K.WAKING, build=_wake("reply"), actions=(ResetRounds(),)),
+    Row(K.HELD_PLAN_APPROVAL, E.OP_REPLY, K.WAKING, build=_wake_through_review,
+        actions=(EndSession(), ResetRounds())),
+    *_rows((K.RUNNING, K.HELD_LOGIN, K.PARKED_CI, K.PARKED_PR, K.WAKING), [E.OP_REPLY],
+           Ignore("the session reads the message on its next resume")),
+    Row(K.FAILED, E.OP_REPLY, Reject("reopen the PR on GitHub or re-queue the issue"),
+        guard=pr_closed),
+    Row(K.FAILED, E.OP_REPLY, Ignore("the message waits for a resume")),
+    *_rows((K.CANCELED, K.DONE), [E.OP_REPLY], Ignore("the task has ended")),
+
+    # op-answers
+    *_rows(_REQUEST_WAITS, [E.OP_ANSWERS], K.WAKING, build=_wake("reply"),
+           actions=(ResetRounds(),)),
+    Row(K.HELD_PLAN_APPROVAL, E.OP_ANSWERS, K.WAKING, build=_wake_through_review,
+        actions=(EndSession(), ResetRounds())),
+    Row(K.WAKING, E.OP_ANSWERS, Reject("session busy")),
+    *_rows([k for k in K if k not in _REQUEST_WAITS + (K.HELD_PLAN_APPROVAL, K.WAKING)],
+           [E.OP_ANSWERS], Reject("no open request")),
+
+    # op-resume
+    *_rows(_RESUMABLE_PARKS, [E.OP_RESUME], K.WAKING, build=_wake("resume"),
+           actions=_OPERATOR_RESUME),
+    Row(K.FAILED, E.OP_RESUME, Reject("reopen the PR on GitHub or re-queue the issue"),
+        guard=pr_closed),
+    Row(K.FAILED, E.OP_RESUME, Reject("re-queue the issue instead"), guard=unknown_at_queued),
+    Row(K.FAILED, E.OP_RESUME, K.WAKING, build=_wake("resume"), actions=_OPERATOR_RESUME),
+    Row(K.WAKING, E.OP_RESUME, K.WAKING, build=_stay, actions=(_resume_override,)),
+    *_rows((K.RUNNING, K.HELD_PLAN_APPROVAL, K.HELD_LOGIN, K.PARKED_PR), [E.OP_RESUME],
+           _NOT_PARKED),
+    *_rows((K.CANCELED, K.DONE), [E.OP_RESUME], _ENDED_REJECT),
+
+    # op-kill, op-cancel, op-park
+    *_rows(_LIVE, [E.OP_KILL], K.FAILED, build=_failed("killed"),
+           actions=(EndSession(), ReleaseCard())),
+    *_rows(_ENDS, [E.OP_KILL], _ENDED_REJECT),
+    *_rows(_LIVE + (K.FAILED,), [E.OP_CANCEL], K.CANCELED,
+           actions=(EndSession(), CancelIssue())),
+    Row(K.CANCELED, E.OP_CANCEL, Ignore("already canceled")),
+    Row(K.DONE, E.OP_CANCEL, _ENDED_REJECT),
+    Row(K.RUNNING, E.OP_PARK, K.PARKED_HUMAN, build=_human("operator", "parked by operator"),
+        actions=(EndSession(),)),
+    *_rows([k for k in K if k is not K.RUNNING], [E.OP_PARK],
+           Reject("only a running task can be parked")),
+
+    # op-login-code: the pane is re-verified by the executor (left_login_prompt).
+    Row(K.HELD_LOGIN, E.OP_LOGIN_CODE, Reject("no longer at a login prompt — code not typed"),
+        guard=left_login_prompt),
+    Row(K.HELD_LOGIN, E.OP_LOGIN_CODE, K.RUNNING, actions=(_login_code,)),
+    *_rows([k for k in K if k is not K.HELD_LOGIN], [E.OP_LOGIN_CODE],
+           Reject("the task is not held at a login prompt")),
+
+    # resume-admitted: the launch mode (requirement 11).
+    Row(K.WAKING, E.RESUME_ADMITTED, K.WAKING, guard=launch_blocked, build=_stay,
+        actions=(_wake_blocked,)),
+    Row(K.WAKING, E.RESUME_ADMITTED, K.RUNNING, move=(Stage.PR_OPEN, Stage.ADDRESS_REVIEW),
+        actions=(SpawnAddressReview(),)),
+    Row(K.WAKING, E.RESUME_ADMITTED, K.RUNNING, move=(Stage.QUEUED, Stage.SPEC),
+        actions=(RespawnStage(Stage.SPEC),)),
+    Row(K.WAKING, E.RESUME_ADMITTED, K.RUNNING, guard=respawns, actions=(_respawn_here,)),
+    Row(K.WAKING, E.RESUME_ADMITTED, K.RUNNING, actions=(ContinueSession(),)),
+    *_rows([k for k in K if k is not K.WAKING], [E.RESUME_ADMITTED], Ignore("not waking")),
+
+    # candidate-ranked (requirement 12)
+    *_rows((K.FAILED, K.CANCELED), [E.CANDIDATE_RANKED], Ignore("ended in this pass"),
+           guard=ended_this_pass),
+    Row(K.FAILED, E.CANDIDATE_RANKED, K.FAILED, guard=pr_closed, build=_stay,
+        actions=(SweepTombstone(),)),
+    Row(K.FAILED, E.CANDIDATE_RANKED, K.FAILED, guard=unknown_at_queued, build=_stay,
+        actions=(SweepTombstone(),)),
+    Row(K.FAILED, E.CANDIDATE_RANKED, K.WAKING, build=_wake("ranked")),
+    Row(K.CANCELED, E.CANDIDATE_RANKED, K.CANCELED, actions=(SweepTombstone(),)),
+    Row(K.DONE, E.CANDIDATE_RANKED, Reject("the task is done")),
+    *_rows(_LIVE, [E.CANDIDATE_RANKED], Ignore("the issue has a live task")),
+
+    # flush-due: the executor raises it past the retention window.
+    *[Row(k, E.FLUSH_DUE, k, build=_stay, actions=(Flush(),)) for k in _ENDS],
+    *_rows(_LIVE, [E.FLUSH_DUE], Ignore("not finished")),
+
+    # ci-finished: a failed run spent a ci round (loops) before the event.
+    Row(K.PARKED_CI, E.CI_FINISHED, K.PARKED_HUMAN, guard=loop_exhausted,
+        build=_human("loop-cap"), actions=(Notify("parked_question"),)),
+    Row(K.PARKED_CI, E.CI_FINISHED, K.WAKING, build=_wake("ci")),
+    *_rows([k for k in K if k is not K.PARKED_CI], [E.CI_FINISHED], Ignore("not waiting for CI")),
+
+    Row(K.PARKED_ACCESS, E.ACCESS_REACHED, K.WAKING, build=_wake("access")),
+    *_rows([k for k in K if k is not K.PARKED_ACCESS], [E.ACCESS_REACHED],
+           Ignore("not waiting for access")),
+
+    # PR events (requirement 13)
+    Row(K.PARKED_PR, E.PR_FEEDBACK, K.WAKING, build=_wake_for_pr,
+        actions=(Notify("pr_feedback"),)),
+    *_rows([K.PARKED_PR], (E.PR_CHECK_FAILED, E.PR_CONFLICT), K.PARKED_HUMAN,
+           guard=loop_exhausted, build=_human("loop-cap"), actions=(Notify("parked_question"),)),
+    *_rows([K.PARKED_PR], (E.PR_CHECK_FAILED, E.PR_CONFLICT), K.WAKING, build=_wake_for_pr,
+           actions=(Notify("pr_attention"),)),
+    *_rows([k for k in K if k is not K.PARKED_PR], _PR_POKES,
+           Ignore("the PR is acted on only while parked on it")),
+    *_rows(_LIVE, [E.PR_MERGED], K.DONE, actions=(EndSession(), FinishMerged(),
+                                                 Notify("task_done"))),
+    *_rows(_LIVE, [E.PR_CLOSED], K.FAILED, build=_failed("pr-closed"),
+           actions=(EndSession(), Notify("pr_closed"))),
+    *_rows(_ENDS, (E.PR_MERGED, E.PR_CLOSED), Ignore("the task has ended")),
+])
+
+
+def decide(task: TaskState | At, event: Event) -> Transition | Ignore | Reject:
+    """The table's answer to `event` for `task`. Pure: no file, clock,
+    network or session."""
+    at = _at(task)
+    facts = Facts(at.stage, at.status, event)
+    row = _match(facts)
+    if not isinstance(row.to, Kind):
+        return row.to
+    status = row.build(facts) if row.build else Status(row.to)
+    actions = tuple(a(facts) if callable(a) else a for a in row.actions)
+    return Transition(status, row.move[1] if row.move else at.stage,
+                      _with_slot(at.status, status, actions))
+
+
+def _match(f: Facts) -> Row:
+    return next(r for r in TABLE
+                if r.source is f.status.kind and r.event is f.event.type
+                and (r.move is None or r.move[0] is f.stage) and r.guard(f))
+
+
+def _with_slot(before: Status, after: Status, actions: tuple) -> tuple:
+    """A slot is taken before the launch that needs it, and given back after
+    the session ends."""
+    if occupies(after) and not occupies(before):
+        return (AcquireSlot(), *actions)
+    if occupies(before) and not occupies(after):
+        return (*actions, ReleaseSlot())
+    return actions

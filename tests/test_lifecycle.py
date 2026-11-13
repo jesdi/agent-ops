@@ -1,7 +1,22 @@
 """dispatcher/lifecycle.py: the task lifecycle table (#132, ADR 0014)."""
+import builtins
+import itertools
+import os
+import socket
+import time
+from unittest import mock
+
 import pytest
 
-from dispatcher.lifecycle import (Kind, Status, legacy_view, occupies,
+from dispatcher import lifecycle
+from dispatcher.lifecycle import (TABLE, AcquireSlot, At, CancelIssue,
+                                  ContinueSession, EndSession, Event, EventType,
+                                  FinishMerged, Ignore, Kind, Reject,
+                                  ReleaseCard, ReleaseSlot, ResetRounds,
+                                  RespawnStage, SetResumeOverride,
+                                  SpawnAddressReview, Status, SweepTombstone,
+                                  Transition, TypeLoginCode, WakeBlocked,
+                                  decide, legacy_view, occupies,
                                   operator_request)
 from dispatcher.state import (AnswersRequest, PlanApprovalRequest, Stage,
                               TaskState)
@@ -119,3 +134,241 @@ def test_operator_request_is_derived_from_the_status(shape, asked):
     got = operator_request(task(**shape))
     assert (got, getattr(got, "fingerprint", None)) == (
         asked, getattr(asked, "fingerprint", None))
+
+
+E = EventType
+RUNNING = Status(Kind.RUNNING)
+GATE = Status(Kind.HELD_PLAN_APPROVAL, path="review.html", fingerprint="cd34")
+LOOP_CAP = human("loop-cap")
+PR = Status(Kind.PARKED_PR)
+
+
+def failed(reason):
+    return Status(Kind.FAILED, reason=reason)
+
+
+# One task per status kind, plus the stages and details the guards read.
+TASKS = [
+    At(S.IMPLEMENT, RUNNING), At(S.PLAN, GATE),
+    At(S.SPEC, Status(Kind.HELD_LOGIN)), At(S.IMPLEMENT, human("decision", "which DB?")),
+    At(S.SPEC, ANSWERS_PARK), At(S.QUEUED, Status(Kind.PARKED_ACCESS)),
+    At(S.IMPLEMENT, Status(Kind.PARKED_CI, run_id=991)), At(S.PLAN, REVIEW_PARK),
+    At(S.PR_OPEN, PR), At(S.PR_OPEN, LOOP_CAP),
+    At(S.IMPLEMENT, waking(human("decision"), "reply")),
+    At(S.PR_OPEN, waking(PR, "attention(feedback)")),
+    At(S.QUEUED, waking(None, "launch")), At(S.REVIEW, waking(None, "next-stage")),
+    At(S.IMPLEMENT, failed("session-crash")), At(S.PR_OPEN, failed("pr-closed")),
+    At(S.QUEUED, failed("unknown")), At(S.PLAN, Status(Kind.CANCELED)),
+    At(S.PR_OPEN, Status(Kind.DONE)),
+]
+EVENTS = [Event(e, **facts) for e in EventType for facts in (
+    {}, dict(blocked="capacity full"), dict(exhausted=True), dict(this_pass=True),
+    dict(left_login_prompt=True), dict(model="anthropic/claude-opus-5", code="ABCD-1234"))]
+
+
+def undeclared(event_types) -> list[tuple[str, str]]:
+    """Every (status kind, event type) pair with no unguarded row."""
+    declared = {(r.source, r.event) for r in TABLE if r.guard is lifecycle.always}
+    return [(k.value, getattr(e, "value", e)) for e in event_types for k in Kind
+            if (k, e) not in declared]
+
+
+def test_the_table_is_total():
+    assert undeclared(EventType) == []
+
+
+def test_an_event_type_with_no_rows_names_every_status_kind_missing_one():
+    missing = undeclared([*EventType, "liveness-unknown"])
+    assert missing == [(k.value, "liveness-unknown") for k in Kind]
+
+
+def test_decide_answers_every_pair_without_io():
+    refuse = mock.Mock(side_effect=AssertionError("decide did I/O"))
+    with mock.patch.multiple(builtins, open=refuse), \
+            mock.patch.multiple(os, stat=refuse, listdir=refuse, scandir=refuse), \
+            mock.patch.multiple(time, time=refuse, monotonic=refuse), \
+            mock.patch.multiple(socket, socket=refuse):
+        answers = [decide(at, event) for at, event in itertools.product(TASKS, EVENTS)]
+    assert all(isinstance(a, (Transition, Ignore, Reject)) for a in answers)
+    refuse.assert_not_called()
+
+
+def test_a_transition_into_failed_canceled_or_done_keeps_the_stage():
+    ends = {Kind.FAILED, Kind.CANCELED, Kind.DONE}
+    for at, event in itertools.product(TASKS, EVENTS):
+        got = decide(at, event)
+        if isinstance(got, Transition) and got.status.kind in ends:
+            assert got.stage is at.stage, (at, event)
+
+
+def test_a_transition_takes_a_slot_exactly_when_it_starts_occupying():
+    for at, event in itertools.product(TASKS, EVENTS):
+        got = decide(at, event)
+        if not isinstance(got, Transition):
+            continue
+        gains = occupies(got.status) and not occupies(at.status)
+        loses = occupies(at.status) and not occupies(got.status)
+        assert (AcquireSlot() in got.actions, ReleaseSlot() in got.actions) == (
+            gains, loses), (at, event)
+
+
+def test_decide_reads_a_task_through_its_legacy_view():
+    t = task(park="parked", park_reason="decision")
+    assert decide(t, Event(E.OP_REPLY)) == decide(legacy_view(t), Event(E.OP_REPLY))
+
+
+@pytest.mark.parametrize("at, event, reason", [
+    (At(S.PR_OPEN, failed("pr-closed")), E.OP_RESUME,
+     "reopen the PR on GitHub or re-queue the issue"),
+    (At(S.QUEUED, failed("unknown")), E.OP_RESUME, "re-queue the issue instead"),
+])
+def test_resume_of_an_unresumable_failure_is_refused(at, event, reason):
+    assert decide(at, Event(event)) == Reject(reason)
+
+
+def test_a_done_task_ranked_again_is_refused():
+    assert isinstance(decide(At(S.PR_OPEN, Status(Kind.DONE)), Event(E.CANDIDATE_RANKED)),
+                      Reject)
+
+
+@pytest.mark.parametrize("reason, stage", [("session-crash", S.IMPLEMENT),
+                                           ("killed", S.PLAN), ("unknown", S.PR_OPEN)])
+def test_resume_of_a_failure_wakes_it(reason, stage):
+    got = decide(At(stage, failed(reason)), Event(E.OP_RESUME, model="m"))
+    assert got == Transition(waking(failed(reason), "resume"), stage,
+                             (ResetRounds(), SetResumeOverride("m", False)))
+
+
+def test_resume_admitted_respawns_a_failed_stage_with_a_slot():
+    got = decide(At(S.IMPLEMENT, waking(failed("session-crash"), "resume")),
+                 Event(E.RESUME_ADMITTED))
+    assert got == Transition(RUNNING, S.IMPLEMENT,
+                             (AcquireSlot(), RespawnStage(S.IMPLEMENT)))
+
+
+def test_resume_on_a_waking_task_replaces_its_overrides_and_stays():
+    at = At(S.IMPLEMENT, waking(human("decision"), "reply"))
+    got = decide(at, Event(E.OP_RESUME, model="anthropic/claude-opus-5"))
+    assert got == Transition(at.status, S.IMPLEMENT,
+                             (SetResumeOverride("anthropic/claude-opus-5", False),))
+
+
+def test_park_intent_racing_a_pr_open_is_refused():
+    assert isinstance(decide(At(S.PR_OPEN, PR), Event(E.OP_PARK)), Reject)
+    assert isinstance(decide(At(S.PLAN, human("operator")), Event(E.OP_PARK)), Reject)
+
+
+def test_park_intent_parks_a_running_task_for_the_operator():
+    got = decide(At(S.REVIEW, RUNNING), Event(E.OP_PARK))
+    assert got == Transition(human("operator", "parked by operator"), S.REVIEW,
+                             (EndSession(), ReleaseSlot()))
+
+
+def test_a_blocked_wake_stays_waking():
+    at = At(S.IMPLEMENT, waking(human("decision"), "reply"))
+    got = decide(at, Event(E.RESUME_ADMITTED, blocked="capacity full"))
+    assert got == Transition(at.status, S.IMPLEMENT, (WakeBlocked("capacity full"),))
+
+
+def test_an_admitted_reply_wake_continues_the_session():
+    got = decide(At(S.IMPLEMENT, waking(human("decision"), "reply")),
+                 Event(E.RESUME_ADMITTED))
+    assert got == Transition(RUNNING, S.IMPLEMENT, (AcquireSlot(), ContinueSession()))
+
+
+def test_a_claim_waiting_on_the_app_spawns_spec_once_admitted():
+    got = decide(At(S.QUEUED, waking(None, "launch")), Event(E.RESUME_ADMITTED))
+    assert got == Transition(RUNNING, S.SPEC, (AcquireSlot(), RespawnStage(S.SPEC)))
+
+
+def test_implement_done_launches_review_once_admitted():
+    got = decide(At(S.REVIEW, waking(None, "next-stage")), Event(E.RESUME_ADMITTED))
+    assert got == Transition(RUNNING, S.REVIEW, (AcquireSlot(), RespawnStage(S.REVIEW)))
+
+
+def test_reply_at_the_gate_ends_the_session_and_wakes_through_the_review_park():
+    got = decide(At(S.PLAN, GATE), Event(E.OP_REPLY))
+    assert got == Transition(waking(REVIEW_PARK, "reply"), S.PLAN,
+                             (EndSession(), ResetRounds(), ReleaseSlot()))
+    assert operator_request(At(S.PLAN, got.status)) == PLAN
+
+
+def test_answers_with_no_open_request_are_refused():
+    assert decide(At(S.IMPLEMENT, RUNNING), Event(E.OP_ANSWERS)) == Reject("no open request")
+    assert decide(At(S.SPEC, waking(ANSWERS_PARK, "reply")),
+                  Event(E.OP_ANSWERS)) == Reject("session busy")
+
+
+def test_answers_wake_a_task_parked_for_them():
+    got = decide(At(S.SPEC, ANSWERS_PARK), Event(E.OP_ANSWERS))
+    assert got == Transition(waking(ANSWERS_PARK, "reply"), S.SPEC, (ResetRounds(),))
+
+
+def test_pr_feedback_wakes_an_address_review_round():
+    got = decide(At(S.PR_OPEN, PR), Event(E.PR_FEEDBACK))
+    assert got.status == waking(PR, "attention(feedback)")
+    got = decide(At(S.PR_OPEN, got.status), Event(E.RESUME_ADMITTED))
+    assert got == Transition(RUNNING, S.ADDRESS_REVIEW, (AcquireSlot(), SpawnAddressReview()))
+
+
+def test_an_exhausted_ci_loop_parks_for_the_operator_where_only_merge_and_close_act():
+    got = decide(At(S.PR_OPEN, PR), Event(E.PR_CHECK_FAILED, exhausted=True))
+    assert got.status.kind is Kind.PARKED_HUMAN and got.status.reason == "loop-cap"
+    at = At(S.PR_OPEN, got.status)
+    assert isinstance(decide(at, Event(E.PR_CONFLICT)), Ignore)
+    assert decide(at, Event(E.PR_MERGED)).status == Status(Kind.DONE)
+
+
+def test_reply_to_an_exhausted_pr_task_resets_the_rounds_and_wakes_address_review():
+    got = decide(At(S.PR_OPEN, LOOP_CAP), Event(E.OP_REPLY))
+    assert got == Transition(waking(LOOP_CAP, "reply"), S.PR_OPEN, (ResetRounds(),))
+    got = decide(At(S.PR_OPEN, got.status), Event(E.RESUME_ADMITTED))
+    assert SpawnAddressReview() in got.actions and got.stage is S.ADDRESS_REVIEW
+
+
+def test_a_closed_pr_fails_the_task_and_a_later_reply_is_refused():
+    got = decide(At(S.PR_OPEN, LOOP_CAP), Event(E.PR_CLOSED))
+    assert got.status == failed("pr-closed") and got.stage is S.PR_OPEN
+    assert EndSession() in got.actions
+    assert isinstance(decide(At(S.PR_OPEN, got.status), Event(E.OP_REPLY)), Reject)
+
+
+def test_a_merged_pr_finishes_the_task():
+    got = decide(At(S.PR_OPEN, PR), Event(E.PR_MERGED))
+    assert got.status == Status(Kind.DONE) and FinishMerged() in got.actions
+
+
+def test_ci_and_access_wake_their_parks():
+    assert decide(At(S.IMPLEMENT, Status(Kind.PARKED_CI, run_id=991)),
+                  Event(E.CI_FINISHED)).status.cause == "ci"
+    assert decide(At(S.QUEUED, Status(Kind.PARKED_ACCESS)), Event(E.ACCESS_REACHED)
+                  ).status == waking(Status(Kind.PARKED_ACCESS), "access")
+
+
+def test_a_failed_task_ranked_again_wakes_in_place():
+    got = decide(At(S.REVIEW, failed("task-crash")), Event(E.CANDIDATE_RANKED))
+    assert got.status == waking(failed("task-crash"), "ranked")
+
+
+@pytest.mark.parametrize("at", [At(S.PLAN, Status(Kind.CANCELED)),
+                                At(S.PR_OPEN, failed("pr-closed"))])
+def test_a_tombstone_ranked_again_is_swept_unless_written_this_pass(at):
+    assert decide(at, Event(E.CANDIDATE_RANKED)) == Transition(
+        at.status, at.stage, (SweepTombstone(),))
+    assert isinstance(decide(at, Event(E.CANDIDATE_RANKED, this_pass=True)), Ignore)
+
+
+def test_kill_and_cancel_end_the_task_at_its_stage():
+    assert decide(At(S.IMPLEMENT, RUNNING), Event(E.OP_KILL)) == Transition(
+        failed("killed"), S.IMPLEMENT, (EndSession(), ReleaseCard(), ReleaseSlot()))
+    assert decide(At(S.SPEC, human("decision")), Event(E.OP_CANCEL)) == Transition(
+        Status(Kind.CANCELED), S.SPEC, (EndSession(), CancelIssue()))
+
+
+def test_a_login_code_resumes_a_held_session_still_at_its_prompt():
+    at = At(S.SPEC, Status(Kind.HELD_LOGIN))
+    assert decide(at, Event(E.OP_LOGIN_CODE, code="ABCD-1234")) == Transition(
+        RUNNING, S.SPEC, (TypeLoginCode("ABCD-1234"),))
+    assert decide(at, Event(E.OP_LOGIN_CODE, left_login_prompt=True)) == Reject(
+        "no longer at a login prompt — code not typed")
+    assert isinstance(decide(At(S.IMPLEMENT, RUNNING), Event(E.OP_LOGIN_CODE)), Reject)
