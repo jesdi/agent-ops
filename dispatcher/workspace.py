@@ -404,6 +404,31 @@ def _advance_to_base(wt: str, base_ref: str) -> None:
     _sh(["git", "merge", "--ff-only", "--quiet", base_ref], cwd=wt)
 
 
+def _check_not_checked_out_elsewhere(repository: Repository, branch: str,
+                                     wt: str, env: dict | None) -> None:
+    other = _worktree_registered_at(repository.clone_path, branch, env)
+    if other is not None and os.path.realpath(other) != os.path.realpath(wt):
+        raise RuntimeError(
+            f"branch {branch!r} is already checked out at {other!r}; "
+            f"refusing to `git worktree add -f` a second checkout at "
+            f"{wt!r} — this needs manual inspection, not a silent -f")
+
+
+def _run_setup(repository: Repository, issue: int, wt: str) -> None:
+    name = f"task-{repository.name}-{issue}-setup"
+    try:
+        _sh(containers.setup_cmd(name, wt, repository.setup_cmd, repository.clone_path),
+            cwd=wt, timeout=containers.SETUP_TIMEOUT,
+            log=Path(wt) / ".agent" / "setup.log")
+    except subprocess.TimeoutExpired:
+        # Killing the podman client leaves the container running and its
+        # name taken; free it so a retry can start setup again (#17).
+        with suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(["podman", "rm", "-f", name],
+                           capture_output=True, timeout=60)
+        raise
+
+
 def create_workspace(repository: Repository, issue: int, base: str = "main",
                      dry_run: bool = False,
                      auth: host_auth.HostAuth = host_auth.STORED) -> str:
@@ -447,12 +472,7 @@ def create_workspace(repository: Repository, issue: int, base: str = "main",
         # preserved a crashed tree via `git worktree move`) — guard
         # against that before touching -f: it must only ever resolve the
         # registered-but-missing case it exists for.
-        other = _worktree_registered_at(repository.clone_path, branch, env)
-        if other is not None and os.path.realpath(other) != os.path.realpath(wt):
-            raise RuntimeError(
-                f"branch {branch!r} is already checked out at {other!r}; "
-                f"refusing to `git worktree add -f` a second checkout at "
-                f"{wt!r} — this needs manual inspection, not a silent -f")
+        _check_not_checked_out_elsewhere(repository, branch, wt, env)
         base_ref = _fetch_base(repository, base, env)
         _check_reused_base(repository, branch, base_ref, env)
         _sh(["git", "worktree", "add", "-f", wt, branch], cwd=repository.clone_path, env=env)
@@ -464,18 +484,7 @@ def create_workspace(repository: Repository, issue: int, base: str = "main",
             cwd=repository.clone_path, env=env)
         _mark_provisioned(wt)
     if repository.setup_cmd:
-        name = f"task-{repository.name}-{issue}-setup"
-        try:
-            _sh(containers.setup_cmd(name, wt, repository.setup_cmd, repository.clone_path),
-                cwd=wt, timeout=containers.SETUP_TIMEOUT,
-                log=Path(wt) / ".agent" / "setup.log")
-        except subprocess.TimeoutExpired:
-            # Killing the podman client leaves the container running and its
-            # name taken; free it so a retry can start setup again (#17).
-            with suppress(OSError, subprocess.SubprocessError):
-                subprocess.run(["podman", "rm", "-f", name],
-                               capture_output=True, timeout=60)
-            raise
+        _run_setup(repository, issue, wt)
 
     write_task_identity(wt, issue, repository.name, branch)
 
