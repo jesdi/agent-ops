@@ -1,5 +1,6 @@
-"""Acceptance tests for ticket 01 of plan-gate-stage-loss: a plan launch of a
-gated task runs at the gate stage.
+"""Acceptance tests for ticket 01 of plan-gate-stage-loss: a plan launch
+from the gate stage runs at the gate stage (since #132 ticket 05 the gate
+stage decides, never `gated`).
 
 Spec: specs/plan-gate-stage-loss/spec.md, requirements 1-3 and their scenarios.
 Black-box, through dispatcher.main.run_pass over the fakes of tests/test_main.py,

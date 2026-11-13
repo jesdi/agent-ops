@@ -2824,22 +2824,29 @@ def _is_parked(task: TaskState | None) -> bool:
     return task is not None and bool(task.park)
 
 
-def _apply_resume_intent(cfg: Config, by_name: dict,
-                         task: TaskState | None, intent: intents.Intent) -> None:
-    issue = intent.issue
+def _to_resume(task: TaskState | None, issue: int) -> TaskState | None:
+    """The task a resume wakes; None (skipped) unless it is parked or a
+    resumable crash."""
     if task is not None and resumable_crash(task):
         # Back to the stage it crashed in, queued like any wake so capacity,
         # slots and admission still decide when; crashed_stage stays set so
         # _resume_one respawns the stage instead of continuing a transcript.
         # A crash at the gate (an older file) resumes plan: no session runs
         # at the gate before it reports a plan ready again.
-        task = replace(task, stage=Stage(task.crashed_stage), terminal_at="")
-        task = replace(task, stage=task.continued_stage)
-    elif not _is_parked(task):
+        crashed = replace(task, stage=Stage(task.crashed_stage))
+        return replace(task, stage=crashed.continued_stage, terminal_at="")
+    if not _is_parked(task):
         print(f"[warn] resume intent for #{issue}: task not parked — skipped",
               file=sys.stderr)
+        return None
+    return task
+
+
+def _apply_resume_intent(cfg: Config, by_name: dict,
+                         task: TaskState | None, intent: intents.Intent) -> None:
+    task = _to_resume(task, intent.issue)
+    if task is None:
         return
-    assert task is not None
     requested_model = str(intent.payload.get("model") or "")
     _require_resume_model(cfg, by_name, task, requested_model)
     bypass_usage = intent.payload.get("bypass_usage") is True
