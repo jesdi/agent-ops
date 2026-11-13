@@ -684,6 +684,12 @@ def test_an_unusable_retry_after_reads_as_none_but_keeps_the_status(monkeypatch,
     assert (caught.value.status, caught.value.retry_after) == (429, None)
 
 
+def test_an_oversized_numeric_retry_after_does_not_mask_the_http_status(monkeypatch):
+    with pytest.raises(up.UsageFetchError) as caught:
+        get_json_raising(monkeypatch, http_error(429, {"Retry-After": "9" * 5000}))
+    assert (caught.value.status, caught.value.retry_after) == (429, None)
+
+
 @pytest.mark.parametrize("make", [
     lambda: __import__("urllib.error").error.URLError("down"),
     lambda: TimeoutError("timed out")])
@@ -773,7 +779,7 @@ def test_no_candidate_token_is_unavailable(tmp_path, monkeypatch):
     assert not marker_file(tmp_path).exists()
 
 
-def test_a_failed_marker_write_still_falls_through(tmp_path, monkeypatch):
+def test_a_failed_marker_write_still_falls_through(tmp_path, monkeypatch, caplog):
     adapter = two_stores(tmp_path, monkeypatch)
     asked = serve(monkeypatch, {"tok-home": rate_limited(), "tok-host": oauth_response()})
 
@@ -784,6 +790,17 @@ def test_a_failed_marker_write_still_falls_through(tmp_path, monkeypatch):
     u = adapter.fetch(tmp_path, now=lambda: 1000)
     assert u.source == "oauth"
     assert asked == ["tok-home", "tok-host"]
+    assert "cannot record the usage cooldown" in caplog.text
+
+
+def test_a_malformed_home_token_does_not_prevent_the_host_fallback(tmp_path, monkeypatch):
+    adapter = two_stores(tmp_path, monkeypatch)
+    (tmp_path / "claude-home" / ".credentials.json").write_text(
+        json.dumps({"claudeAiOauth": {"accessToken": 123}}))
+    asked = serve(monkeypatch, {"tok-host": oauth_response()})
+    u = adapter.fetch(tmp_path, now=lambda: 1000)
+    assert u.source == "oauth"
+    assert asked == ["tok-host"]
 
 
 def test_a_429_keeps_live_entries_and_prunes_dead_ones(tmp_path, monkeypatch):

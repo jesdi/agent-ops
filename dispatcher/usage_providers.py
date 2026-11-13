@@ -118,7 +118,12 @@ def _retry_after(headers) -> int | None:
     """Retry-After as whole seconds; an HTTP-date or anything else is None.
     str.isdigit also accepts '²', which int() rejects, so ASCII is checked."""
     value = (headers.get("Retry-After") if headers is not None else None) or ""
-    return int(value) if value.isascii() and value.isdigit() else None
+    if not value.isascii() or not value.isdigit():
+        return None
+    try:
+        return int(value)
+    except ValueError:  # Python rejects extremely long integer strings.
+        return None
 
 
 def _http_get_json(url: str, headers: dict) -> dict:
@@ -208,9 +213,17 @@ class AnthropicUsage:
             key = _token_key(token)
             if key in cooling:
                 continue
+            try:
+                windows = parse_anthropic(_http_get_json(
+                    USAGE_URL, {"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT}))
+            except UsageFetchError as e:
+                if e.status == 429:
+                    _start_cooldown(marker, cooling, key, at, e)
+                continue
+            except (KeyError, ValueError, TypeError):
+                continue
             # A reading with no windows would admit every model: fail closed
             # exactly like a rejected token.
-            windows = self._windows(token, lambda e: _start_cooldown(marker, cooling, key, at, e))
             if windows:
                 return ProviderUsage(self.name, "oauth", at, windows)
         return unavailable(self.name, at)
@@ -219,19 +232,7 @@ class AnthropicUsage:
         return [t for t in dict.fromkeys((
             os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"),
             *map(_read_token, _credential_stores(state_dir, self._credentials_path)),
-        )) if t]
-
-    @staticmethod
-    def _windows(token: str, on_429: Callable[[UsageFetchError], None]) -> tuple[Window, ...]:
-        try:
-            return parse_anthropic(_http_get_json(
-                USAGE_URL, {"Authorization": f"Bearer {token}", "User-Agent": USER_AGENT}))
-        except UsageFetchError as e:
-            if e.status == 429:
-                on_429(e)
-        except (KeyError, ValueError, TypeError):
-            pass
-        return ()  # next token; the other store's token may be live
+        )) if isinstance(t, str) and t]
 
 
 # ---- OpenAI (Codex) adapter -------------------------------------------------
