@@ -49,6 +49,12 @@ since: the plan review gate (ADR 0001), one implement session (ADR 0003), one ta
    Admission (usage gate, capacity) is evaluated outside `decide`; the dispatcher raises
    `resume-admitted` or a stage spawn only once `admit()` passes. The `retry` intent only clears
    quarantine files, changes no task, and stays outside the table.
+
+   `op-park` acts on `running`, which it moves to `parked(human(operator))`, and on
+   `held(plan-approval(page, fingerprint))`, which it moves to `parked(review(page, fingerprint))`
+   with the session ended, as today; on any other status it is a `Reject`. `op-resume` on
+   `held(login)` is a `Reject`: `op-login-code` answers a login hold. `op-kill` on `failed`,
+   `canceled` or `done` is a `Reject`.
 7. **Capacity and slots follow the status family.** `occupies(status)` is true exactly for
    `running` and `held(*)` and replaces `holds_slot`, `consumes_capacity` and `active`'s rule.
    A transition from a non-occupying into an occupying status emits `AcquireSlot`; the reverse
@@ -98,9 +104,11 @@ since: the plan review gate (ADR 0001), one implement session (ADR 0003), one ta
     `waking + op-resume` is a `Transition` that stays `waking` and replaces the model override and
     the usage bypass.
 12. **Re-ranking a finished task is declared.** `candidate-ranked` on `failed(r)` with `r ≠
-    pr-closed` behaves as `op-resume`. On `failed(pr-closed)` or `canceled` it sweeps the tombstone
-    for a fresh claim, keeping today's `pass_started` guard for a tombstone written this pass. On
-    `done` it is a `Reject`.
+    pr-closed` behaves as `op-resume`, except that `failed(unknown)` at stage `queued`, which
+    `op-resume` rejects, sweeps its tombstone instead: re-queueing the issue is how such a task
+    starts again. On `failed(pr-closed)` or `canceled` it sweeps the tombstone for a fresh claim.
+    Every sweep keeps today's `pass_started` guard for a tombstone written this pass. On `done` it
+    is a `Reject`.
 13. **PR lifecycle.** Entering `pr-open` ends the review session and sets `parked(pr)`.
     `parked(pr) + pr-feedback | pr-check-failed | pr-conflict` moves to
     `waking(cause=attention(kind))`, with the loop policy still counting ci rounds; a cap-exhausted
