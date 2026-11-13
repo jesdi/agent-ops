@@ -793,7 +793,7 @@ def test_a_failed_marker_write_still_falls_through(tmp_path, monkeypatch, caplog
     assert "cannot record the usage cooldown" in caplog.text
 
 
-@pytest.mark.parametrize("bad_token", [123, "\ud800"])
+@pytest.mark.parametrize("bad_token", [123, "\ud800", [], {}])
 def test_a_malformed_home_token_does_not_prevent_the_host_fallback(
         tmp_path, monkeypatch, bad_token):
     adapter = two_stores(tmp_path, monkeypatch)
