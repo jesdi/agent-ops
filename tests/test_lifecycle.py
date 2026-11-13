@@ -16,8 +16,8 @@ from dispatcher.lifecycle import (TABLE, AcquireSlot, At, CancelIssue,
                                   RespawnStage, SetResumeOverride,
                                   SpawnAddressReview, Status, SweepTombstone,
                                   Transition, TypeLoginCode, WakeBlocked,
-                                  decide, legacy_view, occupies,
-                                  operator_request)
+                                  decide, graph, legacy_view, next_transitions,
+                                  occupies, operator_request)
 from dispatcher.state import (AnswersRequest, PlanApprovalRequest, Stage,
                               TaskState)
 
@@ -372,3 +372,27 @@ def test_a_login_code_resumes_a_held_session_still_at_its_prompt():
     assert decide(at, Event(E.OP_LOGIN_CODE, left_login_prompt=True)) == Reject(
         "no longer at a login prompt — code not typed")
     assert isinstance(decide(At(S.IMPLEMENT, RUNNING), Event(E.OP_LOGIN_CODE)), Reject)
+
+
+def test_next_transitions_of_a_task_parked_on_a_decision():
+    at = At(S.IMPLEMENT, human("decision"))
+    moves = {(e.event, e.to) for e in next_transitions(at)}
+    assert {("op-reply", "waking"), ("op-resume", "waking"), ("op-kill", "failed"),
+            ("op-cancel", "canceled")} <= moves
+    assert "op-park" not in {event for event, _ in moves}
+    assert set(next_transitions(at)) <= set(graph()["status"]["edges"])
+
+
+def test_next_transitions_reads_a_task_through_its_legacy_view():
+    t = task(park="parked", park_reason="decision")
+    assert next_transitions(t) == next_transitions(legacy_view(t))
+
+
+def test_graph_draws_every_transition_row_and_the_stage_progression():
+    g = graph()
+    transitions = [r for r in TABLE if isinstance(r.to, Kind)]
+    assert len(g["status"]["edges"]) == len(transitions)
+    assert set(g["status"]["nodes"]) == {k.value for k in Kind}
+    assert ("pr-open", "resume-admitted", "always", "address-review") in g["stage"]["edges"]
+    assert ("queued", "resume-admitted", "always", "spec") in g["stage"]["edges"]
+    assert {"queued", "spec", "pr-open", "address-review"} <= set(g["stage"]["nodes"])

@@ -601,3 +601,38 @@ def _with_slot(before: Status, after: Status, actions: tuple) -> tuple:
     if occupies(before) and not occupies(after):
         return (*actions, ReleaseSlot())
     return actions
+
+
+class Edge(NamedTuple):
+    source: str
+    event: str
+    guard: str
+    to: str
+
+
+PIPELINE = (Stage.QUEUED, Stage.SPEC, Stage.PLAN, Stage.IMPLEMENT, Stage.REVIEW,
+            Stage.PR_OPEN, Stage.ADDRESS_REVIEW)
+
+
+def next_transitions(task: TaskState | At) -> list[Edge]:
+    """The transitions `task` can take now: per event type, the row that
+    decides it (with the event's plain facts), when that row is a transition."""
+    at = _at(task)
+    rows = (_match(Facts(at.stage, at.status, Event(e))) for e in EventType)
+    return [_edge(r) for r in rows if isinstance(r.to, Kind)]
+
+
+def graph() -> dict:
+    """Every transition row as an edge between status kinds, and every stage
+    move as an edge between stages."""
+    rows = [r for r in TABLE if isinstance(r.to, Kind)]
+    return {
+        "status": {"nodes": [k.value for k in Kind], "edges": [_edge(r) for r in rows]},
+        "stage": {"nodes": [s.value for s in PIPELINE],
+                  "edges": [Edge(r.move[0].value, r.event.value, r.guard.__name__,
+                                 r.move[1].value) for r in rows if r.move]},
+    }
+
+
+def _edge(r: Row) -> Edge:
+    return Edge(r.source.value, r.event.value, r.guard.__name__, r.to.value)
