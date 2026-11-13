@@ -141,10 +141,17 @@ def test_a_launch_that_raises_fails_at_the_stage_that_could_not_start(c):
     gh = FakeGitHub()
     run(c, FakeSessions(alive={42, 43}, spawn_raises={42}), gh)
     t = load(c.state_dir, T, 42)
-    assert t.at == At(Stage.PLAN, Status(Kind.FAILED, reason=FailReason.SESSION_CRASH))
+    # The legacy file stores no failure reason: crashed_stage reads back as a
+    # session crash until the status is stored (ticket 06). The reason is
+    # the one the transition's event decides: task-crash.
+    assert (t.at.stage, t.at.status.kind) == (Stage.PLAN, Kind.FAILED)
     assert (t.spec_path, t.track) == ("spec.md", "standard")
     assert {"from": "running", "event": "launch-failed", "to": "failed",
             "stage": "plan"} in transitions(c)
+    from dispatcher.lifecycle import LaunchFailure
+    assert decide(At(Stage.SPEC, Status(Kind.RUNNING)), Event(
+        EventType.LAUNCH_FAILED, LaunchFailure(Stage.PLAN))).status == Status(
+            Kind.FAILED, reason=FailReason.TASK_CRASH)
     assert (42, "task crashed mid-pass") in gh.released
     assert "task-crash" in gh.created_issues[0][1]
     assert load(c.state_dir, T, 43).stage is Stage.PR_OPEN   # the pass went on

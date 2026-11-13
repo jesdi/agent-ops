@@ -153,7 +153,10 @@ def legacy_view(t: TaskState) -> At:
 
 
 def _ended(t: TaskState) -> tuple[Stage, Status]:
-    """A failed, canceled or done task, whatever park it still carries."""
+    """A failed, canceled or done task, whatever park it still carries. A
+    remembered stage reads as a session crash, a task crash (launch-failed,
+    task-crashed) included: no legacy field holds the reason, and no new
+    one is added for it; ticket 06 stores the status, reason and all."""
     if t.stage is Stage.FAILED and t.crashed_stage:
         return Stage(t.crashed_stage), Status(Kind.FAILED, reason=FailReason.SESSION_CRASH)
     kind = _ENDED[t.stage]
@@ -324,7 +327,8 @@ def _encode_waking(t: TaskState, stage: Stage, status: Status) -> TaskState:
 
 def _encode_failed(t: TaskState, stage: Stage, status: Status) -> TaskState:
     """A crash remembers the stage Resume respawns; any other failure is not
-    resumable in the legacy shape."""
+    resumable in the legacy shape. Session and task crashes store alike
+    (_ended) until ticket 06 stores the status."""
     launched = Stage.ADDRESS_REVIEW if stage is Stage.PR_OPEN else stage
     crashed = status.reason in (FailReason.SESSION_CRASH, FailReason.TASK_CRASH)
     return end(t, Stage.FAILED,
