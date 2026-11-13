@@ -2,13 +2,16 @@
 
 Seam: main.run_pass with the shared fakes, and GET /api/board for the column.
 """
+import json
 from datetime import datetime, timezone
+
+import pytest
 
 from fastapi.testclient import TestClient
 
 import dispatcher.main as main
 from dispatcher import intents, messages
-from dispatcher.state import PARK_HUMAN, WHY_LOOP_CAP, Stage, load
+from dispatcher.state import PARK_HUMAN, PARK_WAKE, WHY_LOOP_CAP, Stage, _path, load
 from tests.test_main import (FakeGitHub, FakeNotifier, FakeSessions, cfg, deps,
                              make_task, patch_teardown, patch_usage, payload,
                              pr_open_task)
@@ -53,6 +56,8 @@ def test_closed_pr_ends_a_parked_task_failed_and_in_the_failed_column(
     run()
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.stage, t.park) == (Stage.FAILED, "")
+    on_disk = json.loads(_path(c.state_dir, "portfolio_eval", 42).read_text())
+    assert on_disk["park"] == ""
     assert 42 in sess.ended
     assert notif.sent.count("pr_closed") == 1
     assert _column(c, 42) == "failed"
@@ -69,12 +74,15 @@ def test_a_reply_after_the_close_is_queued_and_wakes_nothing(
         "please retry"]
 
 
+@pytest.mark.parametrize("park", [PARK_HUMAN, PARK_WAKE])
 def test_a_task_saved_failed_and_parked_by_the_old_code_is_not_woken(
-        tmp_path, monkeypatch):
+        tmp_path, monkeypatch, park):
+    """PARK_WAKE: the old code already woke it, and it sits in Resuming."""
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
     make_task(c, stage=Stage.FAILED, pr_number=88,
-              updated_at=datetime.now(timezone.utc).isoformat(), **PARKED)
+              updated_at=datetime.now(timezone.utc).isoformat(),
+              **{**PARKED, "park": park})
     _reply(c, lambda: main.run_pass(c, deps()))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.stage, t.park) == (Stage.FAILED, "")
