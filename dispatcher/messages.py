@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
-from dispatcher.state import parse_task_key, task_key
+from dispatcher.state import parse_task_key, task_key, write_atomic
 
 MESSAGES_DIR = "messages"
 
@@ -102,9 +102,7 @@ def mark_delivered(state_dir: str | Path, repository: str, issue: int,
             else Message(id=m.id, text=m.text, actor=m.actor,
                          created_at=m.created_at, delivered_at=stamp)
             for m in all_messages(state_dir, repository, issue)]
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text("".join(_dump(m) + "\n" for m in kept))
-    tmp.replace(p)
+    write_atomic(p, "".join(_dump(m) + "\n" for m in kept))
 
 
 def undelivered_counts(state_dir: str | Path) -> dict[tuple[str, int], int]:
@@ -128,7 +126,7 @@ def undelivered_counts(state_dir: str | Path) -> dict[tuple[str, int], int]:
 def _merge_legacy(state_dir: str | Path, repository: str, issue: int,
                   p: Path, dest: Path) -> None:
     """Fold legacy file `p` into an existing repository-keyed `dest`. Atomic
-    tmp+replace like mark_delivered; ids already present are skipped, so a
+    like mark_delivered; ids already present are skipped, so a
     crash before the unlink never duplicates on re-run."""
     existing = all_messages(state_dir, repository, issue)
     seen = {m.id for m in existing}
@@ -136,9 +134,7 @@ def _merge_legacy(state_dir: str | Path, repository: str, issue: int,
                           p.read_text().splitlines() if raw.strip())
               if m is not None and m.id not in seen]
     merged = sorted(existing + legacy, key=lambda m: m.created_at)
-    tmp = dest.with_suffix(".tmp")
-    tmp.write_text("".join(_dump(m) + "\n" for m in merged))
-    tmp.replace(dest)
+    write_atomic(dest, "".join(_dump(m) + "\n" for m in merged))
     p.unlink()
 
 
