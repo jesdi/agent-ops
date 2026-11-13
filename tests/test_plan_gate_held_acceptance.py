@@ -17,8 +17,9 @@ from dispatcher.lifecycle import (GATE_STOPPED, PLAN_NO_APPROVAL, At, Kind, Stat
                                   operator_request)
 from dispatcher.state import NO_SLOT, PlanApprovalRequest, Stage, at_gate, load, save
 
-from tests.test_main import (PLAN_SUMMARY, SPEC_PATH, POLICY, FakeSessions, cfg, deps,
-                             make_task, patch_usage, patch_workspace, write_tickets)
+from tests.test_main import (PLAN_SUMMARY, SPEC_PATH, POLICY, FakeSessions, approve_plan,
+                             cfg, deps, make_task, patch_usage, patch_workspace,
+                             write_tickets)
 
 T, N = "portfolio_eval", 42
 HELD, PARKED_REVIEW = Kind.HELD_PLAN_APPROVAL, Kind.PARKED_REVIEW
@@ -166,19 +167,54 @@ def test_a_rework_session_that_dies_with_no_rounds_left_parks_for_review_armed_f
     assert "plan_session_stopped" in d.notifier.sent and t.slot == NO_SLOT
 
 
-def test_plan_approval_moves_to_implement(c):
-    wt = _held(c)
+def _answered(c, wt, submit):
+    """The operator submits `submit` on the armed revision, which wakes the
+    gate session; returns its sessions."""
     intents_mod.write_intent(c.state_dir, "answers", T, N, {
-        "submit": "approve", "revision": _fingerprint(wt), "answers": {}},
+        "submit": submit, "revision": _fingerprint(wt), "answers": {}},
         actor="op", epoch_ms=1)
     sess = FakeSessions(alive={N})
-    _run(c, sess)                        # the approval wakes the gate session
+    _run(c, sess)
     assert _task(c).at.status.kind in (Kind.RUNNING, Kind.WAKING)
+    return sess
+
+
+def _done(wt):
     _signal(wt, "done", artifact=".agent/tickets", track="standard")
+
+
+def test_plan_approval_moves_to_implement(c):
+    wt = _held(c)
+    sess = _answered(c, wt, "approve")
+    _done(wt)
     _run(c, sess)
     t = _task(c)
     assert t.at.stage is Stage.IMPLEMENT and operator_request(t) is None
     assert [s[1] for s in sess.spawned] == ["implement"]
+
+
+def _bounced_at_the_gate(c, sess):
+    t = _task(c)
+    assert t.at == At(Stage.PLAN, Status(Kind.RUNNING)) and at_gate(t)
+    assert t.plan_slips == 1 and sess.spawned == []
+    assert PLAN_NO_APPROVAL in sess.resumed[-1][1]
+
+
+def test_an_approval_of_a_plan_that_changed_since_is_bounced(c):
+    wt = _held(c)
+    sess = _answered(c, wt, "approve")
+    (wt / PLAN_SUMMARY).write_text((wt / PLAN_SUMMARY).read_text() + "<p>changed</p>")
+    _done(wt)
+    _run(c, sess)
+    _bounced_at_the_gate(c, sess)
+
+
+def test_done_after_a_reply_that_is_no_approval_is_bounced(c):
+    wt = _held(c)
+    sess = _answered(c, wt, "changes")
+    _done(wt)
+    _run(c, sess)
+    _bounced_at_the_gate(c, sess)
 
 
 def test_done_with_no_approval_is_bounced(c):
@@ -241,7 +277,8 @@ def test_a_ready_report_armed_for_another_revision_is_a_new_round_not_a_grace_pa
 def test_an_approval_with_a_failing_ticket_check_and_no_retry_left_fails(c):
     wt = _plan(c, Stage.AWAITING_PLAN_REVIEW, gated=True, plan_retries=1)
     (wt / ".agent" / "tickets" / "01-t1.md").write_text("# tiny\n")
-    _signal(wt, "done", artifact=".agent/tickets", track="standard")
+    approve_plan(wt, SPEC_PATH)
+    _done(wt)
     d = _run(c)
     t = _task(c)
     # The legacy file keeps no reason or stage for an artifact failure (ticket 06).

@@ -23,7 +23,7 @@ from dispatcher.usage import (PaceConfig, ProviderUsage, Window, WindowKind,
                               admits, allowance, unavailable)
 from dispatcher.github import Candidate
 from dispatcher.state import PARK_WAKE
-from tests.test_main import (FakeGitHub, FakeSessions, cfg, deps, make_task,
+from tests.test_main import (FakeGitHub, FakeSessions, approve_plan, cfg, deps, make_task,
                              patch_workspace, write_tickets)
 
 SONNET = "claude-sonnet-5-5"
@@ -84,6 +84,7 @@ def run(tmp_path, monkeypatch, usages, implement=WRITTEN, review=None,
     wt = make_task(c, issue=42, stage=stage, picks=picks or {}, **task_kw)
     if stage is Stage.AWAITING_PLAN_REVIEW:
         write_tickets(wt, 1)
+        approve_plan(wt, task_kw.get("spec_path", ""))
         signal = {"stage": "plan", "status": "done", "note": "1 ticket",
                   "artifact": ".agent/tickets"}
     else:

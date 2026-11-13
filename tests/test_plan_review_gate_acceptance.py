@@ -22,8 +22,8 @@ from dispatcher.models import parse_policy
 from dispatcher.state import (NO_SLOT, PARK_HUMAN, PARK_REVIEW, PlanApprovalRequest,
                               Stage, load, save)
 
-from tests.test_main import (FakeGitHub, FakeNotifier, FakeSessions, armed_request, cfg,
-                             deps, make_task, patch_usage, patch_workspace,
+from tests.test_main import (FakeGitHub, FakeNotifier, FakeSessions, approve_plan,
+                             armed_request, cfg, deps, make_task, patch_usage, patch_workspace,
                              write_tickets, GOOD_TICKET)
 
 ISSUE = 412
@@ -81,6 +81,8 @@ def _ready(wt, **kw):
 
 
 def _done(wt, track="standard"):
+    """The operator approved the plan on disk; the session reports done."""
+    approve_plan(wt, SPEC)
     _signal(wt, stage="plan", status="done", note="approved",
             artifact=".agent/tickets", track=track)
 

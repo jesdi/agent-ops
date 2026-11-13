@@ -12,7 +12,7 @@ from dataclasses import replace
 import dispatcher.main as main
 from dispatcher import intents, state
 from dispatcher.state import PARK_WAKE, Stage, TaskState, load, save
-from tests.test_main import (GOOD_TICKET, FakeGitHub, FakeSessions, deps,
+from tests.test_main import (GOOD_TICKET, FakeGitHub, FakeSessions, approve_plan, deps,
                              make_task)
 from tests.test_pinned_tracks_order import (ASTRA, FABLE, OPUS, SOL,
                                             SONNET, ahead, deny, enter,
@@ -76,6 +76,7 @@ def setup(tmp_path, monkeypatch, task_track, tickets, usages=None, **kw):
                    track=task_track)
     for n in range(1, tickets + 1):
         write_ticket(wt, n)
+    approve_plan(wt)
     return c, wt
 
 

@@ -19,7 +19,7 @@ from dispatcher.github import Candidate
 from dispatcher.models import parse_policy
 from dispatcher.state import PlanApprovalRequest, Stage, load, save
 
-from tests.test_main import (FakeGitHub, FakeSessions, cfg, deps, make_task,
+from tests.test_main import (FakeGitHub, FakeSessions, approve_plan, cfg, deps, make_task,
                              patch_usage, patch_workspace, pr_open_task,
                              valid_spec, write_tickets, payload)
 from tests.usagefakes import session_usage
@@ -60,6 +60,7 @@ def _implement_started(c):
     save(c.state_dir, dc_replace(_task(c), branch=BRANCH,
                                  title="Export a portfolio as CSV"))
     write_tickets(wt, 4)
+    approve_plan(wt, SPEC)
     _signal(wt, stage="plan", status="done", note="approved",
             artifact=".agent/tickets", track="standard")
     sess = FakeSessions(alive={ISSUE})

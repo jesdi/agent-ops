@@ -14,11 +14,11 @@ from dispatcher.classify import Observation, Reads, _skips_gate
 from dispatcher.state import Stage, StageSignal, TaskState, read_stage_signal, save
 
 from tests.test_gate_skip_acceptance import (BRANCH, FOLDER, ISSUE,
-                                             NONE_SUMMARY, ONE_SUMMARY, SUMMARY, _page,
+                                             NONE_SUMMARY, ONE_SUMMARY, SPEC, SUMMARY, _page,
                                              _assert_waits, _git, _implements,
                                              _pass, _ready, _setup, _task,
                                              _task_at_ready, _wait_case)
-from tests.test_main import FakeGitHub, LiveUntilEnded, deps, write_tickets
+from tests.test_main import FakeGitHub, LiveUntilEnded, approve_plan, deps, write_tickets
 
 
 def test_track_named_in_the_ready_report_does_not_count(tmp_path, monkeypatch):
@@ -83,6 +83,7 @@ def test_task_that_waited_never_skips_after_a_respawn(tmp_path, monkeypatch):
 
 def test_gate_free_task_that_waited_starts_implement_on_approval(tmp_path, monkeypatch):
     c, wt, sess = _waited_once(tmp_path, monkeypatch)
+    approve_plan(wt, SPEC)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "plan", "status": "done"}))
     _pass(c, sess)

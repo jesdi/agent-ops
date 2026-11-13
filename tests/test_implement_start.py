@@ -7,7 +7,8 @@ import pytest
 from dispatcher import eventlog, intents, main, messages
 from dispatcher.state import (PlanApprovalRequest, Stage, load, read_stage_signal,
                               resumable_crash)
-from tests.test_main import FakeSessions, cfg, deps, make_task, patch_usage, write_tickets
+from tests.test_main import (FakeSessions, approve_plan, cfg, deps, make_task, patch_usage,
+                             write_tickets)
 
 REQUEST = PlanApprovalRequest(".agent/review.html")
 
@@ -17,6 +18,7 @@ def _approved(tmp_path, tickets=3, sessions=None, **task_fields):
     config = cfg(tmp_path)
     wt = make_task(config, stage=Stage.AWAITING_PLAN_REVIEW, **task_fields)
     write_tickets(wt, tickets)
+    approve_plan(wt, task_fields.get("spec_path", ""))
     (wt / ".agent" / "stage.json").write_text(json.dumps({
         "stage": "plan", "status": "done", "note": "approved", "artifact": ".agent/tickets",
     }))

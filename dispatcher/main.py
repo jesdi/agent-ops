@@ -2352,7 +2352,14 @@ def _page_questions(task: TaskState, signal: StageSignal) -> int | None:
 def _done_reads(task: TaskState, signal: StageSignal) -> Reads:
     if task.stage is Stage.SPEC:
         return Reads(spec=check_spec(artifact_path(task, signal)))
-    return Reads(tickets=check_tickets(Path(task.worktree) / TICKETS_DIR))
+    tickets = check_tickets(Path(task.worktree) / TICKETS_DIR)
+    if not at_gate(task):
+        return Reads(tickets=tickets)
+    # The approval: what the operator approved, and the plan on disk now. The
+    # prescribed page, since the request that named it is gone by now.
+    return Reads(tickets=tickets,
+                 revision=plan_revision(task.worktree, REVIEW_PAGE, task.spec_path),
+                 approval=answers.approved_revision(task.worktree))
 
 
 def _answers_reads(task: TaskState, signal: StageSignal) -> Reads:

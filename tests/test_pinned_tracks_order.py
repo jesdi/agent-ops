@@ -22,8 +22,8 @@ from dispatcher.models import parse_policy
 from dispatcher.state import PARK_WAKE, Stage, load
 from dispatcher.usage import PaceConfig
 from tests.test_config import SAMPLE
-from tests.test_main import (FakeSessions, cfg, deps, make_task, valid_spec,
-                             write_tickets)
+from tests.test_main import (FakeSessions, approve_plan, cfg, deps, make_task,
+                             valid_spec, write_tickets)
 from tests.test_priority_auto import both, usage, wk
 from tests.test_triage import BLOB, OLD, RESULT, FakeDeps, _sweep_cfg
 from tests.configfakes import with_project
@@ -118,6 +118,7 @@ def enter(c, issue, track, stage, **kw):
     wt = make_task(c, issue=issue, stage=gate, track=track, **kw)
     write_tickets(wt, 1)
     if stage is Stage.PLAN:
+        approve_plan(wt, kw.get("spec_path", ""))
         sig = {"stage": "plan", "status": "done", "note": "1 ticket",
                "artifact": ".agent/tickets"}
     else:

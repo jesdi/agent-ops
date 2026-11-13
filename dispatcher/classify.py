@@ -31,6 +31,7 @@ class Reads(NamedTuple):
     spec: CheckResult | None = None
     page_questions: int | None = None       # question blocks on the prescribed page it names
     answers: tuple[str, str] | None = None  # (path, fingerprint) of an answers page
+    approval: str = ""                      # the plan revision the operator approved
 
 
 def _not_looked(*_args):
@@ -212,7 +213,15 @@ def _gate(o: Observation) -> Gate:
     t = o.task
     return Gate(at=at_gate(t), rounds_used=unattended_rounds_used(t),
                 respawn_pending=t.gate_respawn_pending,
-                armed=_armed(t.operator_request, o.reads.revision))
+                armed=_armed(t.operator_request, o.reads.revision),
+                approved=_approves(o.reads))
+
+
+def _approves(r: Reads) -> bool:
+    """Did the operator approve the plan revision on disk? A revision that
+    cannot be told is approved by nothing."""
+    return r.revision is not None and bool(r.revision.fingerprint) \
+        and r.approval == r.revision.fingerprint
 
 
 def _report(o: Observation) -> Report:

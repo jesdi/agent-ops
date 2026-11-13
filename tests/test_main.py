@@ -342,6 +342,22 @@ def armed_request(task, artifact):
     return PlanApprovalRequest(rev.path, fingerprint=rev.fingerprint)
 
 
+def approve_plan(wt, spec_path=""):
+    """What the console's approve leaves in the worktree: the plan-approval
+    answers file, submitted as `approve` on the plan revision now on disk
+    (a stub review page when there is none)."""
+    from dispatcher import answers
+    from dispatcher.artifacts import REVIEW_PAGE, plan_revision
+    if not (wt / REVIEW_PAGE).exists():
+        (wt / REVIEW_PAGE).write_text(REVIEW_PAGE_STUB)
+    rev = plan_revision(wt, REVIEW_PAGE, spec_path).fingerprint
+    assert rev, "no plan revision to approve"
+    answers.write(wt, "plan-approval", {
+        "v": 1, "stage": "plan", "submitted": "approve",
+        "submitted_at": datetime.now(timezone.utc).isoformat(),
+        "actor": "op", "revision": rev, "answers": {}})
+
+
 def record_session(c, stage, issue=42):
     """What the stop hook does when the task's session ends a turn."""
     write_session(c.state_dir, "portfolio_eval", issue,
@@ -718,6 +734,7 @@ def test_forced_pick_is_used_for_the_implement_session(tmp_path, monkeypatch):
     wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW, track="deep",
                    picks={"implement": "anthropic/claude-sonnet-5@low"})  # a forced pick
     write_tickets(wt, 2)
+    approve_plan(wt)
     (wt / ".agent" / "stage.json").write_text(json.dumps({"stage": "plan", "status": "done"}))
     sess = FakeSessions(alive={42})
     main.run_pass(c, deps(sess=sess))
@@ -3557,6 +3574,7 @@ def test_overnight_drain_parks_every_ready_plan_then_one_reply_advances_one(
     woken = resumed[0]
     assert woken.slot in range(3)
 
+    approve_plan(Path(woken.worktree), woken.spec_path)
     (Path(woken.worktree) / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "plan", "status": "done", "note": "", "artifact": ".agent/tickets"}))
     patch_events(monkeypatch, [])
@@ -4967,6 +4985,7 @@ def test_approved_plan_starts_one_implement_session_over_the_tickets(tmp_path, m
     c = cfg(tmp_path)
     wt = make_task(c, stage=Stage.AWAITING_PLAN_REVIEW, spec_path="docs/specs/x-design.md")
     write_tickets(wt, 3)
+    approve_plan(wt, "docs/specs/x-design.md")
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "plan", "status": "done", "note": "3 tickets", "artifact": ".agent/tickets"}))
     sess = FakeSessions(alive={42})
@@ -5877,6 +5896,7 @@ def test_only_a_spec_done_or_an_approval_changes_the_track(tmp_path, monkeypatch
         _gate_pass(c, sess, monkeypatch)
         assert load(c.state_dir, "portfolio_eval", 42).track == "standard", status
     assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.AWAITING_PLAN_REVIEW
+    approve_plan(wt, SPEC_PATH)
     sig.write_text(json.dumps({"stage": "plan", "status": "done", "track": "trivial"}))
     _gate_pass(c, sess, monkeypatch)
     t = load(c.state_dir, "portfolio_eval", 42)
@@ -5966,6 +5986,7 @@ def test_gate_phase_has_its_own_retry(tmp_path, monkeypatch):
     sess = FakeSessions(alive={42})
     _gate_pass(c, sess, monkeypatch)
     assert load(c.state_dir, "portfolio_eval", 42).plan_retries == 0
+    approve_plan(wt, SPEC_PATH)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "plan", "status": "done", "track": "standrad"}))
     _gate_pass(c, sess, monkeypatch)
@@ -5998,6 +6019,7 @@ def test_task_failed_from_the_gate_drops_the_approval_request(tmp_path, monkeypa
                    plan_retries=1, operator_request=PlanApprovalRequest(PLAN_SUMMARY))
     (wt / ".agent" / "tickets").mkdir()
     (wt / ".agent" / "tickets" / "01-bad.md").write_text("# tiny\n")
+    approve_plan(wt, SPEC_PATH)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "plan", "status": "done"}))
     _gate_pass(c, FakeSessions(alive={42}), monkeypatch)
@@ -6025,6 +6047,7 @@ def test_approval_sent_to_a_live_gate_reaches_the_session(tmp_path, monkeypatch)
     # and the session's `done` starts implement.
     save(c.state_dir, dc_replace(t, updated_at=(
         datetime.now(timezone.utc) - timedelta(minutes=16)).isoformat()))
+    approve_plan(wt, SPEC_PATH)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "plan", "status": "done"}))
     _gate_pass(c, sess, monkeypatch)
@@ -6319,6 +6342,7 @@ def test_ready_report_after_a_bounced_approval_is_checked_again(tmp_path, monkey
     _gate_pass(c, sess, monkeypatch)                    # armed
     tickets = wt / ".agent" / "tickets"
     (tickets / "02-t2.md").rename(tickets / "03-t3.md")
+    approve_plan(wt, SPEC_PATH)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "plan", "status": "done"}))
     _gate_pass(c, sess, monkeypatch)                    # bounced

@@ -393,6 +393,7 @@ class Gate:
     rounds_used: bool        # the gate's unattended rounds are used up
     respawn_pending: bool    # a gate respawn prepaid the next round
     armed: bool              # the request is armed for the plan on disk
+    approved: bool           # the operator approved the plan on disk
 
 
 @dataclass(frozen=True)
@@ -1019,9 +1020,11 @@ def _approved(f: Facts) -> Transition | Ignore:
 
 
 def _plan_done(f: Facts) -> Transition | Ignore:
-    """Only the gate session's `done` is the approval; any other is bounced,
-    `gated` or not: a respawn cannot change the status family."""
-    if _report(f).gate.at:
+    """Only the gate session's `done` on the plan revision the operator
+    approved is the approval; any other is bounced, `gated` or not: a
+    respawn cannot change the status family."""
+    gate = _report(f).gate
+    if gate.at and gate.approved:
         return _approved(f)
     return _bounce(f, Retry.PLAN_SIGNAL, PLAN_NO_APPROVAL)
 
