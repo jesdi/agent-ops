@@ -266,6 +266,46 @@ class TaskState:
         return Stage.PLAN if self.stage is Stage.AWAITING_PLAN_REVIEW else self.stage
 
 
+# The doors: park, wake, unpark and end are the only writers of the park fields
+# (park, park_reason, park_note, park_msg_id, ci_run_id, crashed_stage,
+# hold_for_attach, operator_request) besides the claim. Callers compose them
+# with replace() for everything else (slot, updated_at, resume overrides).
+_NOT_PARKED = MappingProxyType({
+    "park": "", "park_reason": "", "park_note": "", "park_msg_id": 0,
+    "ci_run_id": 0, "crashed_stage": "", "hold_for_attach": False,
+    "operator_request": None})
+
+
+def park(t: TaskState, kind: str, *, note: str = "", msg_id: int = 0,
+         reason: str = "", ci_run_id: int = 0,
+         request: "OperatorRequest | None" = None) -> TaskState:
+    """t parked as `kind`: every park field is this park's, so nothing an
+    earlier park or wake left behind survives it. crashed_stage stays."""
+    return replace(t, park=kind, park_note=note, park_msg_id=msg_id,
+                   park_reason=reason, ci_run_id=ci_run_id,
+                   hold_for_attach=False, operator_request=request)
+
+
+def wake(t: TaskState, *, hold: bool = False) -> TaskState:
+    """t woken: the wake is queued (PARK_WAKE) behind admission. The park's
+    question, reason, message, request and crashed stage stay as its origin
+    until the launch; `hold` keeps the session for an attach."""
+    return replace(t, park=PARK_WAKE, ci_run_id=0, hold_for_attach=hold)
+
+
+def unpark(t: TaskState, *, request: "OperatorRequest | None" = None) -> TaskState:
+    """t's session runs: every park field goes, bar the plan-approval
+    `request` a session at the gate is held on."""
+    return replace(t, **{**_NOT_PARKED, "operator_request": request})
+
+
+def end(t: TaskState, stage: Stage, crashed_stage: str = "") -> TaskState:
+    """t ended at the terminal `stage`: a terminal task is never parked and
+    keeps no park field, except the stage a crash failed it out of."""
+    return replace(t, **{**_NOT_PARKED, "crashed_stage": crashed_stage},
+                   stage=stage)
+
+
 def launch_track(t: TaskState, policy: ModelPolicy) -> str:
     """The track whose list t's next launch (next_launch) reads, or "" when
     it has none: the task track. A task with no track (claimed before tracks
@@ -458,9 +498,12 @@ def _read_terminal(d: dict) -> None:
         d["terminal_at"] = ""
         return
     d["terminal_at"] = d.get("terminal_at") or d.get("done_at") or d["updated_at"]
-    # A terminal task is never parked; files a closed PR wrote before #316
-    # were, and a reply would wake them into Resuming for good.
-    d["park"] = ""
+
+
+def _ended_on_load(t: TaskState) -> TaskState:
+    """A terminal task is never parked (end); files a closed PR wrote before
+    #316 were, and a reply would wake them into Resuming for good."""
+    return end(t, t.stage, t.crashed_stage) if t.stage in TERMINAL_STAGES else t
 
 
 _OPERATOR_REQUESTS = {"plan-approval": PlanApprovalRequest, "answers": AnswersRequest}
@@ -494,7 +537,7 @@ def _read(p: Path) -> TaskState | None:
     for retired in ("ticket_cursor", "ticket_tracks", "ticket_names",
                     "ticket_without_pick"):
         d.pop(retired, None)
-    return TaskState(**d)
+    return _ended_on_load(TaskState(**d))
 
 
 def load(state_dir: str | Path, repository: str, issue: int) -> TaskState | None:

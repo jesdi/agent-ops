@@ -23,12 +23,23 @@ PARKED = dict(park=PARK_HUMAN, park_msg_id=55, park_reason=WHY_LOOP_CAP,
               park_note="ci loop hit its cap")
 
 
-def _column(c, issue):
+def _card(c, issue):
     with TestClient(create_app(c, Sources(c.state_dir, sessions=None,
                                           github=None))) as client:
         board = client.get("/api/board", headers=HEADERS).json()
-    return next(col["key"] for col in board["columns"]
+    return next((col["key"], card) for col in board["columns"]
                 for card in col["cards"] if card["issue"] == issue)
+
+
+def _column(c, issue):
+    return _card(c, issue)[0]
+
+
+def _failed_card_asks_nothing(c, issue):
+    """The failed column, and no question left over from the park (#132)."""
+    column, card = _card(c, issue)
+    assert (column, card["park"], card["park_note"], card["park_reason"]) == (
+        "failed", "", "", "")
 
 
 def _reply(c, run, text="please retry"):
@@ -60,7 +71,9 @@ def test_closed_pr_ends_a_parked_task_failed_and_in_the_failed_column(
     assert on_disk["park"] == ""
     assert 42 in sess.ended
     assert notif.sent.count("pr_closed") == 1
-    assert _column(c, 42) == "failed"
+    assert (on_disk["park_note"], on_disk["park_reason"], on_disk["park_msg_id"]) == (
+        "", "", 0)
+    _failed_card_asks_nothing(c, 42)
 
 
 def test_a_reply_after_the_close_is_queued_and_wakes_nothing(
@@ -86,4 +99,4 @@ def test_a_task_saved_failed_and_parked_by_the_old_code_is_not_woken(
     _reply(c, lambda: main.run_pass(c, deps()))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.stage, t.park) == (Stage.FAILED, "")
-    assert _column(c, 42) == "failed"
+    _failed_card_asks_nothing(c, 42)
