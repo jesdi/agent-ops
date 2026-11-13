@@ -4,11 +4,11 @@ per pass"). decide then answers that event."""
 from __future__ import annotations
 
 from pathlib import Path
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 from dispatcher.artifacts import CheckResult, PlanRevision
-from dispatcher.lifecycle import (Death, Event, EventType, Gate, Report, Silence, Stranded,
-                                  Wait)
+from dispatcher.lifecycle import (Admission, Death, Event, EventType, Gate, Pane, Report,
+                                  Silence, Stranded, Wait)
 from dispatcher.loops import (Decision, Loop, ReportedRound, Retry, evaluate, retry_left,
                               unattended_rounds_used)
 from dispatcher.loops import Outcome as Rounds
@@ -33,6 +33,20 @@ class Reads(NamedTuple):
     answers: tuple[str, str] | None = None  # (path, fingerprint) of an answers page
 
 
+def _not_looked(*_args):
+    raise AssertionError("the pass did not look at the session")
+
+
+class Look(NamedTuple):
+    """What a pass reads of a session only when its event needs it, before
+    decide: the pane right before a poke, the login prompt a park holds at
+    ("" when none, or no session holds a slot), and whether the launches
+    the event's rule may start are admitted."""
+    pane: Callable[[], Pane] = _not_looked
+    login: Callable[[], str] = _not_looked
+    launches: Callable[[tuple[Stage, ...]], tuple[Admission, ...]] = _not_looked
+
+
 class Observation(NamedTuple):
     """Everything a pass saw of one driven task; classify reads only this."""
     task: TaskState
@@ -50,6 +64,7 @@ class Observation(NamedTuple):
     tracks: frozenset[str] | None = None   # None: a done report's track is not checked
     gate_free: frozenset[str] = frozenset()
     reads: Reads = Reads()
+    look: Look = Look()
 
 
 def config_note(why: str) -> str:
@@ -75,7 +90,8 @@ def _working_signal(o: Observation) -> bool:
 def _track_gone(o: Observation) -> Event | None:
     if not o.gone:
         return None
-    return Event(EventType.TRACK_UNCONFIGURED, Stranded(note=config_note(o.gone), login=""))
+    return Event(EventType.TRACK_UNCONFIGURED,
+                 Stranded(note=config_note(o.gone), login=o.look.login()))
 
 
 def _in_background(o: Observation) -> Event | None:
@@ -88,8 +104,9 @@ def _in_background(o: Observation) -> Event | None:
     if held is None:
         return None
     note, record = held
-    return Event(EventType.SESSION_WAITING,
-                 Wait(round=_round(o), note=note, record=record, login=""))
+    d = _round(o)
+    login = o.look.login() if note or _exhausted(d) else ""
+    return Event(EventType.SESSION_WAITING, Wait(round=d, note=note, record=record, login=login))
 
 
 def _wait_facts(t: TaskState, view: BackgroundView
@@ -112,9 +129,10 @@ def _dead(o: Observation) -> Event | None:
     if o.alive or (o.signal is not None and o.signal.status == "done"):
         return None
     t = o.task
-    return Event(EventType.SESSION_DIED, Death(
-        at_gate=t.stage is Stage.AWAITING_PLAN_REVIEW, rounds_used=unattended_rounds_used(t),
-        launch_denied=False))
+    at_gate, rounds_used = t.stage is Stage.AWAITING_PLAN_REVIEW, unattended_rounds_used(t)
+    respawn = (Stage.PLAN,) if at_gate and not rounds_used else ()
+    return Event(EventType.SESSION_DIED, Death(at_gate=at_gate, rounds_used=rounds_used,
+                                               launches=o.look.launches(respawn)))
 
 
 def _past_stall(o: Observation) -> bool:
@@ -127,7 +145,8 @@ def _silent(o: Observation) -> Event | None:
         return None
     note = (f"(no session output for {int(o.stall_after) // 60}m — "
             f"likely login/trust prompt or hang)")
-    return Event(EventType.SESSION_IDLE, Silence(round=None, note=note, pane=None, login=""))
+    return Event(EventType.SESSION_IDLE,
+                 Silence(round=None, note=note, pane=None, login=o.look.login()))
 
 
 def _at_composer(o: Observation) -> bool:
@@ -151,8 +170,11 @@ def _stopped(o: Observation) -> Event | None:
     until the cap."""
     if not _at_composer(o):
         return None
-    return Event(EventType.SESSION_IDLE,
-                 Silence(round=_round(o), note=_poke_cap_note(o), pane=None, login=""))
+    d, note = _round(o), _poke_cap_note(o)
+    pane = None if note else o.look.pane()
+    parks = note or pane is Pane.PROMPT or _exhausted(d)
+    return Event(EventType.SESSION_IDLE, Silence(round=d, note=note, pane=pane,
+                                                 login=o.look.login() if parks else ""))
 
 
 def _grace(o: Observation) -> Event | None:
@@ -190,14 +212,49 @@ def _gate(o: Observation) -> Gate:
 
 
 def _report(o: Observation) -> Report:
-    t, r, gate = o.task, o.reads, _gate(o)
+    t, r, gate, d = o.task, o.reads, _gate(o), _round(o)
     return Report(
-        signal=o.signal, round=_round(o), gate=gate,
+        signal=o.signal, round=d, gate=gate,
         retries=frozenset(x for x in Retry if retry_left(t, x)),
         asks=t.stage in (Stage.SPEC, Stage.PLAN),
         bad_track=_bad_track(o.signal, o.tracks, optional=gate.at),
         skips_gate=_skips_gate(o), tickets=r.tickets, revision=r.revision, spec=r.spec,
-        answers=r.answers, launch_denied=False, login="")
+        answers=r.answers,
+        launches=o.look.launches(_launchable(t.at.stage, gate.at, o.signal.status)),
+        login=o.look.login() if _may_park(o.signal.status, d, gate.armed) else "")
+
+
+def _exhausted(d: Decision | None) -> bool:
+    return d is not None and d.outcome is Rounds.EXHAUSTED
+
+
+# The launches a report's rule may start, by (stage, at the gate, status):
+# the stage a rejected report retries, and the stage that follows.
+_LAUNCHABLE = {
+    (Stage.SPEC, False, "done"): (Stage.SPEC, Stage.PLAN),
+    (Stage.SPEC, False, "awaiting-review"): (Stage.SPEC,),
+    (Stage.PLAN, False, "done"): (Stage.PLAN,),
+    (Stage.PLAN, False, "awaiting-review"): (Stage.PLAN, Stage.IMPLEMENT),
+    (Stage.PLAN, True, "done"): (Stage.PLAN, Stage.IMPLEMENT),
+    (Stage.PLAN, True, "awaiting-review"): (Stage.PLAN,),
+    (Stage.IMPLEMENT, False, "done"): (Stage.REVIEW,),
+}
+
+
+def _launchable(stage: Stage, at_gate: bool, status: str) -> tuple[Stage, ...]:
+    return _LAUNCHABLE.get((stage, at_gate, status), ())
+
+
+# The reports whose rule can park the session: then the pane is read for a
+# login prompt, where the park holds instead.
+_PARKING = frozenset({"blocked", "awaiting-answers", "awaiting-review", "done"})
+
+
+def _may_park(status: str, d: Decision | None, armed: bool) -> bool:
+    """An armed plan's ready report waits for the operator: no park."""
+    if _exhausted(d):
+        return True
+    return status in _PARKING and not (armed and status == "awaiting-review")
 
 
 def _armed(request: OperatorRequest | None, revision: PlanRevision | None) -> bool:

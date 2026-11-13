@@ -390,6 +390,16 @@ class Gate:
 
 
 @dataclass(frozen=True)
+class Admission:
+    """Can `stage` launch now? Asked before decide, for each launch the rules
+    of an event may start: admitted, denied for now (it waits), or stranded
+    by the config (`stranded`: the question its park asks)."""
+    stage: Stage
+    admitted: bool
+    stranded: str
+
+
+@dataclass(frozen=True)
 class Report:
     """session-signal: the stage signal and what the worktree says about it."""
     signal: StageSignal
@@ -403,7 +413,7 @@ class Report:
     revision: PlanRevision | None
     spec: CheckResult | None
     answers: tuple[str, str] | None  # the answers page: (path, fingerprint)
-    launch_denied: bool              # the launch the rule names is not admitted now
+    launches: tuple[Admission, ...]  # the launches the report's rule may start
     login: str                       # the pane is at a login prompt: its URL
 
 
@@ -412,7 +422,7 @@ class Silence:
     """session-idle: a silent or stopped session."""
     round: Decision | None
     note: str                 # why it parks stalled; "" while it is poked
-    pane: Pane | None         # the look before a poke; None: not looked at, a poke is due
+    pane: Pane | None         # the look before a poke; None: not looked at (the note parks)
     login: str
 
 
@@ -430,7 +440,7 @@ class Death:
     """session-died."""
     at_gate: bool
     rounds_used: bool
-    launch_denied: bool
+    launches: tuple[Admission, ...]  # the gate's respawn, while rounds remain
 
 
 @dataclass(frozen=True)
@@ -824,6 +834,26 @@ PLAN_READY = "plan ready for review"
 _WAITS_FOR_LAUNCH = Ignore("the launch waits for admission")
 
 
+def _admission(f: Facts, stage: Stage) -> Admission:
+    """The admission of `stage`'s launch, which the executor asked before
+    decide; one it did not ask is an error, never a launch."""
+    got = next((a for a in f.event.detail.launches if a.stage is stage), None)
+    if got is None:
+        raise ValueError(f"{f.event.type.value}: no admission asked for {stage.value}")
+    return got
+
+
+def _launching(f: Facts, stage: Stage, go: Transition,
+               denied: Transition | Ignore = _WAITS_FOR_LAUNCH) -> Transition | Ignore:
+    """`go` when `stage` launches now; `denied` while it waits; a park for
+    the operator when the config strands it."""
+    a = _admission(f, stage)
+    if a.stranded:
+        return Transition(Status(Kind.PARKED_HUMAN, reason=HumanReason.CONFIG, note=a.stranded),
+                          f.stage, (EndSession(), Notify("parked_question", a.stranded)))
+    return go if a.admitted else denied
+
+
 def _report(f: Facts) -> Report:
     """The facts of a session-signal (the rows of on_signal)."""
     return f.event.detail
@@ -885,11 +915,12 @@ def _bounce(f: Facts, retry: Retry, reason: str) -> Transition | Ignore:
     retry lasts, then the task parks."""
     if retry not in _report(f).retries:
         return _asking(f, HumanReason.BAD_SIGNAL, reason)
-    if _report(f).launch_denied:   # the plan on offer is rejected all the same
-        return _disarmed(f) if f.status.kind is Kind.HELD_PLAN_APPROVAL else _WAITS_FOR_LAUNCH
     told = (Notify("plan_retry", reason),) if f.stage is Stage.PLAN else ()
-    return Transition(Status(Kind.RUNNING), f.stage,
-                      (RetryStage(f.stage, reason, retry), *told))
+    retried = Transition(Status(Kind.RUNNING), f.stage,
+                         (RetryStage(f.stage, reason, retry), *told))
+    # A denied retry: the plan on offer is rejected all the same.
+    held = f.status.kind is Kind.HELD_PLAN_APPROVAL
+    return _launching(f, f.stage, retried, _disarmed(f) if held else _WAITS_FOR_LAUNCH)
 
 
 def _disarmed(f: Facts) -> Transition:
@@ -915,12 +946,11 @@ def _plan_check(s: Report) -> CheckResult:
 
 def _implement(f: Facts, *before: Action) -> Transition | Ignore:
     """One implement session works the checked ticket set."""
-    if _report(f).launch_denied:
-        return _WAITS_FOR_LAUNCH
     n = _report(f).tickets.count
-    return Transition(Status(Kind.RUNNING), Stage.IMPLEMENT,
-                      (*before, RespawnStage(Stage.IMPLEMENT, tickets=n),
-                       Notify("implement_started", f"{n} ticket(s)")))
+    return _launching(f, Stage.IMPLEMENT, Transition(
+        Status(Kind.RUNNING), Stage.IMPLEMENT,
+        (*before, RespawnStage(Stage.IMPLEMENT, tickets=n),
+         Notify("implement_started", f"{n} ticket(s)"))))
 
 
 def _review_round(f: Facts) -> Transition:
@@ -998,18 +1028,17 @@ def _spec_done(f: Facts) -> Transition | Ignore:
         return _bounce(f, Retry.SPEC_SIGNAL, s.bad_track)
     if not s.spec.ok:
         return _failed_artifact(f, s.spec.reason)
-    if s.launch_denied:
-        return _WAITS_FOR_LAUNCH
-    return Transition(Status(Kind.RUNNING), Stage.PLAN, (RespawnStage(Stage.PLAN),))
+    return _launching(f, Stage.PLAN,
+                      Transition(Status(Kind.RUNNING), Stage.PLAN, (RespawnStage(Stage.PLAN),)))
 
 
-def _implement_done(f: Facts) -> Transition:
+def _implement_done(f: Facts) -> Transition | Ignore:
     """Review follows implement; a denied launch waits as waking(next-stage)."""
-    if _report(f).launch_denied:
-        return Transition(Status(Kind.WAKING, cause=Cause.NEXT_STAGE), Stage.REVIEW)
-    return Transition(Status(Kind.RUNNING), Stage.REVIEW,
-                      (RespawnStage(Stage.REVIEW),
-                       Notify("review_started", _report(f).signal.note)))
+    return _launching(f, Stage.REVIEW,
+                      Transition(Status(Kind.RUNNING), Stage.REVIEW,
+                                 (RespawnStage(Stage.REVIEW),
+                                  Notify("review_started", _report(f).signal.note))),
+                      Transition(Status(Kind.WAKING, cause=Cause.NEXT_STAGE), Stage.REVIEW))
 
 
 def _pr_opened(template: str) -> Callable[[Facts], Transition]:
@@ -1066,7 +1095,7 @@ def on_signal(f: Facts) -> Transition | Ignore:
     return rule(f) if rule else Ignore(f"unknown signal status {signal.status!r}")
 
 
-_POKE = {None: (Poke(),), Pane.CLEAR: (Poke(),), Pane.UNKNOWN: (),
+_POKE = {Pane.CLEAR: (Poke(),), Pane.UNKNOWN: (),
          Pane.WORKING: (EndPokeStretch(),)}
 
 
@@ -1105,9 +1134,8 @@ def on_died(f: Facts) -> Transition | Ignore:
 def _gate_died(f: Facts) -> Transition | Ignore:
     d: Death = f.event.detail
     if not d.rounds_used:
-        if d.launch_denied:
-            return _WAITS_FOR_LAUNCH
-        return Transition(Status(Kind.RUNNING), Stage.PLAN, (RespawnStage(Stage.PLAN),))
+        return _launching(f, Stage.PLAN, Transition(Status(Kind.RUNNING), Stage.PLAN,
+                                                    (RespawnStage(Stage.PLAN),)))
     if not f.status.path:   # a rework session: no plan is on offer
         return Transition(Status(Kind.PARKED_HUMAN, reason=HumanReason.STALLED,
                                  note=GATE_STOPPED), f.stage,

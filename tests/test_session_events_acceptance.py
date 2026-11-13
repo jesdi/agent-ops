@@ -22,7 +22,7 @@ from dispatcher.state import (NO_SLOT, BackgroundWait, Stage, StageSignal, TaskS
 from tests.test_herdr_liveness_poke_acceptance import HerdrSessions
 from tests.test_main import (FakeGitHub, FakeSessions, cfg, deps, make_task,
                              patch_usage, patch_workspace)
-from tests.test_lifecycle import report
+from tests.test_lifecycle import LOOKED, report
 from tests.test_session_rules_characterization import GOOD_SPEC, LOGIN_TAIL, WORK
 
 T = "portfolio_eval"
@@ -243,7 +243,7 @@ def _seen(alive=True, waiting=False, idle=30.0, status="working", view=None, **k
     t = TaskState(issue=42, repository=T, stage=Stage.REVIEW, slot=0, worktree="/w",
                   branch="b", title="t", updated_at="", track="standard", **kw)
     return Observation(t, StageSignal("review", status), alive, waiting, idle, 600.0,
-                       view, 1_000_000.0, 10800)
+                       view, 1_000_000.0, 10800, look=LOOKED)
 
 
 def _view(agent=("idle", 5), since=999_000.0):
@@ -295,7 +295,7 @@ def test_a_prompt_seen_before_a_poke_parks_for_the_operator():
 
 def test_a_gate_session_dead_mid_rework_with_no_rounds_parks_stalled():
     got = decide(At(Stage.PLAN, Status(Kind.RUNNING)), Event(
-        EventType.SESSION_DIED, Death(at_gate=True, rounds_used=True, launch_denied=False)))
+        EventType.SESSION_DIED, Death(at_gate=True, rounds_used=True, launches=())))
     assert (got.status.kind, got.status.reason) == (Kind.PARKED_HUMAN, HumanReason.STALLED)
 
 
@@ -379,3 +379,68 @@ def test_review_with_no_free_slot_fails_the_turn(c):
     t = load(c.state_dir, T, 42)
     assert (t.stage, t.crashed_stage) == (Stage.FAILED, "review")
     assert d.sessions.spawned == []
+
+
+# --- decide runs once, on facts gathered before it -----------------------------
+
+def _counted(monkeypatch):
+    calls = []
+    real = main.decide
+
+    def counting(task, event):
+        calls.append(event.type)
+        return real(task, event)
+    monkeypatch.setattr(main, "decide", counting)
+    return calls
+
+
+def test_a_poke_is_decided_once_with_the_pane_already_read(c, monkeypatch):
+    signal(task(c), "working")
+    mark_waiting(c.state_dir, T, 42)
+    calls = _counted(monkeypatch)
+    sess = HerdrSessions({42: ("idle", 5)}, alive=[42], idle={42: 30.0})
+    run(c, sess)
+    assert calls == [EventType.SESSION_IDLE] and len(sess.sent_text) == 1
+
+
+def test_a_launch_is_decided_once_with_its_admission_already_asked(c, monkeypatch):
+    wt = task(c, stage=Stage.SPEC)
+    (wt / "spec.md").write_text(GOOD_SPEC)
+    signal(wt, "done", stage="spec", artifact="spec.md", track="standard")
+    calls = _counted(monkeypatch)
+    run(c, FakeSessions(alive={42}))
+    assert calls == [EventType.SESSION_SIGNAL]
+    assert load(c.state_dir, T, 42).at == At(Stage.PLAN, Status(Kind.RUNNING))
+
+
+def test_a_park_is_decided_once_with_the_login_prompt_already_read(c, monkeypatch):
+    signal(task(c, stage=Stage.SPEC, slot=1), "blocked", stage="spec", note="stuck")
+    calls = _counted(monkeypatch)
+    run(c, FakeSessions(alive={42}, tail=LOGIN_TAIL))
+    assert calls == [EventType.SESSION_SIGNAL]
+    assert load(c.state_dir, T, 42).at.status.kind is Kind.HELD_LOGIN
+
+
+@pytest.mark.parametrize("stage, at_gate", [(Stage.SPEC, False), (Stage.PLAN, False),
+                                            (Stage.PLAN, True), (Stage.IMPLEMENT, False)])
+@pytest.mark.parametrize("status", ["done", "awaiting-review"])
+@pytest.mark.parametrize("bad_track", ["", "stage.json names track 'x'"])
+@pytest.mark.parametrize("ok", [True, False])
+def test_classify_asks_for_every_launch_the_rule_may_start(stage, at_gate, status,
+                                                           bad_track, ok):
+    """A rule that starts a launch classify did not ask about raises."""
+    from dispatcher.artifacts import CheckResult, PlanRevision
+    from dispatcher.classify import _launchable
+    from dispatcher.loops import Retry
+    from tests.test_lifecycle import PLAIN_GATE, admitted
+    held = at_gate and status == "awaiting-review"
+    at = At(stage, Status(Kind.HELD_PLAN_APPROVAL, path="r.html", fingerprint="fp")
+            if held else Status(Kind.RUNNING))
+    for skips_gate, retries in ((False, frozenset()), (True, frozenset(Retry))):
+        detail = report(
+            StageSignal(stage.value, status), gate=dc_replace(PLAIN_GATE, at=at_gate),
+            retries=retries, bad_track=bad_track, skips_gate=skips_gate,
+            tickets=CheckResult(ok, "" if ok else "bad", 2),
+            revision=PlanRevision("r.html", "fp2", ""), spec=CheckResult(ok, ""),
+            launches=admitted(*_launchable(stage, at_gate, status)))
+        decide(at, Event(EventType.SESSION_SIGNAL, detail))

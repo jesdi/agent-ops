@@ -40,17 +40,15 @@ from dispatcher import implementation_grants, spec_publish, task_artifacts
 from dispatcher import base_line
 from dispatcher.artifacts import (REVIEW_PAGE, TICKETS_DIR, check_spec, check_tickets,
                                   count_open_questions, page_revision, plan_revision)
-from dispatcher.classify import (BackgroundView, Observation, Reads, artifact_path,
+from dispatcher.classify import (BackgroundView, Look, Observation, Reads, artifact_path,
                                  classify, config_note)
-from dispatcher.lifecycle import (AcquireSlot, ApplyRound, At, ClearTurnMarkers,
+from dispatcher.lifecycle import (AcquireSlot, Admission, ApplyRound, At, ClearTurnMarkers,
                                   EndPokeStretch, EndSession, EnterGate, Event, EventType,
-                                  FailReason, Ignore, Kind, LaunchFailure, LinkPR,
-                                  MarkAsked, Notify, Pane,
-                                  Poke, PublishSpec, RecordBackgroundWait, Reject,
-                                  ReleaseSlot, ReportCrash, ReportTaskCrash, RespawnStage,
-                                  RetryStage, Status, Transition, decide,
-                                  Stranded, Woken, legacy_fields, login_at, occupies,
-                                  operator_request)
+                                  FailReason, Kind, LaunchFailure, LinkPR, MarkAsked, Notify,
+                                  Pane, Poke, PublishSpec, RecordBackgroundWait, ReleaseSlot,
+                                  ReportCrash, ReportTaskCrash, RespawnStage, RetryStage,
+                                  Status, Stranded, Transition, Woken, decide, legacy_fields,
+                                  login_at, occupies, operator_request)
 from dispatcher.loops import Decision, Outcome, ResetCause
 from dispatcher.models import (Admitted, Entry, ModelPolicy,
                                Order, override_refusal,
@@ -175,17 +173,29 @@ def _execution_override_for(cfg: Config, task: TaskState,
     The web's task snapshot can precede a stage transition. Drop an obsolete
     cross-provider choice, including its bypass, before selecting a launch.
     """
+    override, refusal = _saved_override(cfg, task, stage)
+    if refusal:
+        _drop_override(cfg, task, stage, refusal)
+    return override
+
+
+def _saved_override(cfg: Config, task: TaskState, stage: Stage
+                    ) -> tuple[execution_overrides.ExecutionOverride | None, str]:
+    """The saved choice as it applies to `stage`, and why it may not (then
+    None): read only, nothing dropped."""
     override = execution_overrides.load(cfg.state_dir, task.repository, task.issue)
     if override is None or not override.model:
-        return override
+        return override, ""
     refusal = override_refusal(task.picks, stage.value, override.model)
-    if refusal:
-        execution_overrides.delete(cfg.state_dir, task.repository, task.issue)
-        eventlog.append_event(cfg.state_dir, "execution-override-dropped",
-                              repository=task.repository, issue=task.issue,
-                              stage=stage.value, model=override.model, detail=refusal)
-        return None
-    return override
+    return (None, refusal) if refusal else (override, "")
+
+
+def _drop_override(cfg: Config, task: TaskState, stage: Stage, refusal: str) -> None:
+    override = execution_overrides.load(cfg.state_dir, task.repository, task.issue)
+    execution_overrides.delete(cfg.state_dir, task.repository, task.issue)
+    eventlog.append_event(cfg.state_dir, "execution-override-dropped",
+                          repository=task.repository, issue=task.issue,
+                          stage=stage.value, model=override.model, detail=refusal)
 
 
 def _choose_launch(
@@ -1644,7 +1654,7 @@ class _Turn:
     error: str = ""                     # the traceback of a crashed turn
     tail: str | None = None             # the pane, read once before the session ends
     spec_line: str = ""                 # the spec-publish line a later notice appends
-    launch: Launch | None = None        # the admitted launch of this turn
+    launches: dict[Stage, Launch] = field(default_factory=dict)  # admitted, by stage
     gh_config: str = ""
     launched: bool = False              # a launch went through: the choice is used up
     event: Event | None = None
@@ -1665,7 +1675,7 @@ def _apply(turn: _Turn, task: TaskState, event: Event) -> None:
     """Decide `event` for `task` and execute what the table answers: the
     actions that end or start a session, then one commit and its
     `transition` event, then the notices (ADR 0015)."""
-    outcome, event = _refined(turn, task, event)
+    outcome = decide(task, event)
     if not isinstance(outcome, Transition):
         log.debug("#%s %s: %s", task.issue, event.type.value, outcome.reason)
         return
@@ -1692,17 +1702,11 @@ def _execute(turn: _Turn, task: TaskState, t: Transition) -> None:
     _settle(turn, _commit(turn, before, after, t), t)
 
 
-def _refined(turn: _Turn, task: TaskState,
-             event: Event) -> tuple[Transition | Ignore | Reject, Event]:
-    """decide, then once more for each fact the answer needs and the event
-    does not carry yet, read only then: the look before a poke, the launch's
-    admission, a login prompt in the pane of a park."""
-    outcome = decide(task, event)
-    for refine in (_look_before_poke, _admission, _at_login_prompt):
-        better = refine(turn, task, event, outcome) if isinstance(outcome, Transition) else None
-        if better is not None:
-            event, outcome = better, decide(task, better)
-    return outcome, event
+def _look(turn: _Turn, task: TaskState) -> Look:
+    """What classify reads of the session only when its event needs it."""
+    return Look(pane=lambda: Pane.UNKNOWN if turn.dry_run else _pane(turn.deps, task),
+                login=lambda: _login_prompt(turn, task),
+                launches=lambda stages: _admissions(turn, task, stages))
 
 
 def _pane(deps: Deps, task: TaskState) -> Pane:
@@ -1720,14 +1724,39 @@ def _pane(deps: Deps, task: TaskState) -> Pane:
     return Pane.CLEAR
 
 
-def _look_before_poke(turn: _Turn, task: TaskState, event: Event,
-                      t: Transition) -> Event | None:
-    """herdr and the pane, read right before a poke is typed: a dry run
-    types nothing."""
-    if not any(isinstance(a, Poke) for a in t.actions) or event.detail.pane is not None:
-        return None
-    pane = Pane.UNKNOWN if turn.dry_run else _pane(turn.deps, task)
-    return replace(event, detail=replace(event.detail, pane=pane))
+def _login_prompt(turn: _Turn, task: TaskState) -> str:
+    """The login prompt in the pane of a session that holds a slot, where a
+    park holds instead; the pane is kept for the notice."""
+    if not occupies(task.at.status):
+        return ""
+    turn.tail = turn.deps.sessions.capture_tail(task.repository, task.issue)
+    login = relogin.classify_login(turn.tail)
+    if login is None:
+        return ""
+    return login.url or "(attach to the session to see the URL)"
+
+
+def _admissions(turn: _Turn, task: TaskState,
+                stages: tuple[Stage, ...]) -> tuple[Admission, ...]:
+    """Each launch an event's rule may start, chosen as every launch is
+    (_choose_launch), read before decide; the admitted ones are kept for the
+    executor. A saved choice is dropped only when it may apply to none of
+    them: it may be meant for the one the rule does not pick."""
+    saved = {stage: _saved_override(turn.cfg, task, stage) for stage in stages}
+    refusals = [(stage, why) for stage, (_, why) in saved.items() if why]
+    if stages and len(refusals) == len(stages):
+        _drop_override(turn.cfg, task, *refusals[0])
+    return tuple(_admission(turn, task, stage, saved[stage][0]) for stage in stages)
+
+
+def _admission(turn: _Turn, task: TaskState, stage: Stage,
+               override: execution_overrides.ExecutionOverride | None) -> Admission:
+    launch, _bypass, why = _choose_launch(turn.cfg, turn.repository, task, stage,
+                                          turn.admit, turn.order, override)
+    if launch is not None:
+        turn.launches[stage] = launch
+    return Admission(stage, admitted=launch is not None,
+                     stranded=config_note(why) if why else "")
 
 
 def _launch_action(t: Transition) -> RespawnStage | RetryStage | None:
@@ -1736,42 +1765,6 @@ def _launch_action(t: Transition) -> RespawnStage | RetryStage | None:
 
 def _launches(t: Transition) -> bool:
     return _launch_action(t) is not None
-
-
-def _admission(turn: _Turn, task: TaskState, event: Event, t: Transition) -> Event | None:
-    """The launch the answer names, chosen as every launch is: a launch the
-    config strands parks the task, one that is not admitted waits."""
-    act = _launch_action(t)
-    if act is None or turn.launch is not None:
-        return None
-    preview = legacy_fields(task, t.stage, t.status)
-    launch, _bypass, why = _action_launch(turn.cfg, turn.repository, preview, act.stage,
-                                          turn.admit, turn.order)
-    if why:
-        return Event(EventType.TRACK_UNCONFIGURED, Stranded(config_note(why), login=""))
-    if launch is None:
-        return replace(event, detail=replace(event.detail, launch_denied=True))
-    turn.launch = launch
-    return None
-
-
-def _at_login_prompt(turn: _Turn, task: TaskState, event: Event,
-                     t: Transition) -> Event | None:
-    """A park of a live session reads its pane first: one at a login prompt
-    is held there instead."""
-    if login_at(event) or not _parks_a_session(task, event, t):
-        return None
-    turn.tail = turn.deps.sessions.capture_tail(task.repository, task.issue)
-    login = relogin.classify_login(turn.tail)
-    if login is None:
-        return None
-    url = login.url or "(attach to the session to see the URL)"
-    return replace(event, detail=replace(event.detail, login=url))
-
-
-def _parks_a_session(task: TaskState, event: Event, t: Transition) -> bool:
-    return (hasattr(event.detail, "login") and occupies(task.at.status)
-            and t.status.kind in (Kind.PARKED_HUMAN, Kind.PARKED_ANSWERS))
 
 
 def _token(turn: _Turn, task: TaskState) -> bool:
@@ -1913,23 +1906,24 @@ def _respawned(turn: _Turn, task: TaskState, act: RespawnStage) -> TaskState:
     `working` only after the commit, so a dispatcher killed before the
     commit finds the hand-over again and repeats the launch."""
     task, spec_path = _handover(turn, task, act)
+    launch = turn.launches[act.stage]
     _end_session(turn.cfg, turn.deps, task.repository, task.issue)
     task = loops.reset(task, ResetCause.STAGE_STARTED)
     try:
-        _log_model(task.worktree, act.stage, str(turn.launch.entry))
-        task = _spawned(turn.cfg, turn.deps, turn.repository, task, turn.launch, spec_path,
+        _log_model(task.worktree, act.stage, str(launch.entry))
+        task = _spawned(turn.cfg, turn.deps, turn.repository, task, launch, spec_path,
                         gh_config=turn.gh_config)
     except Exception as exc:
         raise _LaunchFailed(act.stage, replace(task, stage=act.stage,
                                                spec_path=spec_path or task.spec_path)) from exc
     turn.launched = True
-    turn.after.append(lambda saved: _working_launched(turn, saved))
+    turn.after.append(lambda saved: _working_launched(turn, saved, launch))
     return task
 
 
-def _working_launched(turn: _Turn, saved: TaskState) -> None:
-    _signal_working(saved.worktree, turn.launch.stage, turn.launch.entry)
-    _stage_started(turn.cfg, saved, turn.launch)
+def _working_launched(turn: _Turn, saved: TaskState, launch: Launch) -> None:
+    _signal_working(saved.worktree, launch.stage, launch.entry)
+    _stage_started(turn.cfg, saved, launch)
 
 
 # What a resumed session is told to do about its rejected signal.
@@ -1953,22 +1947,23 @@ def _retried(turn: _Turn, task: TaskState, act: RetryStage) -> TaskState:
     or the resume command would be typed INTO its input box."""
     _end_session(turn.cfg, turn.deps, task.repository, task.issue)
     text = f"Your .agent/stage.json was rejected: {act.reason}. {_RETRY_HINT[act.stage]}"
+    launch = turn.launches[act.stage]
     try:
-        _log_model(task.worktree, act.stage, str(turn.launch.entry))
-        task, detail = _continued(turn.cfg, turn.deps, turn.repository, task, turn.launch,
+        _log_model(task.worktree, act.stage, str(launch.entry))
+        task, detail = _continued(turn.cfg, turn.deps, turn.repository, task, launch,
                                   text, gh_config=turn.gh_config)
     except Exception as exc:
         raise _LaunchFailed(act.stage, task) from exc
     turn.launched = True
-    turn.after.append(lambda saved: _working_resumed(turn, saved, act.stage, detail))
+    turn.after.append(lambda saved: _working_resumed(turn, saved, launch, detail))
     return loops.spend_retry(task, act.retry)
 
 
-def _working_resumed(turn: _Turn, saved: TaskState, stage: Stage, detail: str) -> None:
-    _signal_working(saved.worktree, stage, turn.launch.entry)
+def _working_resumed(turn: _Turn, saved: TaskState, launch: Launch, detail: str) -> None:
+    _signal_working(saved.worktree, launch.stage, launch.entry)
     if detail:
-        _stage_started(turn.cfg, saved, replace(turn.launch, stage=stage))
-    _resumed(turn.cfg, saved, turn.launch, detail)
+        _stage_started(turn.cfg, saved, launch)
+    _resumed(turn.cfg, saved, launch, detail)
 
 
 def _published(turn: _Turn, task: TaskState, act: PublishSpec) -> TaskState:
@@ -2242,12 +2237,16 @@ def _launch_due(turn: _Turn, task: TaskState, policy: ModelPolicy) -> Event | No
     is denied, parked when the config strands it."""
     why = track_gone(policy, task.track)
     stage = Stage.SPEC if task.at.stage is Stage.QUEUED else task.at.stage
+    launch = None
     if not why:
-        turn.launch, _bypass, why = _action_launch(turn.cfg, turn.repository, task, stage,
-                                                   turn.admit, turn.order)
+        launch, _bypass, why = _action_launch(turn.cfg, turn.repository, task, stage,
+                                              turn.admit, turn.order)
     if why:
         return Event(EventType.TRACK_UNCONFIGURED, Stranded(config_note(why), login=""))
-    return Event(EventType.RESUME_ADMITTED, Woken(blocked="")) if turn.launch else None
+    if launch is None:
+        return None
+    turn.launches[stage] = launch
+    return Event(EventType.RESUME_ADMITTED, Woken(blocked=""))
 
 
 def _observation(turn: _Turn, task: TaskState,
@@ -2270,7 +2269,7 @@ def _observation(turn: _Turn, task: TaskState,
         grace_elapsed=_grace_elapsed(cfg, task), caps=cfg.loop_caps,
         tracks=frozenset(policy.tracks),
         gate_free=frozenset(n for n, t in policy.tracks.items() if not t.plan_review),
-        reads=_reads(task, turn.signal))
+        reads=_reads(task, turn.signal), look=_look(turn, task))
 
 
 def _reads(task: TaskState, signal: StageSignal | None) -> Reads:

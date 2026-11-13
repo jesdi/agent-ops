@@ -19,7 +19,8 @@ from dispatcher.lifecycle import (TABLE, AcquireSlot, At, CancelIssue, Cause,
                                   Transition, TypeLoginCode, WakeBlocked,
                                   decide, graph, legacy_view, next_transitions,
                                   occupies, operator_request)
-from dispatcher.lifecycle import (Attempt, Death, Gate, LaunchFailure, LoginCode, Notify, Pane,
+from dispatcher.classify import Look
+from dispatcher.lifecycle import (Admission, Attempt, Death, Gate, LaunchFailure, LoginCode, Notify, Pane,
                                   Ranked, Report, ResumeChoice, Silence, Stranded, Wait,
                                   Woken)
 from dispatcher.state import (AnswersRequest, PlanApprovalRequest, Stage, StageSignal,
@@ -174,8 +175,16 @@ def report(signal: StageSignal, **facts) -> Report:
     """A session-signal's facts: those named, the rest plain."""
     plain = dict(round=None, gate=PLAIN_GATE, retries=frozenset(), asks=False, bad_track="",
                  skips_gate=False, tickets=None, revision=None, spec=None, answers=None,
-                 launch_denied=False, login="")
+                 launches=(), login="")
     return Report(signal, **{**plain, **facts})
+
+
+def admitted(*stages: Stage) -> tuple[Admission, ...]:
+    return tuple(Admission(s, admitted=True, stranded="") for s in stages)
+
+
+# A session classify looks at: a clear pane, no login prompt, every launch admitted.
+LOOKED = Look(pane=lambda: Pane.CLEAR, login=lambda: "", launches=lambda s: admitted(*s))
 
 
 # The facts each event type is tried with.
@@ -184,7 +193,7 @@ DETAILS = {
     E.SESSION_IDLE: [Silence(round=None, note="", pane=Pane.CLEAR, login=""),
                      Silence(round=None, note="stalled", pane=None, login="")],
     E.SESSION_WAITING: [Wait(round=None, note="", record=None, login="")],
-    E.SESSION_DIED: [Death(at_gate=False, rounds_used=False, launch_denied=False)],
+    E.SESSION_DIED: [Death(at_gate=False, rounds_used=False, launches=())],
     E.TRACK_UNCONFIGURED: [Stranded(note="gone", login="")],
     E.LAUNCH_FAILED: [LaunchFailure(S.SPEC)],
     E.RESUME_ADMITTED: [Woken(""), Woken("capacity full")],

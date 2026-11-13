@@ -302,11 +302,13 @@ def _decide(*, waiting=True, idle=30.0, since=0.0, pokes=0, now=1_000_000.0,
     None when nothing happened."""
     from dispatcher.classify import Observation, classify
     from dispatcher.lifecycle import decide
+    from tests.test_lifecycle import LOOKED
     task = TaskState(issue=N, repository=T, stage=Stage.REVIEW, slot=0, worktree="/w",
                      branch="b", title="t", updated_at="", track="standard",
                      poked_since=since, pokes=pokes)
     sig = StageSignal(stage="review", status=signal)
-    event = classify(Observation(task, sig, True, waiting, idle, stall_after, None, now, cap))
+    event = classify(Observation(task, sig, True, waiting, idle, stall_after, None, now, cap,
+                                 look=LOOKED))
     return decide(task, event) if event else None
 
 
