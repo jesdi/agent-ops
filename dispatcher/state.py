@@ -438,23 +438,29 @@ def write_atomic(path: Path, data: str | bytes) -> None:
     raise NotImplementedError
 
 
-def write_json_atomic(path: Path, doc: dict) -> None:
+def write_atomic(path: Path, data: str | bytes) -> None:
     """For a state file the web process and the dispatcher share (the usage
     cache, the priority mode): write a sibling temp file of its own and rename
     it over, so a reader never sees a torn one and two writers never share a
-    temp file. mkstemp creates 0600 and the two units may run as different
-    users, so the file is opened up to 0644 before the rename. A failed write
-    or rename leaves no temp file behind."""
+    temp file. mkstemp creates 0600 and the units may run as different users,
+    so the file is opened up to 0644 before the rename. A failed write, chmod
+    or rename leaves no temp file behind and the old content in place."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as fh:
-            json.dump(doc, fh)
+        with os.fdopen(fd, "wb" if isinstance(data, bytes) else "w") as fh:
+            fh.write(data)
         os.chmod(tmp, 0o644)
         os.replace(tmp, path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
+
+
+def write_json_atomic(path: Path, doc: dict, *, indent: int | None = None,
+                      sort_keys: bool = False) -> None:
+    """write_atomic of json.dumps(doc, indent=indent, sort_keys=sort_keys)."""
+    write_atomic(path, json.dumps(doc, indent=indent, sort_keys=sort_keys))
 
 
 def _write_task(p: Path, ts: TaskState) -> None:

@@ -65,7 +65,8 @@ def write_task_identity(wt: str | Path, issue: int, repository: str, branch: str
 def write_worktree_file(root: str | Path, subdir: str, name: str,
                         data: str | bytes, mode: int | None = 0o644) -> None:
     """Write <root>/<subdir>/<name> whole (temp file, then rename), never
-    through a symlink. `subdir` may hold several components. A failed write
+    through a symlink: the symlink-safe variant of `state.write_atomic`.
+    `subdir` may hold several components. A failed write
     leaves no temp file behind. `mode` None keeps the mode of the regular
     file that is replaced, and makes a new file 0600."""
     name = _plain_name(name)
