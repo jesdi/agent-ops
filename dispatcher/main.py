@@ -3030,21 +3030,34 @@ def _prune_snapshots(cfg: Config) -> None:
     root = Path(cfg.state_dir) / "snapshots"
     if not root.exists():
         return
+    live = _live_snapshot_names(cfg)
+    if live is None:
+        return  # unreadable/corrupt state dir: skip, never abort the sweep
+    now = time.time()
+    for p in root.glob("task-*.txt"):
+        if p.name not in live:
+            _unlink_if_expired(p, now)
+
+
+def _live_snapshot_names(cfg: Config) -> set[str] | None:
+    """The snapshot names of in-flight tasks, under both the current and
+    the legacy form; None when the state dir cannot be read."""
     try:
         in_flight = [t for t in load_all(cfg.state_dir) if _in_flight(t)]
     except Exception:
-        return  # unreadable/corrupt state dir: skip, never abort the sweep
-    live = {f"task-{t.repository}-{t.issue}.txt" for t in in_flight} \
-         | {f"task-{t.issue}.txt" for t in in_flight}
-    now = time.time()
-    for p in root.glob("task-*.txt"):
-        if p.name in live:
-            continue
-        try:
-            if now - p.stat().st_mtime > SNAPSHOT_TTL_SECONDS:
-                p.unlink()
-        except OSError:
-            continue
+        return None
+    return ({f"task-{t.repository}-{t.issue}.txt" for t in in_flight}
+            | {f"task-{t.issue}.txt" for t in in_flight})
+
+
+def _unlink_if_expired(p: Path, now: float) -> None:
+    """Delete a snapshot older than the TTL; one that vanished or cannot be
+    read is left alone."""
+    try:
+        if now - p.stat().st_mtime > SNAPSHOT_TTL_SECONDS:
+            p.unlink()
+    except OSError:
+        pass
 
 
 @contextmanager
