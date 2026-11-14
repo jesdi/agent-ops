@@ -24,12 +24,25 @@ from dispatcher.state import TaskState
 
 RANK_TTL_SECONDS = 15.0
 DESCRIPTION_TTL_SECONDS = 300.0
+DESCRIPTION_RETRY_SECONDS = 30.0  # cold failure: retry sooner than the TTL
 DISPATCHER_KICK = ("systemctl", "--user", "start", "--no-block",
                    "agent-ops-dispatcher.service")
 
 
 def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+
+def _marker_since(path: Path) -> str | None:
+    """The `since` the marker was written with; None when unreadable or absent
+    from it. A missing file propagates: the marker is gone, not dark."""
+    try:
+        since = json.loads(path.read_text()).get("since")
+    except FileNotFoundError:
+        raise
+    except (OSError, ValueError, AttributeError):  # unreadable, bad JSON, not an object
+        return None
+    return since if isinstance(since, str) else None
 
 
 ArtifactStatus = Literal["published", "local", "expired", "unavailable"]
@@ -141,25 +154,34 @@ class Sources:
         key = repositories[0].project.name
         cached = self._rank_cache.get(key)
         if cached and now - cached["fetched_at"] < RANK_TTL_SECONDS:
-            return cached["rows"], cached["as_of"], False
+            return cached["rows"], cached["as_of"], cached["stale"]
         try:
             rows = self._github.rank_rows(repositories)
         except Exception:
-            if cached:  # never a blank queue if a cache ever existed
-                return cached["rows"], cached["as_of"], True
-            return [], _iso(now), True
+            current = self._rank_cache.get(key)
+            if current is not cached and current is not None:
+                return current["rows"], current["as_of"], current["stale"]
+            # Re-probe gh once per TTL, not per request: the failure is cached
+            # as a stale entry (never a blank queue if a cache ever existed).
+            entry = {"rows": cached["rows"] if cached else [],
+                     "as_of": cached["as_of"] if cached else _iso(now),
+                     "fetched_at": self._clock(), "stale": True}
+            self._rank_cache[key] = entry
+            return entry["rows"], entry["as_of"], True
         self._rank_cache[key] = {
-            "rows": rows, "fetched_at": now, "as_of": _iso(now)}
+            "rows": rows, "fetched_at": now, "as_of": _iso(now), "stale": False}
         return rows, _iso(now), False
 
     def issue_description(self, repo: str, number: int) -> dict:
         """gh-backed issue body with a TTL cache. A fetch failure serves the
         last cached value if one exists (stale beats blank, cf. rank_rows);
-        cold-cache failure returns an explicit error payload, never raises."""
+        cold-cache failure returns an explicit error payload, never raises.
+        Either way the failure is cached, so gh is re-probed once per window
+        (the TTL, or DESCRIPTION_RETRY_SECONDS after a cold failure)."""
         now = self._clock()
         key = (repo, number)
         cached = self._desc_cache.get(key)
-        if cached and now - cached["at"] < DESCRIPTION_TTL_SECONDS:
+        if cached and now - cached["at"] < cached["ttl"]:
             return cached["data"]
         try:
             d = self._github.issue_view(repo, number)
@@ -167,12 +189,20 @@ class Sources:
                     "body": str(d.get("body") or ""),
                     "url": str(d.get("url") or ""),
                     "fetched_at": _iso(now), "error": ""}
+            ttl = DESCRIPTION_TTL_SECONDS
+            cache_at = now
         except Exception as exc:
-            if cached:
-                return cached["data"]
-            return {"title": "", "body": "", "url": "",
-                    "fetched_at": _iso(now), "error": str(exc)}
-        self._desc_cache[key] = {"data": data, "at": now}
+            current = self._desc_cache.get(key)
+            if current is not cached and current is not None:
+                return current["data"]
+            if cached and not cached["data"]["error"]:
+                data, ttl = cached["data"], DESCRIPTION_TTL_SECONDS
+            else:
+                data = {"title": "", "body": "", "url": "",
+                        "fetched_at": _iso(now), "error": str(exc) or type(exc).__name__}
+                ttl = DESCRIPTION_RETRY_SECONDS
+            cache_at = self._clock()
+        self._desc_cache[key] = {"data": data, "at": cache_at, "ttl": ttl}
         return data
 
     def usage(self, routed: Collection[str]) -> dict[str, ProviderUsage]:
@@ -190,22 +220,17 @@ class Sources:
     def auth_dark_since(self) -> str | None:
         """When the dispatcher's `auth-dark` marker says the login went dark,
         None when it is absent. Read-only: only the dispatcher writes or
-        deletes it. A marker that parses to no `since` still reports dark,
-        with its mtime; one deleted mid-read reads as absent."""
+        deletes it. A marker that parses to no `since`, or cannot be read,
+        still reports dark, with its mtime; one deleted mid-read reads as
+        absent."""
         path = self.state_dir / "auth-dark"
         try:
-            try:
-                since = json.loads(path.read_text()).get("since")
-            except (ValueError, AttributeError):  # bad JSON, not an object
-                since = None
-            return since if isinstance(since, str) else _iso(path.stat().st_mtime)
+            since = _marker_since(path)
+            return since if since is not None else _iso(path.stat().st_mtime)
         except FileNotFoundError:
             return None
-        except OSError:  # unreadable: still dark, by mtime, unless it vanished
-            try:
-                return _iso(path.stat().st_mtime)
-            except OSError:
-                return None
+        except OSError:  # the marker is there but its metadata is not readable
+            return _iso(time.time())
 
     def quarantine_entries(self) -> list[dict]:
         """Every readable quarantine record, for /api/failures and the retry

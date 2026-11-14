@@ -4,6 +4,7 @@ import type { DraggedCard } from '../components/cardDrag'
 import { BoardHeader } from '../components/BoardHeader'
 import { ColumnTabs } from '../components/ColumnTabs'
 import { CountStrip } from '../components/CountStrip'
+import { UsageBanner } from '../components/UsageBanner'
 import { GhostCardView } from '../components/GhostCard'
 import { ProjectPanel, ProjectTabs } from '../components/ProjectTabs'
 import { useProjectBoard } from '../components/useProjectTab'
@@ -179,25 +180,50 @@ function columnViews(columns: Column[], degraded: QueueDegraded,
   }))
 }
 
-export function BoardPage() {
+type BoardState<B> =
+  | { kind: 'ready'; board: B }
+  | { kind: 'loading' }
+  | { kind: 'unavailable'; message: string | undefined }
+
+type BoardQuery = { isPending: boolean; error: { message: string } | null }
+
+function boardState<B>(board: B | undefined, queries: BoardQuery[]): BoardState<B> {
+  if (board) return { kind: 'ready', board }
+  if (queries.some((q) => q.isPending)) return { kind: 'loading' }
+  return { kind: 'unavailable', message: queries.map((q) => q.error?.message).find((m) => m !== undefined) }
+}
+
+/** The full board when it has arrived, else the saved-cards snapshot, settled
+ * into the one state the page renders. */
+function useBoardData() {
   const boardQuery = useTasks()
   const snapshotQuery = useBoardSnapshot(!boardQuery.data)
+  const board = boardQuery.data ?? snapshotQuery.data
+  return { boardQuery, state: boardState(board, [boardQuery, snapshotQuery]), columns: board?.columns ?? [] }
+}
+
+function boardNotice(pending: boolean, state: BoardState<unknown>) {
+  if (!pending && state.kind === 'unavailable') {
+    return <p className="p-4 text-failed-fg">board unavailable: {state.message}</p>
+  }
+  return <p className="p-4 text-ink-muted">loading board…</p>
+}
+
+export function BoardPage() {
+  const { boardQuery, state, columns } = useBoardData()
   const intentsQuery = usePendingIntents()
   const queue = useQueueActions()
   const wontDo = useWontDo()
 
-  const board = boardQuery.data ?? snapshotQuery.data
-  const project = useProjectBoard(board?.columns ?? [])
+  const project = useProjectBoard(columns)
   const views = columnViews(project.columns, queueDegraded(boardQuery.data, queue.queueError), wontDo.propose)
   // Anything occupied stays in the row, so a card can never disappear into
   // the strip.
   const inRow = views.filter((v) => v.count > 0)
   const tabs = useActiveColumn(inRow.map((v) => v.column.key), boardQuery.data !== undefined)
 
-  if (project.pending || (!board && (boardQuery.isPending || snapshotQuery.isPending))) return <p className="p-4 text-ink-muted">loading board…</p>
-  if (!board) {
-    return <p className="p-4 text-failed-fg">board unavailable: {boardQuery.error?.message ?? snapshotQuery.error?.message}</p>
-  }
+  if (project.pending || state.kind !== 'ready') return boardNotice(project.pending, state)
+  const { board } = state
 
   const pendingByKey = pendingIntentsByKey(intentsQuery.data?.intents ?? [])
 
@@ -209,6 +235,7 @@ export function BoardPage() {
   // full width.
   return (
     <div className="flex flex-col gap-4 p-4 md:min-h-0 md:grow md:basis-0 md:pb-0">
+      <UsageBanner />
       {/* Capacity and the next claim are the box's, shared by every project. */}
       <BoardHeader board={board} />
       <div className="flex min-w-0 items-center gap-5">

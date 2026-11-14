@@ -35,6 +35,32 @@ Node 24 is the supported version for local frontend work and the `frontend` and
 `e2e` CI jobs. `frontend/.node-version` gives version managers the major version;
 `frontend/package.json` sets the `>=24` engine floor. CI alone pins pnpm 10.
 
+**Task status**:
+What a task is doing at its stage: `running`, `held`, `parked`, `waking`,
+`failed`, `canceled` or `done`, with a detail (ADR 0014). The stage is the
+pipeline position only and survives a failure. Specified by
+`specs/2026-11-10-task-lifecycle-state-machine/`; until that lands, the code
+still stores park fields.
+_Avoid_: park state, terminal stage
+
+**Held**:
+A status whose session is alive and waits: at the plan gate during the grace
+time, or at a login prompt. It keeps its slot and its capacity unit.
+
+**Waking**:
+A status that waits for admission, capacity and a slot before its next launch.
+It keeps the status it came from, which decides whether the launch continues
+the session, respawns the stage or starts an address-review round.
+
+**Lifecycle event**:
+One thing that happened to a task (a session signal, an operator action, a
+scheduler tick, a PR change), given to `lifecycle.decide` with the facts it
+needs.
+
+**Transition executor**:
+The only code that saves a changed stage or status: it runs a transition's
+actions, saves once, appends one `transition` event, then notifies (ADR 0015).
+
 **Box**:
 The dedicated VPS that runs the dispatcher and all sessions. There is exactly one.
 _Avoid_: server, host, VPS (in prose — "box" everywhere)
@@ -456,6 +482,22 @@ cut-over: each increment is a task whose base it is, and one final PR merges
 it into main. Wayfinder or the operator creates, rebases and merges it; the
 dispatcher never does.
 _Avoid_: feature branch, epic branch
+
+**Stale serve**:
+Returning previously fetched issue descriptions or rank rows after a failed
+`gh` probe. The payload and its original fetch timestamp stay unchanged; a
+rank answer reports `stale=True`.
+
+**Negative cache**:
+A cached cold failure: an issue description with a nonempty `error`, or empty
+rank rows with `stale=True`. It limits repeat `gh` calls until the entry's
+retry window expires.
+
+**Re-probe window**:
+The time after a failed `gh` call finishes during which the console serves
+the cached answer without another `gh` call. Descriptions use 300 seconds
+after a stale serve or 30 seconds after a cold failure; rank rows use 15
+seconds. The payload timestamp still names the earlier fetch.
 
 ## Loop-policy ownership
 

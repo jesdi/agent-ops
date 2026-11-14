@@ -84,6 +84,8 @@ test('at 390px with openai chosen the chip and pace texts fit and do not collide
   await expect(control(page).getByRole('radio', { name: 'OpenAI' })).toBeChecked()
   const chip = page.getByText('first', { exact: true })
   await expect(chip).toHaveCount(1)
+  // The chip moves only once the saved mode comes back; measure after that.
+  await expect(chip.locator('..')).toContainText('openai')
   const paces = page.getByText(/× pace$/)
   expect(await paces.count()).toBe(2)
   // The heading span holds the provider name as a bare text node before the chip.

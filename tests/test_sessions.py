@@ -169,7 +169,7 @@ def test_podman_cmd_mounts_and_caps(tmp_path, monkeypatch):
     (wt / ".git").write_text(f"gitdir: {clone}/.git/worktrees/task-42\n")
     cmd = podman_cmd("pe", 42, str(wt), "2g", "2", "claude-opus-4-8",
                      '"$(cat .agent/prompt-spec.md)"', clone=str(clone), gh_config=TOKENS)
-    assert "podman run --rm -it --name task-pe-42 " in cmd
+    assert "podman run --rm --init -it --name task-pe-42 " in cmd
     assert "--memory 2g --cpus 2" in cmd
     assert f"-v {wt}:{wt}" in cmd
     assert f"-w {wt}" in cmd

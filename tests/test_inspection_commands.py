@@ -156,6 +156,8 @@ def test_implicit_make_draft_cannot_use_a_shadowed_makefile(tmp_path, box, monke
 
 def test_explicit_makefile_draft_bypasses_default_precedence(tmp_path, box, monkeypatch):
     import subprocess
+    for var in ('MAKELEVEL', 'MAKEFLAGS', 'MFLAGS'):  # under `make test` a sub-make prints directory lines
+        monkeypatch.delenv(var, raising=False)
     command = 'make -f Makefile gate'
     rec = draft_for_repository(tmp_path, box, monkeypatch,
         {'Makefile': 'gate:\n\t@printf "verified\\n"\n', 'GNUmakefile': 'other:\n\t@true\n'},

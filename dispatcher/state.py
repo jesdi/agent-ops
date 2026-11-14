@@ -266,6 +266,46 @@ class TaskState:
         return Stage.PLAN if self.stage is Stage.AWAITING_PLAN_REVIEW else self.stage
 
 
+# The doors: park, wake, unpark and end are the only writers of the park fields
+# (park, park_reason, park_note, park_msg_id, ci_run_id, crashed_stage,
+# hold_for_attach, operator_request) besides the claim. Callers compose them
+# with replace() for everything else (slot, updated_at, resume overrides).
+_NOT_PARKED = MappingProxyType({
+    "park": "", "park_reason": "", "park_note": "", "park_msg_id": 0,
+    "ci_run_id": 0, "crashed_stage": "", "hold_for_attach": False,
+    "operator_request": None})
+
+
+def park(t: TaskState, kind: str, *, note: str = "", msg_id: int = 0,
+         reason: str = "", ci_run_id: int = 0,
+         request: "OperatorRequest | None" = None) -> TaskState:
+    """t parked as `kind`: every park field is this park's, so nothing an
+    earlier park or wake left behind survives it. crashed_stage stays."""
+    return replace(t, park=kind, park_note=note, park_msg_id=msg_id,
+                   park_reason=reason, ci_run_id=ci_run_id,
+                   hold_for_attach=False, operator_request=request)
+
+
+def wake(t: TaskState, *, hold: bool = False) -> TaskState:
+    """t woken: the wake is queued (PARK_WAKE) behind admission. The park's
+    question, reason, message, request and crashed stage stay as its origin
+    until the launch; `hold` keeps the session for an attach."""
+    return replace(t, park=PARK_WAKE, ci_run_id=0, hold_for_attach=hold)
+
+
+def unpark(t: TaskState, *, request: "OperatorRequest | None" = None) -> TaskState:
+    """t's session runs: every park field goes, bar the plan-approval
+    `request` a session at the gate is held on."""
+    return replace(t, **{**_NOT_PARKED, "operator_request": request})
+
+
+def end(t: TaskState, stage: Stage, crashed_stage: str = "") -> TaskState:
+    """t ended at the terminal `stage`: a terminal task is never parked and
+    keeps no park field, except the stage a crash failed it out of."""
+    return replace(t, **{**_NOT_PARKED, "crashed_stage": crashed_stage},
+                   stage=stage)
+
+
 def launch_track(t: TaskState, policy: ModelPolicy) -> str:
     """The track whose list t's next launch (next_launch) reads, or "" when
     it has none: the task track. A task with no track (claimed before tracks
@@ -453,6 +493,32 @@ def _migrate_implement_pick(d: dict) -> None:
         picks.setdefault(FEEDBACK_PICK, pick)
 
 
+def _read_terminal(d: dict) -> None:
+    if d["stage"] not in TERMINAL_STAGES:
+        d["terminal_at"] = ""
+        return
+    d["terminal_at"] = d.get("terminal_at") or d.get("done_at") or d["updated_at"]
+
+
+def _ended_on_load(t: TaskState) -> TaskState:
+    """A terminal task is never parked (end); files a closed PR wrote before
+    #316 were, and a reply would wake them into Resuming for good."""
+    return end(t, t.stage, t.crashed_stage) if t.stage in TERMINAL_STAGES else t
+
+
+_OPERATOR_REQUESTS = {"plan-approval": PlanApprovalRequest, "answers": AnswersRequest}
+
+
+def _read_operator_request(raw: dict | None) -> OperatorRequest | None:
+    if raw is None:
+        return None
+    kind = raw.get("kind")
+    if kind not in _OPERATOR_REQUESTS:
+        raise ValueError(f"unrecognized operator_request kind {kind!r}")
+    return _OPERATOR_REQUESTS[kind](path=raw.get("path", ""),
+                                    fingerprint=raw.get("fingerprint", ""))
+
+
 def _read(p: Path) -> TaskState | None:
     if not p.exists():
         return None
@@ -460,31 +526,18 @@ def _read(p: Path) -> TaskState | None:
     if "target" in d:   # files written before the rename
         d["repository"] = d.pop("target")
     d["stage"] = Stage(d["stage"])
-    if d["stage"] in TERMINAL_STAGES:
-        d["terminal_at"] = d.get("terminal_at") or d.get("done_at") or d["updated_at"]
-    else:
-        d["terminal_at"] = ""
+    _read_terminal(d)
     d["labels"] = tuple(d.get("labels", ()))
     d["picks"] = dict(d.get("picks") or {})
     _migrate_implement_pick(d)
     d.pop("pending_reply", None)   # retired field, see original comment
-    if d.get("operator_request") is not None:
-        raw = d["operator_request"]
-        kind = raw.get("kind")
-        if kind == "plan-approval":
-            d["operator_request"] = PlanApprovalRequest(
-                path=raw.get("path", ""), fingerprint=raw.get("fingerprint", ""))
-        elif kind == "answers":
-            d["operator_request"] = AnswersRequest(
-                path=raw.get("path", ""), fingerprint=raw.get("fingerprint", ""))
-        else:
-            raise ValueError(f"unrecognized operator_request kind {kind!r}")
+    d["operator_request"] = _read_operator_request(d.get("operator_request"))
     d.pop("artifact", None)        # retired field (slice 24)
     # Retired fields: one implement session, no cursor and no ticket tracks.
     for retired in ("ticket_cursor", "ticket_tracks", "ticket_names",
                     "ticket_without_pick"):
         d.pop(retired, None)
-    return TaskState(**d)
+    return _ended_on_load(TaskState(**d))
 
 
 def load(state_dir: str | Path, repository: str, issue: int) -> TaskState | None:
