@@ -206,6 +206,20 @@ def test_an_archived_snapshot_is_rewritten_and_still_loads(tmp_path):
     assert (archived.stage, archived.status) == (S.PR_OPEN, Status(Kind.DONE))
 
 
+def test_the_console_page_of_a_migrated_finished_task_loads(tmp_path):
+    from fastapi.testclient import TestClient
+    from tests.webfakes import HEADERS, FakeSources, make_config, make_repository
+    from web.app import create_app
+    root = state.archive_root(tmp_path, "portfolio_eval", 363)
+    write(root, legacy_file("done", pr_number=88), name="task.json")
+    migrate_state_dir(tmp_path)
+    app = create_app(make_config(tmp_path, [make_repository("portfolio_eval", "jesdi/pe")]),
+                     FakeSources(tmp_path))
+    response = TestClient(app).get("/api/task/portfolio_eval/363", headers=HEADERS)
+    assert response.status_code == 200
+    assert response.json()["card"]["issue"] == 363
+
+
 @pytest.mark.skipif(not BOX_TASKS.is_dir(), reason="no box task files copied")
 def test_every_box_task_file_is_classified(tmp_path):
     for p in BOX_TASKS.glob("task-*.json"):
