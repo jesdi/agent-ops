@@ -331,28 +331,11 @@ def _terminal_at(previous: TaskState | None, ts: TaskState) -> str:
             else ts.updated_at)
 
 
-# The stages a status kind, or a waking cause, can be at; any stage when
-# not named.
-_KIND_STAGES = {Kind.HELD_PLAN_APPROVAL: {Stage.PLAN}, Kind.PARKED_REVIEW: {Stage.PLAN},
-                Kind.PARKED_PR: {Stage.PR_OPEN}}
-_CAUSE_STAGES = {Cause.LAUNCH: {Stage.QUEUED}, Cause.NEXT_STAGE: {Stage.REVIEW}}
-
-
 def _check(stage: Stage, status: Status) -> None:
-    """Raise ValueError for a status the table cannot leave: a broken
-    detail (statuses.problem), or a kind or a wake at a stage it is never
-    at. A waking task's origin is checked at its stage too."""
-    problem = statuses.problem(status) or _stage_problem(stage, status)
+    """Raise ValueError for a status the table cannot leave (statuses.problem)."""
+    problem = statuses.problem(stage, status)
     if problem:
         raise ValueError(f"{problem} at {stage.value}")
-
-
-def _stage_problem(stage: Stage, status: Status) -> str:
-    if stage not in _KIND_STAGES.get(status.kind, (stage,)):
-        return status.kind.value
-    if stage not in _CAUSE_STAGES.get(status.cause, (stage,)):
-        return f"waking({status.cause.value})"
-    return _stage_problem(stage, status.origin) if status.origin else ""
 
 
 def _retire_legacy(state_dir: str | Path, repository: str, issue: int) -> None:

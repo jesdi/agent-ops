@@ -152,12 +152,32 @@ def _loaded(kind: Kind, key: str, value: object) -> object:
 
 # ---- What a save refuses ----------------------------------------------------
 
-def problem(status: Status) -> str:
-    """Why `status` breaks a constraint of its kind's detail; "" when it
-    keeps them all."""
+def problem(stage: str, status: Status) -> str:
+    """Why `status` at `stage` breaks a constraint of design.md's Data model:
+    a broken detail, or a kind or a wake at a stage it is never at. A waking
+    task's origin is checked at its stage too. "" when it keeps them all."""
+    return _detail_problem(status) or _stage_problem(stage, status)
+
+
+def _detail_problem(status: Status) -> str:
     return (_reason_problem(status) or _page_problem(status)
             or _run_problem(status)
             or (_waking_problem(status) if status.kind is Kind.WAKING else ""))
+
+
+# The stages (by value: Stage lives in state.py, which imports this module) a
+# status kind, or a waking cause, can be at; any stage when not named.
+_KIND_STAGES = {Kind.HELD_PLAN_APPROVAL: {"plan"}, Kind.PARKED_REVIEW: {"plan"},
+                Kind.PARKED_PR: {"pr-open"}}
+_CAUSE_STAGES = {Cause.LAUNCH: {"queued"}, Cause.NEXT_STAGE: {"review"}}
+
+
+def _stage_problem(stage: str, status: Status) -> str:
+    if stage not in _KIND_STAGES.get(status.kind, (stage,)):
+        return status.kind.value
+    if stage not in _CAUSE_STAGES.get(status.cause, (stage,)):
+        return f"waking({status.cause.value})"
+    return _stage_problem(stage, status.origin) if status.origin else ""
 
 
 def _reason_problem(status: Status) -> str:
@@ -168,6 +188,8 @@ def _reason_problem(status: Status) -> str:
 
 
 def _page_problem(status: Status) -> str:
+    # The fingerprint may be empty on purpose: a rework session that dies at the
+    # gate with no rounds left parks parked(review(page, "")), so no approve.
     kind = status.kind
     if kind in (Kind.HELD_PLAN_APPROVAL, Kind.PARKED_REVIEW, Kind.PARKED_ANSWERS) \
             and not status.path:
@@ -193,4 +215,4 @@ def _waking_problem(status: Status) -> str:
         return f"waking({status.cause.value}) from {status.origin!r}"
     if status.origin is not None and status.origin.kind in _NO_ORIGIN:
         return f"waking from {status.origin.kind.value}"
-    return problem(status.origin) if status.origin is not None else ""
+    return _detail_problem(status.origin) if status.origin is not None else ""
