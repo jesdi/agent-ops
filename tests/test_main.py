@@ -3710,6 +3710,23 @@ def test_prune_snapshots_corrupt_state_file_does_not_abort_sweep(tmp_path, monke
     assert not (snaps / "task-51.txt").exists()
 
 
+def test_prune_snapshots_skips_the_sweep_when_state_cannot_be_read(tmp_path, monkeypatch):
+    c = cfg(tmp_path)
+    snaps = Path(c.state_dir) / "snapshots"
+    snaps.mkdir(parents=True)
+    old = time.time() - 8 * 24 * 3600
+    (snaps / "task-52.txt").write_text("maybe still in flight")
+    os.utime(snaps / "task-52.txt", (old, old))
+
+    def unreadable(_state_dir):
+        raise OSError("state dir unreadable")
+    monkeypatch.setattr(main, "load_all", unreadable)
+
+    main._prune_snapshots(c)
+
+    assert (snaps / "task-52.txt").exists()
+
+
 # ---------------------------------------------------------------------------
 # PR lifecycle tests (Task 8)
 # ---------------------------------------------------------------------------
