@@ -1,14 +1,19 @@
 """A task file written before the status was stored (#132): the table of
 the scenario "migration command rewrites each legacy shape", which reads such
 a file as (stage, status). The `agent-ops migrate-tasks` command applies it
-to every task file; like the command, it is deleted after the deploy
-(ADR 0004)."""
+to every task file, and the dispatcher refuses to start until it has run.
+All of it is deleted after the deploy (ADR 0004): this module, its tests,
+and the one call to it in each of main.py and onboard_cli.py."""
 from __future__ import annotations
 
+import argparse
+import contextlib
 import json
+import sys
 from pathlib import Path
 
-from dispatcher import state
+from dispatcher import config, state
+from dispatcher.convergence import pass_lock
 from dispatcher.models import IMPLEMENT_PICK
 from dispatcher.state import Stage
 from dispatcher.status import Cause, FailReason, HumanReason, Kind, Status, to_json
@@ -174,7 +179,9 @@ def migrate_state_dir(state_dir: str | Path) -> list[Path]:
     one killed midway, writes only what is still legacy."""
     plan = _plan(Path(state_dir))
     for p, task in plan:
-        state.save_in_place(p, task)
+        # In place: a legacy twin or an archived snapshot is not moved to
+        # the task's own path, as a save would.
+        state.write_task(p, task)
     return [p for p, _ in plan]
 
 
@@ -187,18 +194,12 @@ def pending(state_dir: str | Path) -> list[Path]:
 
 
 def _plan(root: Path) -> list[tuple[Path, state.TaskState]]:
-    return [(p, task) for p in _task_files(root) if (task := _planned(p)) is not None]
+    return [(p, task) for p in state.task_files(root, archived=True) if (task := _planned(p)) is not None]
 
 
 def _legacy(d: object) -> bool:
     """The one shape check: a task written before the status has none."""
     return isinstance(d, dict) and "status" not in d
-
-
-def _task_files(root: Path) -> list[Path]:
-    """The task files, a legacy `task-<issue>.json` twin among them, and
-    the archived snapshots."""
-    return sorted(root.glob("task-*.json")) + sorted(root.glob("artifacts/*/task.json"))
 
 
 def _planned(p: Path) -> state.TaskState | None:
@@ -217,3 +218,50 @@ def _planned(p: Path) -> state.TaskState | None:
 def _converted(d: dict) -> state.TaskState:
     stage, status = legacy_status(d)
     return state.from_dict({**d, "stage": stage.value, "status": to_json(status)})
+
+
+# ---- The dispatcher's start guard -------------------------------------------
+
+def refuse_legacy_task_files(state_dir: str, args: argparse.Namespace) -> None:
+    """Exit before a dispatcher mode reads task state, changing nothing,
+    while a task file is still in the legacy shape or cannot be read at
+    all: the mode would leave it out of its tasks unseen. --triage only
+    enqueues a request and reads no task. --migrate-tmux reads them, but
+    the updater runs it before migrate-tasks, so refusing it would fail the
+    deploy; it leaves a legacy file out (state.scan) and unchanged."""
+    if args.triage or args.migrate_tmux:
+        return
+    try:
+        legacy = pending(state_dir)
+    except MigrationError as e:
+        raise SystemExit(f"cannot read task file {e}; fix or remove it") from e
+    if legacy:
+        raise SystemExit(f"task file(s) in the legacy shape: "
+                         f"{', '.join(p.name for p in legacy)}; run `agent-ops migrate-tasks`")
+
+
+# ---- `agent-ops migrate-tasks` ----------------------------------------------
+
+def add_command(nouns: argparse._SubParsersAction) -> None:
+    """Register `agent-ops migrate-tasks`; its `run` takes the state dir."""
+    cmd = nouns.add_parser("migrate-tasks", help="rewrite every legacy task file to (stage, status)")
+    cmd.add_argument("--lock-held", action="store_true",
+                     help="the caller holds the pass lock (provision/update.sh): take none")
+    cmd.add_argument("--config", default=config.default_config_path())
+    cmd.set_defaults(run=lambda state_dir, args: _migrate_tasks(state_dir, args.lock_held))
+
+
+def _migrate_tasks(state_dir: str, lock_held: bool) -> int:
+    """Rewrite the legacy task files under the pass lock, taken without
+    waiting unless the caller already holds it."""
+    try:
+        with contextlib.nullcontext() if lock_held else pass_lock(state_dir, timeout=0):
+            rewritten = migrate_state_dir(state_dir)
+    except TimeoutError:
+        print("dispatcher is running: a pass holds the lock; nothing changed", file=sys.stderr)
+        return 1
+    except MigrationError as e:
+        print(f"cannot migrate {e.path}, nothing changed: {e}", file=sys.stderr)
+        return 1
+    print(f"rewrote {len(rewritten)} task file(s)")
+    return 0

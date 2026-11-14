@@ -3417,19 +3417,6 @@ def _enqueue_triage(cfg: Config) -> None:
         print("triage already pending or running; not enqueued")
 
 
-def _refuse_legacy_task_files(state_dir: str) -> None:
-    """Exit before any mode reads task state, changing nothing, while a
-    task file is still in the legacy shape or cannot be read at all: the
-    mode would leave it out of its tasks unseen."""
-    try:
-        legacy = migrate.pending(state_dir)
-    except migrate.MigrationError as e:
-        raise SystemExit(f"cannot read task file {e}; fix or remove it") from e
-    if legacy:
-        raise SystemExit(f"task file(s) in the legacy shape: "
-                         f"{', '.join(p.name for p in legacy)}; run `agent-ops migrate-tasks`")
-
-
 def _deps(cfg: Config, dry_run: bool) -> Deps:
     return Deps(github=GitHubClient(dry_run=dry_run), app=github_app.Client(),
                 sessions=Sessions(dry_run=dry_run, memory=cfg.session_memory,
@@ -3462,17 +3449,8 @@ def main() -> None:
     boot, cfg = _load(args.config)
     _warn_unadapted(cfg)
     deps = _deps(cfg, args.dry_run)
-    if _reads_task_state(args):
-        _refuse_legacy_task_files(cfg.state_dir)
+    migrate.refuse_legacy_task_files(cfg.state_dir, args)
     _run_mode(args, boot, cfg, deps)
-
-
-def _reads_task_state(args: argparse.Namespace) -> bool:
-    """Whether the mode must wait for every task file to be readable in
-    the new shape. --triage only enqueues a request and reads no task.
-    --migrate-tmux reads them, but the updater runs it before migrate-tasks,
-    so refusing it would fail the deploy. Every other mode reads them all."""
-    return not (args.triage or args.migrate_tmux)
 
 
 def _run_mode(args: argparse.Namespace, boot: Config, cfg: Config, deps: Deps) -> None:

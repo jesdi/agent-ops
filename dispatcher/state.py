@@ -314,16 +314,9 @@ def save(state_dir: str | Path, ts: TaskState) -> None:
     terminal_at is stamped at the first ended status."""
     ts = validated(ts)
     ts = replace(ts, terminal_at=_terminal_at(_previous(state_dir, ts), ts))
-    _write_task(_path(state_dir, ts.repository, ts.issue), ts)
+    write_task(_path(state_dir, ts.repository, ts.issue), ts)
     # Lazy migration: the first save under the new key retires the legacy twin.
     _retire_legacy(state_dir, ts.repository, ts.issue)
-
-
-def save_in_place(p: Path, ts: TaskState) -> None:
-    """Write `ts` over the task file `p` itself, validated as save does: the
-    migration's writer, which must not move a legacy twin or an archived
-    snapshot to the task's own path."""
-    _write_task(p, validated(ts))
 
 
 def validated(ts: TaskState) -> TaskState:
@@ -420,7 +413,8 @@ def write_json_atomic(path: Path, doc: dict, *, indent: int | None = None,
     write_atomic(path, json.dumps(doc, indent=indent, sort_keys=sort_keys))
 
 
-def _write_task(p: Path, ts: TaskState) -> None:
+def write_task(p: Path, ts: TaskState) -> None:
+    """Write `ts` to the task file `p` as it stands: no check, no key."""
     d = asdict(ts)
     d["stage"] = ts.stage.value
     d["status"] = statuses.to_json(ts.status)
@@ -514,11 +508,8 @@ def scan(state_dir: str | Path) -> tuple[list[TaskState], list[Path]]:
     task's state to stay visible. It is named, so a claim can refuse to run
     while a task it cannot see may hold an issue and a slot. A
     directly-addressed file (load()) still raises."""
-    root = Path(state_dir)
-    if not root.exists():
-        return [], []
     tasks, unreadable = [], []
-    for p in root.glob("task-*.json"):
+    for p in task_files(state_dir):
         try:
             ts = _read(p)
         except FileNotFoundError:
@@ -530,6 +521,16 @@ def scan(state_dir: str | Path) -> tuple[list[TaskState], list[Path]]:
         if ts is not None:
             tasks.append(ts)
     return sorted(tasks, key=lambda t: (t.repository, t.issue)), sorted(unreadable)
+
+
+def task_files(state_dir: str | Path, *, archived: bool = False) -> list[Path]:
+    """The top-level task files, a legacy `task-<issue>.json` twin among
+    them, then the archived snapshots when `archived`. A snapshot repeats
+    an ended task that may still have its own file, so a scan of the live
+    tasks leaves them out."""
+    root = Path(state_dir)
+    files = sorted(root.glob("task-*.json"))
+    return files + sorted(root.glob(f"{ARCHIVE_DIR}/*/{SNAPSHOT}")) if archived else files
 
 
 def delete(state_dir: str | Path, repository: str, issue: int) -> None:
@@ -739,17 +740,22 @@ def clear_turn_markers(state_dir: str | Path, repository: str, issue: int) -> No
     _background_path(state_dir, repository, issue).unlink(missing_ok=True)
 
 
+# An ended task's archive: artifacts/<key>/, its snapshot task.json in it.
+ARCHIVE_DIR = "artifacts"
+SNAPSHOT = "task.json"
+
+
 def archive_root(state_dir: str | Path, repository: str, issue: int) -> Path:
     """Task archive namespace, shared by its snapshot and retained artifacts."""
     key = hashlib.sha256(f"{repository}\0{issue}".encode()).hexdigest()
-    return Path(state_dir) / "artifacts" / key
+    return Path(state_dir) / ARCHIVE_DIR / key
 
 
 def archive(state_dir: str | Path, task: TaskState) -> None:
     if ended(task.status):
-        _write_task(archive_root(state_dir, task.repository, task.issue) / "task.json", task)
+        write_task(archive_root(state_dir, task.repository, task.issue) / SNAPSHOT, task)
 
 
 def load_archived(state_dir: str | Path, repository: str, issue: int) -> TaskState | None:
-    task = _read(archive_root(state_dir, repository, issue) / "task.json")
+    task = _read(archive_root(state_dir, repository, issue) / SNAPSHOT)
     return task if task and ended(task.status) else None
