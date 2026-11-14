@@ -385,25 +385,30 @@ def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
 
 
 def _status_lines(cfg: Config) -> list[str]:
-    by_name = {t.name: t for t in cfg.repositories}
+    repositories = _repositories_by_name(cfg)
     tasks = [t for t in load_all(cfg.state_dir) if _in_flight(t)]
-    lines = []
-    for t in tasks:
-        model = _display_entry(cfg, by_name.get(t.repository), t)
-        slot = "(no slot)" if t.slot == NO_SLOT else f"(slot {t.slot})"
-        kind = t.status.kind
-        lines.append(f"{_ref(cfg, t)} {t.title} — {t.stage.value} [{model}]"
-                     + (f" [{kind.value}]" if kind is not Kind.RUNNING else "") + f" {slot}")
-    lines = lines or ["(nothing in flight)"]
+    lines = ([_status_line(cfg, repositories.get(t.repository), t) for t in tasks]
+             or ["(nothing in flight)"])
+    return lines + _capacity_lines(cfg, tasks)
+
+
+def _status_line(cfg: Config, repository: Repository | None, t: TaskState) -> str:
+    """One in-flight task: ref, title, stage, model, a non-running kind, slot."""
+    model = _display_entry(cfg, repository, t)
+    slot = "(no slot)" if t.slot == NO_SLOT else f"(slot {t.slot})"
+    kind = t.status.kind
+    return (f"{_ref(cfg, t)} {t.title} — {t.stage.value} [{model}]"
+            + (f" [{kind.value}]" if kind is not Kind.RUNNING else "") + f" {slot}")
+
+
+def _capacity_lines(cfg: Config, tasks: list[TaskState]) -> list[str]:
     # The sweep holds a real capacity unit that occupies() cannot see (its work
     # is a herdr tab, not a TaskState) — _run_pass reduces effective
     # capacity for it, so status must count it too or it reports 1/2 on a full
     # box for as long as the sweep runs.
     held = 1 if triage.running() else 0
-    if held:
-        lines.append("triage sweep running (holds 1 slot)")
-    lines.append(f"capacity {sum(occupies(t.status) for t in tasks) + held}/{cfg.capacity}")
-    return lines
+    lines = ["triage sweep running (holds 1 slot)"] if held else []
+    return lines + [f"capacity {sum(occupies(t.status) for t in tasks) + held}/{cfg.capacity}"]
 
 
 def _in_flight(t: TaskState) -> bool:
@@ -574,12 +579,16 @@ def _handle_attach(cfg: Config, deps: Deps, tasks: list[TaskState],
     match = [t for t in tasks if t.issue == issue and _parked(t)]
     if len(match) == 1:
         _wake(cfg, match[0], "", hold=True)
-    elif match:
-        deps.notifier.send("status", lines=(
-            [f"#{issue} is ambiguous; parked tasks with that number:"]
-            + [_ref(cfg, t) for t in match]))
     else:
-        deps.notifier.send("status", lines=[f"#{issue} is not parked"])
+        deps.notifier.send("status", lines=_unattached_lines(cfg, issue, match))
+
+
+def _unattached_lines(cfg: Config, issue: int, match: list[TaskState]) -> list[str]:
+    """Why /attach woke nothing: several parked tasks share the number, or none."""
+    if not match:
+        return [f"#{issue} is not parked"]
+    return ([f"#{issue} is ambiguous; parked tasks with that number:"]
+            + [_ref(cfg, t) for t in match])
 
 
 def _handle_board_command(cfg: Config, deps: Deps, ev: Command) -> None:
@@ -598,10 +607,8 @@ def _handle_board_command(cfg: Config, deps: Deps, ev: Command) -> None:
 
 def _handle_reply(cfg: Config, deps: Deps, tasks: list[TaskState],
                   ev: Reply) -> None:
-    login = [t for t in tasks
-             if t.status.kind is Kind.HELD_LOGIN and t.park_msg_id == ev.reply_to_msg_id]
-    match = [t for t in _reply_parked(tasks)
-             if t.park_msg_id == ev.reply_to_msg_id]
+    login = _replied_to(_held_login(tasks), ev)
+    match = _replied_to(_reply_parked(tasks), ev)
     if login:
         _inject_login_code(cfg, deps, login[0], ev.text)
     elif match:
@@ -609,6 +616,15 @@ def _handle_reply(cfg: Config, deps: Deps, tasks: list[TaskState],
     else:
         deps.notifier.send("status",
                            lines=["(reply didn't match any parked task)"])
+
+
+def _held_login(tasks: list[TaskState]) -> list[TaskState]:
+    return [t for t in tasks if t.status.kind is Kind.HELD_LOGIN]
+
+
+def _replied_to(tasks: list[TaskState], ev: Reply) -> list[TaskState]:
+    """The tasks whose parked message `ev` replies to."""
+    return [t for t in tasks if t.park_msg_id == ev.reply_to_msg_id]
 
 
 def _handle_plain(cfg: Config, deps: Deps, reply_parked: list[TaskState],
@@ -1168,14 +1184,32 @@ def _poll_pr(cfg: Config, deps: Deps, repository: Repository, task: TaskState
              ) -> "tuple[TaskState, pr_poll.PollResult] | None":
     """One pr-open task's PR, classified; None when it has no PR yet.
     Resolves and saves the PR number on first sight."""
-    if not task.pr_number:
-        n = deps.github.pr_number_for_branch(repository, task.branch)
-        if not n:
-            print(f"[warn] #{task.issue}: no PR found for branch "
-                  f"{task.branch}", file=sys.stderr)
-            return None
-        task = replace(task, pr_number=n, updated_at=_now())
-        save(cfg.state_dir, task)
+    numbered = _with_pr_number(cfg, deps, repository, task)
+    if numbered is None:
+        return None
+    return numbered, _classify_pr(deps, repository, numbered)
+
+
+def _with_pr_number(cfg: Config, deps: Deps, repository: Repository,
+                    task: TaskState) -> TaskState | None:
+    """`task` with its PR number, resolved and saved on first sight; None
+    while its branch has no PR."""
+    if task.pr_number:
+        return task
+    n = deps.github.pr_number_for_branch(repository, task.branch)
+    if not n:
+        print(f"[warn] #{task.issue}: no PR found for branch "
+              f"{task.branch}", file=sys.stderr)
+        return None
+    task = replace(task, pr_number=n, updated_at=_now())
+    save(cfg.state_dir, task)
+    return task
+
+
+def _classify_pr(deps: Deps, repository: Repository, task: TaskState
+                 ) -> "pr_poll.PollResult":
+    """The PR's state; a parked task's quiet or conflicted PR is classified
+    again with its CI statuses."""
     payload = deps.github.pr_view(repository, task.pr_number)
     login = deps.github.viewer_login()
     res = pr_poll.classify(payload, task.feedback_cursor, login,
@@ -1189,7 +1223,7 @@ def _poll_pr(cfg: Config, deps: Deps, repository: Repository, task: TaskState
                                check_cursor=task.check_cursor,
                                conflict_cursor=task.conflict_cursor,
                                ci_statuses=statuses)
-    return task, res
+    return res
 
 
 def _poll_prs(cfg: Config, deps: Deps, repository: Repository,
@@ -2788,11 +2822,14 @@ def _apply_reply_intent(cfg: Config, deps: Deps, task: TaskState | None,
     """Deliver a reply, or inject it when a login prompt owns the pane."""
     if task is not None and task.status.kind is Kind.HELD_LOGIN:
         _inject_login_code(cfg, deps, task, intent.payload.get("text", ""))
-        return
-    # A legacy intent (repository "") names its project only through its task,
-    # or through the sole configured repository; otherwise it is not guessed at.
-    repository = (intent.repository or (task.repository if task is not None else "")
-                  or (cfg.repositories[0].name if len(cfg.repositories) == 1 else ""))
+    else:
+        _deliver_reply(cfg, deps, task, intent)
+
+
+def _deliver_reply(cfg: Config, deps: Deps, task: TaskState | None,
+                   intent: intents.Intent) -> None:
+    """Queue the reply for its task's session and wake a task waiting for it."""
+    repository = _reply_repository(cfg, task, intent)
     if not repository:
         print(f"[warn] reply for #{intent.issue} dropped: legacy intent "
               f"names no repository", file=sys.stderr)
@@ -2801,6 +2838,15 @@ def _apply_reply_intent(cfg: Config, deps: Deps, task: TaskState | None,
                    intent.actor or "operator")
     if task is not None:
         _wake_for_queued_message(cfg, deps, task)
+
+
+def _reply_repository(cfg: Config, task: TaskState | None,
+                      intent: intents.Intent) -> str:
+    """The reply's repository. A legacy intent (repository "") names its
+    project only through its task, or through the sole configured repository;
+    otherwise it is not guessed at ("")."""
+    return (intent.repository or (task.repository if task is not None else "")
+            or (cfg.repositories[0].name if len(cfg.repositories) == 1 else ""))
 
 
 def _wake_for_queued_message(cfg: Config, deps: Deps, task: TaskState) -> None:
