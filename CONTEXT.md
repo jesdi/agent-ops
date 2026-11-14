@@ -118,6 +118,17 @@ One `podman run … claude` invocation in a herdr tab, working a single stage of
 one task. Sessions are disposable; state lives in artifacts and claude-home.
 _Avoid_: agent (that's the OS user), container (that's the isolation layer only)
 
+**Setup container**:
+The one-shot provisioning container named `task-<repository>-<issue>-setup`.
+It runs the repository's setup command before the session starts. Its resource
+usage remains uncapped; its lifetime is bounded by podman and host-side timeout
+cleanup (ADRs 0017–0022).
+
+**Provisioning timeout**:
+The fixed 1800-second `containers.SETUP_TIMEOUT` shared by the setup container's
+`--timeout` option and the host setup call. Timeout cleanup gets a separate
+60-second limit and preserves the original failure and partial setup log.
+
 **Stage**:
 One step of a task's lifecycle (spec → plan → implement → review → pr-open →
 address-review), each executed by a fresh session whose
