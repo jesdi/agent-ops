@@ -18,8 +18,8 @@ def _load_session_task(state_dir, repository: str, issue: int):
     try:
         return load(state_dir, repository, issue)
     except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError) as exc:
-        # TaskState's loader calls .get on operator_request; malformed nested
-        # data (for example, []) raises AttributeError instead of TypeError.
+        # Malformed nested data (a status detail that is a list) may raise
+        # AttributeError instead of TypeError.
         print(f"waitd: cannot read task {repository}#{issue} for session recording: {exc}",
               file=sys.stderr)
         return None
@@ -35,7 +35,7 @@ def _record_session(rec: dict, state_dir, repository: str, issue: int,
         return
     try:
         write_session(state_dir, repository, issue,
-                      SessionRecord(session_id, task.continued_stage.value))
+                      SessionRecord(session_id, task.stage.value))
     except OSError as exc:
         print(f"waitd: cannot record session for {repository}#{issue}: {exc}", file=sys.stderr)
 

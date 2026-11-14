@@ -7,7 +7,8 @@ interface the box must call to close an issue (any positional/keyword shape).
 import subprocess
 
 import dispatcher.main as main
-from dispatcher.state import Stage, load
+from dispatcher.state import load
+from dispatcher.status import Kind
 from tests.test_main import (FakeGitHub, deps, cfg, patch_teardown,
                              patch_usage, payload, pr_open_task)
 
@@ -41,8 +42,8 @@ def _setup(tmp_path, monkeypatch, issue, pr, states):
     return c, t, gh, removed
 
 
-def _stage(c, issue):
-    return load(c.state_dir, "portfolio_eval", issue).stage
+def _kind(c, issue):
+    return load(c.state_dir, "portfolio_eval", issue).status.kind
 
 
 def test_merged_pr_closes_the_open_issue_and_finishes_the_task(
@@ -52,7 +53,7 @@ def test_merged_pr_closes_the_open_issue_and_finishes_the_task(
     main.run_pass(c, deps(gh))
     assert gh.issue_states[(REPO, 42)] == "CLOSED"
     assert gh.close_calls == [(REPO, 42)]
-    assert _stage(c, 42) is Stage.DONE
+    assert _kind(c, 42) is Kind.DONE
 
 
 def test_merged_pr_leaves_an_already_closed_issue_alone(tmp_path, monkeypatch):
@@ -61,7 +62,7 @@ def test_merged_pr_leaves_an_already_closed_issue_alone(tmp_path, monkeypatch):
     main.run_pass(c, deps(gh))
     assert gh.close_calls == []
     assert [i for i, _ in gh.comments] == []
-    assert _stage(c, 43) is Stage.DONE
+    assert _kind(c, 43) is Kind.DONE
 
 
 def test_failed_close_keeps_the_task_and_worktree_until_the_next_pass(
@@ -70,13 +71,13 @@ def test_failed_close_keeps_the_task_and_worktree_until_the_next_pass(
                                {(REPO, 42): "OPEN"})
     gh.close_raises = True
     main.run_pass(c, deps(gh))
-    assert _stage(c, 42) is Stage.PR_OPEN
+    assert _kind(c, 42) is Kind.PARKED_PR
     assert removed == []
     assert gh.deleted_branches == []
     gh.close_raises = False
     main.run_pass(c, deps(gh))
     assert gh.issue_states[(REPO, 42)] == "CLOSED"
-    assert _stage(c, 42) is Stage.DONE
+    assert _kind(c, 42) is Kind.DONE
     assert removed == [(t.worktree, t.branch, False)]
 
 

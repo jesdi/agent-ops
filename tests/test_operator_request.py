@@ -7,14 +7,15 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from dispatcher.state import load
+from dispatcher.state import (load)
 from tests.webfakes import HEADERS, make_config
 from web.app import create_app
 from web.sources import Sources
 
 
-@pytest.mark.parametrize("park", ["", "awaiting-review"], ids=["live-gate", "parked-gate"])
-def test_plan_gate_exposes_the_review_page_as_an_approval_request(tmp_path, park):
+@pytest.mark.parametrize("kind", ["held-plan-approval", "parked-review"],
+                         ids=["live-gate", "parked-gate"])
+def test_plan_gate_exposes_the_review_page_as_an_approval_request(tmp_path, kind):
     cfg = make_config(tmp_path)
     wt = tmp_path / "worktree"
     spec = wt / "specs" / "2026-10-12-login" / "spec.md"
@@ -24,13 +25,13 @@ def test_plan_gate_exposes_the_review_page_as_an_approval_request(tmp_path, park
     agent_dir.mkdir()
     (agent_dir / "review.html").write_text('<meta name="agent-ops-review" content="1">## Tickets')
     (tmp_path / "task-alpha-7.json").write_text(json.dumps({
-        "issue": 7, "repository": "alpha", "stage": "awaiting-plan-review",
-        "slot": -1 if park else 0, "worktree": str(wt),
+        "issue": 7, "repository": "alpha", "stage": "plan",
+        "slot": 0 if kind == "held-plan-approval" else -1, "worktree": str(wt),
         "branch": "agent/task-7", "title": "Fix login redirect",
         "updated_at": "2026-09-08T10:00:00+00:00",
-        "park": park, "spec_path": "specs/2026-10-12-login/spec.md",
-        "operator_request": {"kind": "plan-approval",
-                             "path": ".agent/review.html", "fingerprint": "fp"},
+        "spec_path": "specs/2026-10-12-login/spec.md",
+        "status": {"kind": kind, "detail": {"page": ".agent/review.html",
+                                            "fingerprint": "fp"}},
     }))
     # This read requires neither a running session nor a GitHub request.
     sources = Sources(cfg.state_dir, sessions=None, github=None)
@@ -63,10 +64,9 @@ def test_answers_request_serves_readable_content(tmp_path):
         "slot": -1, "worktree": str(wt),
         "branch": "agent/task-11", "title": "Questionnaire task",
         "updated_at": "2026-09-08T10:00:00+00:00",
-        "park": "parked",
         "artifact": str(qa_file),
-        "operator_request": {"kind": "answers", "path": ".agent/questionnaire.md",
-                             "fingerprint": "fp"},
+        "status": {"kind": "parked-answers",
+                   "detail": {"path": ".agent/questionnaire.md", "fingerprint": "fp"}},
     }))
     sources = Sources(cfg.state_dir, sessions=None, github=None)
     with TestClient(create_app(cfg, sources)) as client:
@@ -87,7 +87,7 @@ def test_answers_request_serves_readable_content(tmp_path):
 
 
 def test_unknown_operator_request_kind_rejected_at_load(tmp_path):
-    """M2 (contract changed): a corrupt/unknown kind in operator_request is rejected at the
+    """M2 (contract changed): a corrupt/unknown status kind is rejected at the
     load seam — fail-safe at the boundary — not served as a 500 at request time.
     load() raises ValueError; load_all() skips the file so the task is absent from Sources → 404."""
     cfg = make_config(tmp_path)
@@ -98,11 +98,10 @@ def test_unknown_operator_request_kind_rejected_at_load(tmp_path):
         "slot": -1, "worktree": str(wt),
         "branch": "agent/task-12", "title": "Unknown kind task",
         "updated_at": "2026-09-08T10:00:00+00:00",
-        "park": "parked",
-        "operator_request": {"kind": "totally-unknown"},
+        "status": {"kind": "totally-unknown", "detail": {}},
     }))
     # Direct load raises at the seam
-    with pytest.raises(ValueError, match="unrecognized"):
+    with pytest.raises(ValueError, match="totally-unknown"):
         load(tmp_path, "alpha", 12)
     # Web layer: load_all skips the corrupt record → task is not visible → 404
     sources = Sources(cfg.state_dir, sessions=None, github=None)
@@ -117,13 +116,12 @@ def test_plan_approval_missing_file_returns_200_unavailable(tmp_path):
     wt = tmp_path / "worktree"
     wt.mkdir()
     (tmp_path / "task-alpha-20.json").write_text(json.dumps({
-        "issue": 20, "repository": "alpha", "stage": "awaiting-plan-review",
+        "issue": 20, "repository": "alpha", "stage": "plan",
         "slot": -1, "worktree": str(wt),
         "branch": "agent/task-20", "title": "Missing summary task",
         "updated_at": "2026-09-08T10:00:00+00:00",
-        "park": "awaiting-review",
-        "operator_request": {"kind": "plan-approval",
-                             "path": ".agent/review.html", "fingerprint": "fp"},
+        "status": {"kind": "parked-review",
+                   "detail": {"page": ".agent/review.html", "fingerprint": "fp"}},
     }))
     sources = Sources(cfg.state_dir, sessions=None, github=None)
     with TestClient(create_app(cfg, sources)) as client:
@@ -146,9 +144,8 @@ def test_answers_missing_file_returns_200_unavailable(tmp_path):
         "slot": -1, "worktree": str(wt),
         "branch": "agent/task-21", "title": "Missing answers task",
         "updated_at": "2026-09-08T10:00:00+00:00",
-        "park": "parked",
-        "operator_request": {"kind": "answers", "path": ".agent/gone.md",
-                             "fingerprint": "fp"},
+        "status": {"kind": "parked-answers",
+                   "detail": {"path": ".agent/gone.md", "fingerprint": "fp"}},
     }))
     # .agent/gone.md is never created — the file doesn't exist
     sources = Sources(cfg.state_dir, sessions=None, github=None)
@@ -175,9 +172,8 @@ def test_answers_non_utf8_file_returns_200_unavailable(tmp_path):
         "slot": -1, "worktree": str(wt),
         "branch": "agent/task-22", "title": "Non-UTF8 answers task",
         "updated_at": "2026-09-08T10:00:00+00:00",
-        "park": "parked",
-        "operator_request": {"kind": "answers", "path": ".agent/bad.md",
-                             "fingerprint": "fp"},
+        "status": {"kind": "parked-answers",
+                   "detail": {"path": ".agent/bad.md", "fingerprint": "fp"}},
     }))
     sources = Sources(cfg.state_dir, sessions=None, github=None)
     with TestClient(create_app(cfg, sources)) as client:
@@ -204,9 +200,8 @@ def test_answers_out_of_worktree_path_returns_200_unavailable(tmp_path):
         "slot": -1, "worktree": str(wt),
         "branch": "agent/task-23", "title": "Escaping path task",
         "updated_at": "2026-09-08T10:00:00+00:00",
-        "park": "parked",
-        "operator_request": {"kind": "answers", "path": "../../outside.md",
-                             "fingerprint": "fp"},
+        "status": {"kind": "parked-answers",
+                   "detail": {"path": "../../outside.md", "fingerprint": "fp"}},
     }))
     sources = Sources(cfg.state_dir, sessions=None, github=None)
     with TestClient(create_app(cfg, sources)) as client:
@@ -229,7 +224,7 @@ def test_existing_non_gate_task_returns_null_request(tmp_path):
         "slot": 0, "worktree": str(wt),
         "branch": "agent/task-9", "title": "Add dark mode",
         "updated_at": "2026-09-08T10:00:00+00:00",
-        "park": "", "artifact": "",
+        "status": {"kind": "running", "detail": {}}, "artifact": "",
     }))
     sources = Sources(cfg.state_dir, sessions=None, github=None)
     with TestClient(create_app(cfg, sources)) as client:

@@ -1,6 +1,6 @@
 """One-shot deploy migration: end every live tmux session the pre-herdr
 dispatcher left behind, and hand the tasks the dispatcher actually drives
-— the in-flight ones, by `state.consumes_capacity` — to the park/resume
+— the in-flight ones, by `status.occupies` — to the park/resume
 path, which resumes each in herdr with `claude --continue` on the next
 pass (one interrupted turn per in-flight task, once). Every other live
 session (a PR_OPEN implement session, a FAILED/DONE tombstone, a
@@ -20,7 +20,8 @@ from typing import Callable
 
 from dispatcher import triage
 from dispatcher.sessions import session_name
-from dispatcher.state import TaskState, consumes_capacity, load_all
+from dispatcher.state import TaskState, load_all
+from dispatcher.status import occupies
 
 MESSAGE = ("Your session was moved from tmux to herdr by a deploy; the "
            "previous turn was interrupted. Continue where you left off.")
@@ -74,8 +75,8 @@ def migrate(state_dir: str | Path,
     """Kill every `task-<repository>-<issue>` / legacy `task-<issue>` tmux
     session that belongs to a known task and remove both container names.
     Then, and only for a task the dispatcher would still drive —
-    `state.consumes_capacity`: an in-flight stage, unparked or
-    PARK_LOGIN — `wake(task, MESSAGE)` so the next pass resumes it in
+    `status.occupies`: running, or held — `wake(task, MESSAGE)` so the
+    next pass resumes it in
     herdr. Anything else (PR_OPEN, tombstones, gate-parked) is ended and
     logged as "not resumed": resuming it would restart a claude nothing is
     waiting on. Kill a `triage` tmux session and re-enqueue the sweep
@@ -94,10 +95,9 @@ def migrate(state_dir: str | Path,
         # and container are still up.
         lines.extend(_kill_session(n) for n in live)
         lines.extend(_remove_container(n) for n in (name, legacy))
-        if not consumes_capacity(task):
+        if not occupies(task.status):
             lines.append(f"ended {name} (not resumed: stage "
-                         f"{task.stage.value}"
-                         + (f" park {task.park}" if task.park else "") + ")")
+                         f"{task.stage.value} {task.status.kind.value})")
             continue
         wake(task, MESSAGE)
         lines.append(f"handed {name} to the park/resume path "

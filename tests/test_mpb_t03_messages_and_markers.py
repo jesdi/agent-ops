@@ -39,10 +39,11 @@ from pathlib import Path
 
 import dispatcher.main as main
 from dispatcher import messages
-from dispatcher.state import NO_SLOT, PARK_WAKE, Stage, TaskState, save, SessionRecord, write_session
+from dispatcher.state import NO_SLOT, Stage, TaskState, save, SessionRecord, write_session
 from tests import webfakes
 from tests.test_main import ADMIT_ALL, cfg as single_repository_cfg, deps as main_deps, patch_usage
 from web.sources import Sources
+from tests.statuses import RUNNING, waking
 
 
 def two_repository_cfg(tmp_path):
@@ -87,8 +88,8 @@ def test_reply_reaches_only_its_own_project(tmp_path, monkeypatch):
     c = two_repository_cfg(tmp_path)
     write_session(c.state_dir, "portfolio_eval", 7, SessionRecord("portfolio-7", "implement"))
     write_session(c.state_dir, "factorial", 7, SessionRecord("factorial-7", "implement"))
-    make_task_for(c, "portfolio_eval", issue=7, park=PARK_WAKE)
-    make_task_for(c, "factorial", issue=7, park=PARK_WAKE)
+    make_task_for(c, "portfolio_eval", issue=7, status=waking())
+    make_task_for(c, "factorial", issue=7, status=waking())
 
     messages.append(c.state_dir, "factorial", 7, "use the v2 endpoint",
                     "operator")
@@ -139,9 +140,9 @@ def test_wake_blocked_marker_is_scoped_to_its_own_repository(tmp_path):
     c = dc_replace(c, capacity=1)
     # The box is full (two active tasks, capacity 1), so factorial#12 stays
     # woken and is marked — the marker must not leak to portfolio_eval#12.
-    make_task_for(c, "factorial", issue=99, slot=0, park="")
-    make_task_for(c, "factorial", issue=12, slot=NO_SLOT, park=PARK_WAKE)
-    make_task_for(c, "portfolio_eval", issue=12, slot=0, park="")
+    make_task_for(c, "factorial", issue=99, slot=0, status=RUNNING)
+    make_task_for(c, "factorial", issue=12, slot=NO_SLOT, status=waking())
+    make_task_for(c, "portfolio_eval", issue=12, slot=0, status=RUNNING)
 
     main._resume_woken(c, main_deps(), admit=ADMIT_ALL, order=tuple)
 
@@ -158,7 +159,7 @@ def test_legacy_message_file_migrates_with_a_single_repository(tmp_path, monkeyp
     patch_usage(monkeypatch)
     c = single_repository_cfg(tmp_path)
     write_session(c.state_dir, "portfolio_eval", 412, SessionRecord("portfolio-412", "implement"))
-    make_task_for(c, "portfolio_eval", issue=412, park=PARK_WAKE)
+    make_task_for(c, "portfolio_eval", issue=412, status=waking())
     _legacy_message_file(c.state_dir, 412, "drop the caching layer")
 
     d = main_deps()
@@ -179,8 +180,8 @@ def test_legacy_message_file_is_not_migrated_with_two_repositories(tmp_path, mon
     c = two_repository_cfg(tmp_path)
     write_session(c.state_dir, "portfolio_eval", 3, SessionRecord("portfolio-3", "implement"))
     write_session(c.state_dir, "factorial", 3, SessionRecord("factorial-3", "implement"))
-    make_task_for(c, "portfolio_eval", issue=3, park=PARK_WAKE)
-    make_task_for(c, "factorial", issue=3, park=PARK_WAKE)
+    make_task_for(c, "portfolio_eval", issue=3, status=waking())
+    make_task_for(c, "factorial", issue=3, status=waking())
     legacy = _legacy_message_file(c.state_dir, 3, "ambiguous reply")
 
     d = main_deps()

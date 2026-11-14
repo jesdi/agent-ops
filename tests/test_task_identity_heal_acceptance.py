@@ -10,12 +10,12 @@ import json
 import pytest
 
 import dispatcher.main as main
-from dispatcher.state import read_session
+from dispatcher.state import Stage, read_session
 from dispatcher.waitd import handle_ping
 
 from tests.test_main import FakeSessions, deps
 from tests.test_plan_gate_stage_loss_acceptance import _approve, _gated, _setup
-from tests.test_plan_review_gate_acceptance import BRANCH, GATE, ISSUE, _task
+from tests.test_plan_review_gate_acceptance import BRANCH, ISSUE, _task
 
 REPOSITORY = "portfolio_eval"
 HEALED = {"issue": ISSUE, "repository": REPOSITORY, "branch": BRANCH}
@@ -122,4 +122,4 @@ def test_a_healed_worktree_records_and_resumes_its_conversation(tmp_path, monkey
 
     assert len(sess.spawned) == 1
     assert sess.resume_ids == ["abc-123"]
-    assert _task(c).stage.value == GATE
+    assert _task(c).stage is Stage.PLAN

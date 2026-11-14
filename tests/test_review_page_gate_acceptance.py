@@ -17,11 +17,13 @@ import pytest
 import dispatcher
 import dispatcher.artifacts as artifacts
 import dispatcher.main as main
-from dispatcher.state import Stage
+from dispatcher.state import (Stage)
 
 from tests.test_main import FakeSessions, deps
 from tests.test_plan_review_gate_acceptance import (
-    GATE, ISSUE, _plan_prompt, _plan_task, _setup, _signal, _task)
+    ISSUE, _plan_prompt, _plan_task, _setup, _signal, _task)
+from dispatcher.state import operator_request
+from dispatcher.status import Kind
 
 PAGE = ".agent/review.html"
 MARKER = '<meta name="agent-ops-review" content="1">'
@@ -56,7 +58,7 @@ def _pass(c, wt, page=None, **kw):
 def _bounced(c, sess):
     t = _task(c)
     assert t.stage is Stage.PLAN
-    assert t.operator_request is None
+    assert operator_request(t) is None
     assert t.plan_retries == 1
     (resume,) = sess.resumed
     return resume[1]
@@ -74,9 +76,9 @@ def test_page_signal_enters_the_gate_and_the_console_serves_the_html(tmp_path, m
     _pass(c, wt, page)
 
     t = _task(c)
-    assert t.stage.value == GATE
-    assert t.operator_request.kind == "plan-approval"
-    assert t.operator_request.path == PAGE
+    assert (t.stage, t.status.kind) == (Stage.PLAN, Kind.HELD_PLAN_APPROVAL)
+    assert operator_request(t).kind == "plan-approval"
+    assert operator_request(t).path == PAGE
     with TestClient(create_app(c, Sources(c.state_dir, sessions=None, github=None))) as client:
         r = client.get(f"/api/task/portfolio_eval/{ISSUE}/request", headers=HEADERS)
     assert r.status_code == 200, r.text

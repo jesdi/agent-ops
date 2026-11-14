@@ -18,17 +18,18 @@ import pytest
 
 import dispatcher.main as main
 from dispatcher.models import parse_policy
-from dispatcher.state import Stage, load, save
+from dispatcher.state import (Stage, load, save)
 
 from tests.test_main import (FakeSessions, cfg, deps, make_task, patch_usage,
                              patch_workspace, write_tickets, GOOD_TICKET)
+from dispatcher.state import operator_request
+from dispatcher.status import Kind
 
 ISSUE = 415
 BRANCH = "agent/415-export-label"
 FOLDER = "specs/2026-10-13-export-label"
 SPEC = f"{FOLDER}/spec.md"
 SUMMARY = ".agent/review.html"
-GATE = "awaiting-plan-review"
 TITLE = "Fix a typo in the export button label"
 
 def _page(questions):
@@ -124,10 +125,10 @@ def _task(c):
 
 def _assert_waits(c, sess, d):
     t = _task(c)
-    assert t.stage.value == GATE
-    assert t.operator_request is not None
-    assert t.operator_request.kind == "plan-approval"
-    assert t.operator_request.path == SUMMARY
+    assert (t.stage, t.status.kind) == (Stage.PLAN, Kind.HELD_PLAN_APPROVAL)
+    assert operator_request(t) is not None
+    assert operator_request(t).kind == "plan-approval"
+    assert operator_request(t).path == SUMMARY
     assert _implements(sess) == []
     assert len([n for n in d.notifier.sent if "review" in n]) == 1
 
@@ -148,7 +149,7 @@ def test_trivial_task_with_nothing_open_goes_straight_to_implement(tmp_path, mon
 
     t = _task(c)
     assert t.stage is Stage.IMPLEMENT
-    assert t.operator_request is None
+    assert operator_request(t) is None
     assert [s[0] for s in _implements(sess)] == [ISSUE]
     assert not any("review" in n for n in d.notifier.sent)
     assert (wt / FOLDER / "design.md").is_file()
@@ -212,7 +213,7 @@ def test_skip_path_with_a_ticket_gap_is_bounced(tmp_path, monkeypatch):
     assert _implements(sess) == []
     t = _task(c)
     assert t.stage is Stage.PLAN
-    assert t.operator_request is None
+    assert operator_request(t) is None
     assert not any("review" in n for n in d.notifier.sent)
 
 

@@ -11,11 +11,10 @@ import pytest
 import dispatcher.main as main
 from dispatcher import eventlog
 from dispatcher.config import load_config
-from dispatcher.state import (PARK_HUMAN, PARK_WAKE, Stage, TaskState,
-                              has_waiting, load, mark_background,
-                              mark_waiting, read_background, save)
+from dispatcher.state import (Stage, TaskState, has_waiting, load, mark_background, mark_waiting, read_background, save)
 from tests.test_main import (FakeSessions, Reply, cfg, deps, make_task,
                              patch_events, patch_usage, patch_workspace)
+from dispatcher.status import Kind
 
 T, N = "portfolio_eval", 42
 MIN, HOUR = 60, 3600
@@ -104,25 +103,25 @@ def test_background_wait_not_parked_nor_stalled_across_two_passes(tmp_path, monk
     c, sess = _setup(tmp_path, monkeypatch, 11 * MIN)
     for _ in range(2):
         _passes(c, sess)
-        assert _task(c).park == ""
+        assert _task(c).status.kind is Kind.RUNNING
         assert sess.ended == []
 
 
 def test_wait_inside_cap_is_not_parked(tmp_path, monkeypatch):
     c, sess = _setup(tmp_path, monkeypatch, 2 * HOUR + 59 * MIN)
     _passes(c, sess, 3)
-    assert _task(c).park == ""
+    assert _task(c).status.kind is Kind.RUNNING
     assert sess.ended == []
 
 
 def test_wait_past_cap_parks_with_cap_note(tmp_path, monkeypatch):
     c, sess = _setup(tmp_path, monkeypatch, 3 * HOUR + MIN)
     d = _passes(c, sess)          # records the report: no park yet
-    assert _task(c).park == ""
+    assert _task(c).status.kind is Kind.RUNNING
     d.notifier.sent.clear()
     main.run_pass(c, d)
     t = _task(c)
-    assert t.park == PARK_HUMAN and t.park_note == CAP_NOTE
+    assert t.status.kind is Kind.PARKED_HUMAN and t.status.note == CAP_NOTE
     assert [e["detail"] for e in _parked_events(c)] == [CAP_NOTE]
     assert d.notifier.sent == ["parked_question"]
     assert CAP_NOTE in d.notifier.calls[-1][1]["note"]
@@ -135,18 +134,18 @@ def test_reply_after_cap_park_resumes_with_fresh_clock(tmp_path, monkeypatch):
     patch_workspace(monkeypatch, tmp_path)
     c, sess = _setup(tmp_path, monkeypatch, 3 * HOUR + MIN)
     d = _passes(c, sess, 2)
-    assert _task(c).park == PARK_HUMAN
+    assert _task(c).status.kind is Kind.PARKED_HUMAN
     msg_id = _task(c).park_msg_id
     patch_events(monkeypatch, [Reply(reply_to_msg_id=msg_id, text="carry on")])
     main.run_pass(c, d)
     patch_events(monkeypatch, [])
-    assert _task(c).park in ("", PARK_WAKE)
+    assert _task(c).status.kind in (Kind.RUNNING, Kind.WAKING)
     sess.alive_set.add(N)         # the resumed session is live
     # the new session reports the SAME work 10 minutes ago
     mark_background(c.state_dir, T, N, [WORK], now=time.time() - 10 * MIN)
     for _ in range(3):
         main.run_pass(c, d)
-    assert _task(c).park == ""
+    assert _task(c).status.kind is Kind.RUNNING
     assert read_background(c.state_dir, T, N) is not None
 
 
@@ -155,7 +154,7 @@ def test_new_work_restarts_the_cap_clock(tmp_path, monkeypatch):
     mark_background(c.state_dir, T, N, [WORK, {"id": "b2", "type": "shell"}],
                     now=time.time() - 20 * MIN)
     _passes(c, sess, 3)
-    assert _task(c).park == ""
+    assert _task(c).status.kind is Kind.RUNNING
 
 
 def test_same_work_does_not_restart_the_cap_clock(tmp_path, monkeypatch):
@@ -167,7 +166,7 @@ def test_same_work_does_not_restart_the_cap_clock(tmp_path, monkeypatch):
     mark_background(c.state_dir, T, N, [WORK], now=time.time() - 5 * MIN)
     _passes(c, sess, 2)
     t = _task(c)
-    assert t.park == PARK_HUMAN and t.park_note == CAP_NOTE
+    assert t.status.kind is Kind.PARKED_HUMAN and t.status.note == CAP_NOTE
 
 
 # --- the wait ends -----------------------------------------------------------
@@ -179,19 +178,19 @@ def test_counter_change_ends_wait_and_never_cap_parks(tmp_path, monkeypatch):
     main.run_pass(c, d)
     assert read_background(c.state_dir, T, N) is not None   # kept: the wait is over, not gone
     t = _task(c)
-    assert t.park == "" and t.park_note != CAP_NOTE
+    assert t.status.kind is Kind.RUNNING and t.status.note != CAP_NOTE
     assert sess.ended == []
 
 
 def test_after_wait_over_idle_session_stalls_as_today(tmp_path, monkeypatch):
     c, sess = _setup(tmp_path, monkeypatch, 5 * MIN)
     d = _passes(c, sess)
-    assert _task(c).park == ""
+    assert _task(c).status.kind is Kind.RUNNING
     sess.state[N] = ("idle", 6)
     main.run_pass(c, d)
     t = _task(c)
-    assert t.park == PARK_HUMAN
-    assert t.park_note.startswith("(no session output for 10m")
+    assert t.status.kind is Kind.PARKED_HUMAN
+    assert t.status.note.startswith("(no session output for 10m")
     assert read_background(c.state_dir, T, N) is None
 
 
@@ -204,7 +203,7 @@ def test_working_signal_with_waiting_marker_pokes_mid_stage(tmp_path, monkeypatc
     mark_waiting(c.state_dir, T, N)
     sess = HerdrSessions({N: ("idle", 5)}, alive=[N], idle={N: 30.0})
     _passes(c, sess)
-    assert _task(c).park == ""
+    assert _task(c).status.kind is Kind.RUNNING
     assert len(sess.sent_text) == 1 and sess.ended == []
 
 
@@ -214,12 +213,12 @@ def test_first_pass_with_agent_working_or_unknown_records_nothing(tmp_path, monk
     sess.state[N] = herdr
     _passes(c, sess)
     t = _task(c)
-    assert t.park == "" and sess.ended == []
+    assert t.status.kind is Kind.RUNNING and sess.ended == []
     assert (t.background_reported, t.background_seq) == (0.0, 0)
     sess.state[N] = ("idle", 5)
     _passes(c, sess)
     t = _task(c)
-    assert t.park == ""
+    assert t.status.kind is Kind.RUNNING
     assert t.background_reported == read_background(c.state_dir, T, N).reported
     assert t.background_seq == 5
 

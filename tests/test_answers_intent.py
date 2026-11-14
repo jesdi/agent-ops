@@ -11,15 +11,16 @@ import pytest
 import dispatcher.main as main
 from dispatcher import answers, eventlog, intents, messages
 from dispatcher.artifacts import REVIEW_PAGE_MARKER, REVIEW_PAGE_MAX_BYTES, page_revision
-from dispatcher.state import (NO_SLOT, PARK_HUMAN, PARK_REVIEW, PARK_WAKE,
-                              AnswersRequest, PlanApprovalRequest, Stage, save,
-                              task_key)
+from dispatcher.state import (NO_SLOT, AnswersRequest, PlanApprovalRequest, Stage, save, task_key)
 
 from tests.test_answers_intent_acceptance import (ISSUE, PLAN_FILE, REV, REPOSITORY,
                                                   _drain, _events, _file,
                                                   _gate, _intent, _setup,
                                                   _task, _texts)
 from tests.test_main import FakeSessions, armed_request, deps, make_task, write_tickets
+from tests.statuses import answers as answers_park, human, review
+from dispatcher.status import Kind
+from dispatcher.state import operator_request
 
 
 def test_an_unknown_submit_value_is_dropped(tmp_path, monkeypatch):
@@ -115,16 +116,15 @@ def test_a_missing_agent_dir_fails_the_intent_and_creates_nothing(tmp_path, monk
 
 def test_a_submission_resets_the_loop_counters(tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
-    make_task(c, issue=ISSUE, stage=Stage.AWAITING_PLAN_REVIEW, slot=NO_SLOT,
-              park=PARK_REVIEW, review_rounds=1, gate_rounds=2, e2e_rounds=1,
-              ci_rounds=3, operator_request=PlanApprovalRequest(
-                  path=".agent/review.html", fingerprint=REV))
+    make_task(c, issue=ISSUE, stage=Stage.PLAN, status=review(PlanApprovalRequest(
+                  path=".agent/review.html", fingerprint=REV)), slot=NO_SLOT, review_rounds=1, gate_rounds=2, e2e_rounds=1,
+              ci_rounds=3)
     _intent(c, {"format": "a"}, submit="changes")
 
     _drain(c)
 
     t = _task(c)
-    assert t.park == PARK_WAKE
+    assert t.status.kind is Kind.WAKING
     assert (t.review_rounds, t.gate_rounds, t.e2e_rounds, t.ci_rounds) == (0, 0, 0, 0)
 
 
@@ -148,8 +148,8 @@ def test_a_draft_on_a_new_revision_is_not_blocked_by_an_old_submission(tmp_path,
     _intent(c, {"format": "a"}, submit="changes", ms=1)
     _drain(c)
     t = _task(c)
-    save(c.state_dir, replace(t, park=PARK_REVIEW, operator_request=replace(
-        t.operator_request, fingerprint="rev-2")))
+    save(c.state_dir, replace(t, status=review(replace(
+        operator_request(t), fingerprint="rev-2"))))
     _intent(c, {"format": "b"}, revision="rev-2", ms=5)
 
     _drain(c)
@@ -163,7 +163,7 @@ def test_a_corrupt_task_file_fails_only_its_own_answers_intent(tmp_path, monkeyp
     c = _setup(tmp_path, monkeypatch)
     _gate(c)
     (Path(c.state_dir) / f"task-{task_key(REPOSITORY, ISSUE)}.json").write_text("{not json")
-    make_task(c, issue=7, park=PARK_HUMAN, slot=NO_SLOT)
+    make_task(c, issue=7, status=human(), slot=NO_SLOT)
     _intent(c, {"format": "a"}, ms=1)
     intents.write_intent(c.state_dir, "reply", REPOSITORY, 7, {"text": "go"},
                          actor="jesdi", epoch_ms=2)
@@ -217,8 +217,7 @@ def _real_gate(c):
     task = _task(c)
     req = armed_request(task, ".agent/review.html")
     assert req.fingerprint
-    save(c.state_dir, replace(task, stage=Stage.AWAITING_PLAN_REVIEW, slot=NO_SLOT,
-                              park=PARK_REVIEW, operator_request=req))
+    save(c.state_dir, replace(task, stage=Stage.PLAN, status=review(req), slot=NO_SLOT))
     return wt, req.fingerprint
 
 
@@ -250,10 +249,9 @@ def test_an_intent_for_the_page_on_disk_is_applied(tmp_path, monkeypatch):
 def test_a_questionnaire_rewritten_since_the_pass_is_stale(tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
     one = (REVIEW_PAGE_MARKER + "<p>one</p>").encode()
-    wt = make_task(c, issue=ISSUE, stage=Stage.SPEC, park=PARK_HUMAN, slot=NO_SLOT,
-                   operator_request=AnswersRequest(
+    wt = make_task(c, issue=ISSUE, stage=Stage.SPEC, status=answers_park(AnswersRequest(
                        path=".agent/questionnaire.html",
-                       fingerprint=hashlib.sha256(one).hexdigest()))
+                       fingerprint=hashlib.sha256(one).hexdigest())), slot=NO_SLOT)
     (wt / ".agent" / "questionnaire.html").write_text(REVIEW_PAGE_MARKER + "<p>two</p>")
     _intent(c, {"format": "a"}, revision=hashlib.sha256(one).hexdigest())
 
@@ -277,7 +275,7 @@ def test_a_new_round_removes_the_text_answer_of_the_last_one(tmp_path, monkeypat
 
     main.run_pass(c, deps(sess=FakeSessions(alive={ISSUE})))
 
-    assert _task(c).operator_request.fingerprint and _file(wt) is None
+    assert operator_request(_task(c)).fingerprint and _file(wt) is None
 
 
 @pytest.mark.parametrize("doc, kept", [
@@ -328,6 +326,6 @@ def test_a_questionnaire_without_the_marker_arms_no_revision(tmp_path, monkeypat
 
     main.run_pass(c, deps(sess=FakeSessions(alive={ISSUE})))
 
-    req = _task(c).operator_request
+    req = operator_request(_task(c))
     assert req.path == ".agent/questionnaire.html" and req.fingerprint == ""
     assert "review page lacks the template marker" in capsys.readouterr().err

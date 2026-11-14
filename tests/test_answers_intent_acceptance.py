@@ -17,12 +17,13 @@ from dataclasses import replace as dc_replace
 
 import dispatcher.main as main
 from dispatcher import eventlog, intents, messages
-from dispatcher.state import (NO_SLOT, PARK_HUMAN, PARK_REVIEW, PARK_WAKE,
-                              AnswersRequest, PlanApprovalRequest, Stage, load,
-                              save)
+from dispatcher.state import (NO_SLOT, AnswersRequest, PlanApprovalRequest, Stage, load, save)
 
 from tests.test_main import (FakeSessions, cfg, deps, make_task, patch_usage,
                              patch_workspace)
+from tests.statuses import RUNNING, held, review
+from dispatcher.status import Kind
+from dispatcher.state import operator_request
 
 ISSUE = 412
 REPOSITORY = "portfolio_eval"
@@ -39,12 +40,11 @@ def _setup(tmp_path, monkeypatch):
     return cfg(tmp_path)
 
 
-def _gate(c, park=PARK_REVIEW, revision=REV):
-    """Issue 412 at the plan review gate; `park` "" = not parked yet."""
-    return make_task(c, issue=ISSUE, stage=Stage.AWAITING_PLAN_REVIEW,
-                     slot=NO_SLOT if park else 0, park=park,
-                     operator_request=PlanApprovalRequest(
-                         path=".agent/review.html", fingerprint=revision))
+def _gate(c, parked=True, revision=REV):
+    """Issue 412 at the plan review gate: parked for review, else held there."""
+    request = PlanApprovalRequest(path=".agent/review.html", fingerprint=revision)
+    return make_task(c, issue=ISSUE, stage=Stage.PLAN, slot=NO_SLOT if parked else 0,
+                     status=review(request) if parked else held(request))
 
 
 def _intent(c, answers, submit=None, revision=REV, ms=1):
@@ -97,7 +97,7 @@ def test_draft_writes_the_file_and_wakes_nothing(tmp_path, monkeypatch):
     (e,) = _events(c, "intent-applied")
     assert e["issue"] == ISSUE
     assert _texts(c) == []
-    assert _task(c).park == PARK_REVIEW
+    assert _task(c).status.kind is Kind.PARKED_REVIEW
 
 
 def test_two_drafts_leave_the_newer_answers_written_once(tmp_path, monkeypatch):
@@ -146,12 +146,12 @@ def test_changes_on_a_parked_gate_task_wakes_with_the_feedback_message(tmp_path,
     f = _file(wt)
     assert (f["submitted"], f["submitted_at"]) == ("changes", at)
     assert _texts(c) == [CHANGES_MSG]
-    assert _task(c).park == PARK_WAKE
+    assert _task(c).status.kind is Kind.WAKING
 
 
 def test_approve_wakes_and_parks_a_gate_task_that_has_not_parked(tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
-    wt = _gate(c, park="")
+    wt = _gate(c, parked=False)
     _intent(c, {"format": "a"}, submit="approve")
     sess = FakeSessions(alive={ISSUE})
 
@@ -160,7 +160,7 @@ def test_approve_wakes_and_parks_a_gate_task_that_has_not_parked(tmp_path, monke
     assert _file(wt)["submitted"] == "approve"
     assert _texts(c) == [APPROVE_MSG]
     t = _task(c)
-    assert t.park == PARK_WAKE
+    assert t.status.kind is Kind.WAKING
     assert ISSUE in sess.ended
 
 
@@ -173,7 +173,7 @@ def test_a_parked_answers_request_writes_the_questionnaire_file(tmp_path, monkey
         {"stage": "spec", "status": "awaiting-answers", "note": "q",
          "artifact": ".agent/questionnaire.html"}))
     main.run_pass(c, deps(sess=FakeSessions(alive={ISSUE})))
-    assert _task(c).park == PARK_HUMAN
+    assert _task(c).status.kind is Kind.PARKED_ANSWERS
     _intent(c, {"format": "a"}, revision=hashlib.sha256(page).hexdigest())
 
     _drain(c)
@@ -270,8 +270,8 @@ def test_an_answers_request_revision_is_the_sha256_of_the_page(tmp_path, monkeyp
             {"stage": "spec", "status": "awaiting-answers", "note": "q",
              "artifact": ".agent/questionnaire.html"}))
         main.run_pass(c, deps(sess=FakeSessions(alive={ISSUE})))
-        req = _task(c).operator_request
+        req = operator_request(_task(c))
         assert req.fingerprint == hashlib.sha256(body.encode()).hexdigest()
         revisions.append(req.fingerprint)
-        save(c.state_dir, dc_replace(_task(c), park="", slot=0, operator_request=None))
+        save(c.state_dir, dc_replace(_task(c), status=RUNNING, slot=0))
     assert revisions[0] != revisions[1]

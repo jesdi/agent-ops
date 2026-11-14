@@ -5,6 +5,7 @@ from dispatcher.models import parse_policy
 from tests.configfakes import make_project
 from tests.usagefakes import session_usage
 from dispatcher.state import Stage, TaskState
+from tests.statuses import PR, RUNNING
 from web.sources import Sources, ArtifactListing
 
 HEADERS = {"Tailscale-User-Login": "jesdi@github"}
@@ -39,6 +40,7 @@ def make_task(issue=7, **kw):
         title=f"Task {issue}", updated_at="2026-07-25T10:00:00+00:00",
         track="standard")
     defaults.update(kw)
+    defaults.setdefault("status", PR if defaults["stage"] is Stage.PR_OPEN else RUNNING)
     return TaskState(**defaults)
 
 

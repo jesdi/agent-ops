@@ -1,18 +1,13 @@
-"""park / wake / unpark / end: the only writers of a task's park fields (#132)."""
+"""park / wake / unpark / end: the writers of a task's status besides the
+claim and the transition executor (#132)."""
 import json
 
-import pytest
+from dispatcher.state import Stage, TaskState, end, load, park, save, unpark, wake
+from dispatcher.status import Cause, Kind
+from tests.statuses import (DONE, RUNNING, answers, ci, failed, human, login, review,
+                            waking)
 
-from dispatcher.state import (PARK_CI, PARK_HUMAN, PARK_LOGIN, PARK_REVIEW,
-                              PARK_WAKE, AnswersRequest, PlanApprovalRequest,
-                              Stage, TaskState, end, load, park, save, unpark,
-                              wake)
-
-PARK_FIELDS = ("park", "park_reason", "park_note", "park_msg_id", "ci_run_id",
-               "crashed_stage", "hold_for_attach", "operator_request")
-STALE = dict(park=PARK_HUMAN, park_reason="decision", park_note="which DB?",
-             park_msg_id=7, ci_run_id=991, hold_for_attach=True,
-             operator_request=AnswersRequest(path="q.html", fingerprint="ab12"))
+ASKED = dict(status=human("decision", "which DB?"), park_msg_id=7, hold_for_attach=True)
 
 
 def make(stage=Stage.IMPLEMENT, slot=1, **kw) -> TaskState:
@@ -21,91 +16,60 @@ def make(stage=Stage.IMPLEMENT, slot=1, **kw) -> TaskState:
                      updated_at="2026-11-13T00:00:00+00:00", **kw)
 
 
-def fields(t: TaskState) -> dict:
-    return {f: getattr(t, f) for f in PARK_FIELDS}
-
-
-def test_park_sets_every_park_field_and_drops_what_an_earlier_park_left():
-    req = PlanApprovalRequest(path="review.html", fingerprint="cd34")
-    t = park(make(**STALE), PARK_REVIEW, note="plan ready", msg_id=9, request=req)
-    assert fields(t) == dict(park=PARK_REVIEW, park_reason="", park_note="plan ready",
-                             park_msg_id=9, ci_run_id=0, crashed_stage="",
-                             hold_for_attach=False, operator_request=req)
-
-
-def test_park_for_ci_records_the_run_and_nothing_else():
-    t = park(make(**STALE), PARK_CI, ci_run_id=991)
-    assert fields(t) == dict(park=PARK_CI, park_reason="", park_note="",
-                             park_msg_id=0, ci_run_id=991, crashed_stage="",
-                             hold_for_attach=False, operator_request=None)
+def test_park_sets_the_status_and_its_message_and_drops_an_attach_hold():
+    t = park(make(**ASKED), review("review.html", "plan ready"), msg_id=9)
+    assert (t.status, t.park_msg_id, t.hold_for_attach) == (
+        review("review.html", "plan ready"), 9, False)
 
 
 def test_park_leaves_every_other_field_alone():
-    t = make(slot=3, resume_model_override="anthropic/opus", asked=True)
-    assert park(t, PARK_LOGIN, note="login").slot == 3
-    parked = park(t, PARK_HUMAN, note="q", reason="decision", msg_id=1)
-    assert (parked.resume_model_override, parked.asked, parked.stage) == (
-        "anthropic/opus", True, Stage.IMPLEMENT)
+    t = make(slot=3, resume_model_override="anthropic/opus", asked=True, plan_approval="ab")
+    assert park(t, login("login")).slot == 3
+    parked = park(t, human("decision", "q"), msg_id=1)
+    assert (parked.resume_model_override, parked.asked, parked.stage, parked.plan_approval) == (
+        "anthropic/opus", True, Stage.IMPLEMENT, "ab")
 
 
-def test_a_wake_keeps_the_park_it_comes_from_and_drops_the_ci_run():
-    t = wake(make(**STALE))
-    assert fields(t) == {**fields(make(**STALE)), "park": PARK_WAKE,
-                         "ci_run_id": 0, "hold_for_attach": False}
+def test_a_wake_keeps_the_status_it_comes_from_as_its_origin():
+    t = wake(make(**ASKED), Cause.REPLY)
+    assert t.status == waking(human("decision", "which DB?"), "reply")
+    assert t.park_msg_id == 7
 
 
 def test_a_wake_for_attach_holds_the_session():
-    assert wake(make(park=PARK_HUMAN), hold=True).hold_for_attach
+    assert wake(make(status=human()), Cause.REPLY, hold=True).hold_for_attach
 
 
-def test_a_wake_of_a_crashed_task_keeps_its_crashed_stage():
-    t = wake(make(crashed_stage="implement"))
-    assert (t.park, t.crashed_stage) == (PARK_WAKE, "implement")
+def test_a_wake_of_a_waking_task_keeps_its_origin_and_cause():
+    t = wake(make(status=waking(failed(), "resume")), Cause.REPLY, hold=True)
+    assert (t.status, t.hold_for_attach) == (waking(failed(), "resume"), True)
 
 
-def test_unpark_to_running_clears_every_park_field():
-    t = unpark(make(**STALE, crashed_stage="implement"))
-    assert fields(t) == fields(make())
+def test_unpark_runs_the_session_and_drops_the_question():
+    t = unpark(make(**ASKED))
+    assert (t.status, t.park_msg_id, t.hold_for_attach) == (RUNNING, 0, False)
 
 
-def test_a_running_session_at_the_gate_is_held_on_its_request():
-    req = PlanApprovalRequest(path="review.html", fingerprint="cd34")
-    t = unpark(make(**STALE), request=req)
-    assert fields(t) == {**fields(make()), "operator_request": req}
-
-
-@pytest.mark.parametrize("stage", [Stage.DONE, Stage.FAILED, Stage.CANCELED])
-def test_end_is_never_parked_and_leaves_no_park_field_behind(stage):
-    t = end(make(**STALE, crashed_stage="implement"), stage)
-    assert t.stage is stage
-    assert fields(t) == fields(make())
-
-
-def test_a_crash_ends_failed_and_remembers_its_stage():
-    t = end(make(**STALE), Stage.FAILED, crashed_stage="implement")
-    assert (t.stage, t.crashed_stage, t.park, t.park_note) == (
-        Stage.FAILED, "implement", "", "")
-
-
-def test_a_terminal_file_loads_through_end_and_keeps_its_crashed_stage(tmp_path):
-    save(tmp_path, make(stage=Stage.FAILED, **STALE, crashed_stage="implement"))
-    t = load(tmp_path, "portfolio_eval", 42)
-    assert fields(t) == {**fields(make()), "crashed_stage": "implement"}
+def test_end_keeps_the_stage_and_drops_the_question_and_the_approval():
+    t = end(make(**ASKED, plan_approval="ab"), failed("killed"))
+    assert (t.stage, t.status, t.park_msg_id, t.hold_for_attach, t.plan_approval) == (
+        Stage.IMPLEMENT, failed("killed"), 0, False, "")
 
 
 def test_doors_change_no_key_of_the_task_file(tmp_path):
     save(tmp_path, make())
     keys = set(json.loads((tmp_path / "task-portfolio_eval-42.json").read_text()))
-    for t in (park(make(), PARK_HUMAN, note="q"), wake(make(**STALE)),
-              unpark(make(**STALE)), end(make(**STALE), Stage.DONE)):
+    for t in (park(make(), human("decision", "q")), wake(make(**ASKED), Cause.REPLY),
+              unpark(make(**ASKED)), end(make(**ASKED), DONE),
+              park(make(stage=Stage.SPEC), answers("q.html")), park(make(), ci(9))):
         save(tmp_path, t)
         assert set(json.loads(
             (tmp_path / "task-portfolio_eval-42.json").read_text())) == keys
 
 
-def test_a_failed_stage_signal_ends_the_task_through_end(tmp_path, monkeypatch):
-    """awaiting-ci with no run id fails the task (SetTaskStage(FAILED)): it
-    leaves no park field a running task carried from before."""
+def test_a_failed_stage_signal_ends_the_task_failed_at_its_stage(tmp_path, monkeypatch):
+    """awaiting-ci with no run id fails the task with an artifact failure,
+    at the stage it had; it keeps no question of an earlier park."""
     from datetime import datetime, timezone
 
     import dispatcher.main as main
@@ -113,12 +77,10 @@ def test_a_failed_stage_signal_ends_the_task_through_end(tmp_path, monkeypatch):
 
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
-    wt = make_task(c, updated_at=datetime.now(timezone.utc).isoformat(),
-                   park_reason="decision", park_note="which DB?", park_msg_id=7,
-                   ci_run_id=991)
+    wt = make_task(c, updated_at=datetime.now(timezone.utc).isoformat(), park_msg_id=7)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "implement", "status": "awaiting-ci"}))
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert t.stage is Stage.FAILED
-    assert fields(t) == fields(make())
+    assert (t.stage, t.status, t.park_msg_id) == (Stage.IMPLEMENT, failed("artifact"), 0)
+    assert t.status.kind is Kind.FAILED

@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from dispatcher import host_auth, spec_publish, state
-from dispatcher.state import TaskState
+from dispatcher.state import TaskState, operator_request
 
 log = logging.getLogger(__name__)
 RETENTION_DAYS = 7
@@ -160,7 +160,7 @@ def _automatic_registrations(task: TaskState) -> list[Registration]:
     ):
         if (Path(task.worktree) / path).is_file():
             entries.append(Registration(artifact_id, name, path))
-    request_path = getattr(task.operator_request, "path", "")
+    request_path = getattr(operator_request(task), "path", "")
     if request_path:
         key = hashlib.sha256(request_path.encode()).hexdigest()[:12]
         entries.append(Registration(f"answers-{key}", "Questions and answers", request_path))

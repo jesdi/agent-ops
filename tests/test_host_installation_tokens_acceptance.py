@@ -32,6 +32,7 @@ import pytest
 import dispatcher.main as main
 from dispatcher import github, github_app
 from dispatcher.state import NO_SLOT, Stage, TaskState, load_all, save
+from tests.statuses import PR
 
 from tests.configfakes import with_board
 from tests.fake_github import FakeGitHub as FakeBoardHost
@@ -194,7 +195,7 @@ class World:
         save(self.cfg.state_dir, TaskState(
             issue=42, repository=repository.name, stage=Stage.PR_OPEN, slot=NO_SLOT,
             worktree=str(wt), branch="agent/task-42", title="t", pr_number=12,
-            updated_at="2026-07-21T00:00:00+00:00", track="standard"))
+            updated_at="2026-07-21T00:00:00+00:00", track="standard", status=PR))
 
     def for_repo(self, repo):
         return [c for c in self.calls if c.names(repo) and not c.board]

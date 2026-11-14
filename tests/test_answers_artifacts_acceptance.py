@@ -9,6 +9,7 @@ from dispatcher import task_artifacts as artifacts
 from dispatcher.state import Stage
 from tests.webfakes import FakeSources, HEADERS, make_config, make_task
 from web.app import create_app
+from tests.statuses import DONE
 
 REVIEW = '.agent/review-answers.json'
 QUESTIONNAIRE = '.agent/questionnaire-answers.json'
@@ -71,7 +72,7 @@ def test_review_artifacts_expire_after_seven_days(tmp_path):
     (wt / REVIEW).write_text('{}')
     (wt / '.agent/artifacts.json').write_text(json.dumps(
         [{'id': 'review-answers', 'name': 'Review answers', 'path': REVIEW}]))
-    state, _ = collect(tmp_path, wt, stage=Stage.DONE, terminal_at=TERMINAL.isoformat())
+    state, _ = collect(tmp_path, wt, stage=Stage.QUEUED, status=DONE, terminal_at=TERMINAL.isoformat())
     artifacts.cleanup(state, now=datetime(2026, 10, 27, 9, 59, tzinfo=timezone.utc))
     assert artifacts.content_path(state, 'alpha', 412, 'review-answers')
     assert not artifacts.read(state, 'alpha', 412).expired

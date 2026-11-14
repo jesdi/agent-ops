@@ -9,10 +9,11 @@ from pathlib import Path
 
 import dispatcher.main as main
 from dispatcher.config import load_config
-from dispatcher.state import PARK_HUMAN, Stage, load, mark_waiting
+from dispatcher.state import Stage, load, mark_waiting
 from tests.test_herdr_liveness_poke_acceptance import (N, POKE, T, HerdrSessions,
                                                        _setup, _signal)
 from tests.test_main import cfg, deps, make_task, patch_usage
+from dispatcher.status import Kind
 
 ROOT = Path(__file__).resolve().parent.parent
 MIN = 60
@@ -62,7 +63,7 @@ def test_hung_codex_session_parks_after_the_shared_timeout(tmp_path, monkeypatch
     sess.stop("idle", idle=11 * MIN)
     main.run_pass(c, deps(sess=sess))
     t = load(c.state_dir, T, N)
-    assert t.park == PARK_HUMAN and t.park_note == STALL_NOTE
+    assert t.status.kind is Kind.PARKED_HUMAN and t.status.note == STALL_NOTE
     assert sess.ended == [N]
 
 
@@ -71,7 +72,7 @@ def test_stopped_codex_session_with_marker_is_poked(tmp_path, monkeypatch):
     sess.stop("done")
     main.run_pass(c, d)
     assert sess.sent_text == [(N, POKE)]
-    assert load(c.state_dir, T, N).park == ""
+    assert load(c.state_dir, T, N).status.kind is Kind.RUNNING
 
 
 def test_pass_interval_defaults_to_5_and_status_reports_it(tmp_path, monkeypatch):

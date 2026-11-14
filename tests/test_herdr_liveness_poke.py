@@ -10,13 +10,14 @@ import pytest
 import dispatcher.main as main
 from dispatcher.lifecycle import STOPPED_NOTE
 from dispatcher.sessions import Sessions
-from dispatcher.state import (PARK_HUMAN, PARK_LOGIN, WHY_DECISION, WHY_STALLED,
-                              SessionRecord, Stage, mark_background, mark_waiting, save, write_session)
+from dispatcher.state import (SessionRecord, Stage, mark_background, mark_waiting, save, write_session)
 from tests.test_herdr_liveness_poke_acceptance import (HOUR, MIN, N, POKE, T,
                                                        HerdrSessions, _ev, _poke_state,
                                                        _setup, _signal, _task)
 from tests.test_main import (LOGIN_TAIL, Reply, deps, patch_events,
                              patch_workspace)
+from tests.statuses import human
+from dispatcher.status import HumanReason, Kind
 
 
 class Undelivered(HerdrSessions):
@@ -62,7 +63,7 @@ def test_undelivered_poke_starts_the_clock_and_is_not_counted(tmp_path, monkeypa
     sess.stop()
     main.run_pass(c, deps(sess=sess))
     t = _task(c)
-    assert (t.pokes, t.park) == (0, "") and abs(t.poked_since - time.time()) < 60
+    assert (t.pokes, t.status.kind) == (0, Kind.RUNNING) and abs(t.poked_since - time.time()) < 60
     assert _ev(c, "poked") == [] and sess.ended == []
 
 
@@ -77,9 +78,9 @@ def test_pane_that_refuses_every_poke_is_parked_at_the_cap(tmp_path, monkeypatch
     save(c.state_dir, replace(t, poked_since=t.poked_since - 3 * HOUR - MIN))
     main.run_pass(c, d)
     t = _task(c)
-    assert t.park == PARK_HUMAN and sess.ended == [N]
-    assert t.park_note == "(poked 0 times over 180m — stopped mid-stage without a stage signal)"
-    assert t.park_reason == WHY_STALLED
+    assert t.status.kind is Kind.PARKED_HUMAN and sess.ended == [N]
+    assert t.status.note == "(poked 0 times over 180m — stopped mid-stage without a stage signal)"
+    assert t.status.reason is HumanReason.STALLED
 
 
 def test_dry_run_types_nothing_and_saves_nothing(tmp_path, monkeypatch):
@@ -113,7 +114,7 @@ def test_old_clock_and_new_counter_cap_parks(tmp_path, monkeypatch):
     _poke_state(c, 3 * HOUR + MIN, pokes=36)
     sess.state[N] = ("done", 7)
     main.run_pass(c, d)
-    assert _task(c).park == PARK_HUMAN and sess.sent_text == []
+    assert _task(c).status.kind is Kind.PARKED_HUMAN and sess.sent_text == []
 
 
 # --- I1: a login park ends the stretch -------------------------------------------
@@ -126,11 +127,11 @@ def test_login_park_starts_a_fresh_poke_clock(tmp_path, monkeypatch):
     sess.tail = LOGIN_TAIL
     sess.stop()
     main.run_pass(c, d)
-    assert _task(c).park == PARK_LOGIN
+    assert _task(c).status.kind is Kind.HELD_LOGIN
     patch_events(monkeypatch, [Reply(reply_to_msg_id=_task(c).park_msg_id, text="code")])
     main.run_pass(c, d)
     patch_events(monkeypatch, [])
-    assert _task(c).park == ""
+    assert _task(c).status.kind is Kind.RUNNING
     sess.tail = "…pane tail…"
     _signal(wt, "working", stage="implement")
     mark_waiting(c.state_dir, T, N)
@@ -138,7 +139,7 @@ def test_login_park_starts_a_fresh_poke_clock(tmp_path, monkeypatch):
     sess.sent_text.clear()
     main.run_pass(c, d)
     t = _task(c)
-    assert t.park == "" and sess.sent_text == [(N, POKE)] and t.pokes == 1
+    assert t.status.kind is Kind.RUNNING and sess.sent_text == [(N, POKE)] and t.pokes == 1
 
 
 # --- I2: recording a background wait ends the stretch ----------------------------
@@ -155,7 +156,7 @@ def test_recording_a_background_wait_starts_a_fresh_poke_clock(tmp_path, monkeyp
     sess.state[N] = ("done", 6)
     main.run_pass(c, d)
     t = _task(c)
-    assert t.park == "" and sess.sent_text == [(N, POKE)] and t.pokes == 1
+    assert t.status.kind is Kind.RUNNING and sess.sent_text == [(N, POKE)] and t.pokes == 1
 
 
 # --- the check right before the text is typed ---------------------------------------
@@ -168,7 +169,7 @@ def test_login_prompt_is_parked_not_poked(tmp_path, monkeypatch):
     sess.stop()
     main.run_pass(c, d)
     t = _task(c)
-    assert sess.sent_text == [] and (t.park, t.park_note) == (PARK_LOGIN, STOPPED_NOTE)
+    assert sess.sent_text == [] and (t.status.kind, t.status.note) == (Kind.HELD_LOGIN, STOPPED_NOTE)
     assert sess.ended == []                      # the login park keeps the pane
 
 
@@ -178,8 +179,8 @@ def test_old_waiting_marker_and_herdr_blocked_parks_and_types_nothing(tmp_path, 
     main.run_pass(c, d)
     t = _task(c)
     assert sess.sent_text == [] and _ev(c, "poked") == []
-    assert (t.park, t.park_note) == (PARK_HUMAN, STOPPED_NOTE) and sess.ended == [N]
-    assert t.park_reason == WHY_DECISION
+    assert (t.status.kind, t.status.note) == (Kind.PARKED_HUMAN, STOPPED_NOTE) and sess.ended == [N]
+    assert t.status.reason is HumanReason.DECISION
 
 
 def test_past_the_cap_the_cap_note_wins_at_a_prompt(tmp_path, monkeypatch):
@@ -187,7 +188,7 @@ def test_past_the_cap_the_cap_note_wins_at_a_prompt(tmp_path, monkeypatch):
     _poke_state(c, 3 * HOUR + MIN, pokes=36)
     sess.stop("blocked")
     main.run_pass(c, d)
-    assert _task(c).park_note.startswith("(poked 36 times") and sess.sent_text == []
+    assert _task(c).status.note.startswith("(poked 36 times") and sess.sent_text == []
 
 
 def _unreadable_herdr(sess):
@@ -207,7 +208,7 @@ def test_unknown_at_the_moment_of_the_poke_holds(tmp_path, monkeypatch, fail):
     fail(sess)
     main.run_pass(c, d)
     t = _task(c)
-    assert sess.sent_text == [] and sess.ended == [] and t.park == ""
+    assert sess.sent_text == [] and sess.ended == [] and t.status.kind is Kind.RUNNING
     assert (t.poked_since, t.pokes) == (before.poked_since, 12)
 
 
@@ -219,7 +220,7 @@ def test_turn_started_after_the_idle_read_is_not_poked_and_clears_the_clock(tmp_
     sess.state[N] = ("working", 6)               # the read before the text: a new turn
     main.run_pass(c, d)
     t = _task(c)
-    assert sess.sent_text == [] and sess.ended == [] and t.park == ""
+    assert sess.sent_text == [] and sess.ended == [] and t.status.kind is Kind.RUNNING
     assert (t.poked_since, t.pokes) == (0.0, 0)
 
 
@@ -227,13 +228,13 @@ def test_turn_started_after_the_idle_read_is_not_poked_and_clears_the_clock(tmp_
 
 def test_resume_clears_the_poke_clock(tmp_path, monkeypatch):
     patch_workspace(monkeypatch, tmp_path)
-    c, wt, sess, d = _setup(tmp_path, monkeypatch, marker=False, stage=Stage.IMPLEMENT,
-                            ticket_count=5, park=PARK_HUMAN, park_msg_id=88,
+    c, wt, sess, d = _setup(tmp_path, monkeypatch, marker=False, stage=Stage.IMPLEMENT, status=human(),
+                            ticket_count=5, park_msg_id=88,
                             poked_since=time.time() - HOUR, pokes=12)
     write_session(c.state_dir, T, N, SessionRecord("recorded-session", "implement"))
     patch_events(monkeypatch, [Reply(reply_to_msg_id=88, text="go on")])
     main.run_pass(c, d)
     patch_events(monkeypatch, [])
     t = _task(c)
-    assert sess.resumed and t.park == "" and (t.poked_since, t.pokes) == (0.0, 0)
+    assert sess.resumed and t.status.kind is Kind.RUNNING and (t.poked_since, t.pokes) == (0.0, 0)
 

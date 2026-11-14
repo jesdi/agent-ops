@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import pytest
 
 import dispatcher.main as main
-from dispatcher.state import SessionRecord, Stage, has_waiting, load, read_session, save, write_session
+from dispatcher.state import (SessionRecord, Stage, has_waiting, load, read_session, save, write_session)
 from tests.test_main import deps, patch_events
 from tests.test_session_resume_acceptance import CODEX_MODEL, RecordingSessions, _config
 from tests.test_stop_hook_session_acceptance import (
@@ -22,6 +22,7 @@ from tests.test_stop_hook_session_acceptance import (
     hook_fixture,
     served_hook,
 )
+from dispatcher.status import Kind
 
 
 def test_subagent_turn_leaves_live_root_review_unparked_after_dispatch(
@@ -48,7 +49,7 @@ def test_subagent_turn_leaves_live_root_review_unparked_after_dispatch(
     assert result.returncode == 0, result.stderr
     after = load(c.state_dir, REPOSITORY, ISSUE)
     assert after.stage is Stage.REVIEW
-    assert after.park == ""
+    assert after.status.kind is Kind.RUNNING
     assert sessions.is_alive(REPOSITORY, ISSUE)
     assert sessions.end_calls == []
     assert sessions.spawned == [] and sessions.resume_records == []

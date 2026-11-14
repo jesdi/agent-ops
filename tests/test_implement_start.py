@@ -5,10 +5,12 @@ import json
 import pytest
 
 from dispatcher import eventlog, intents, main, messages
-from dispatcher.state import (PlanApprovalRequest, Stage, load, read_stage_signal,
-                              resumable_crash)
+from dispatcher.state import (PlanApprovalRequest, Stage, load, read_stage_signal)
 from tests.test_main import (FakeSessions, approve_plan, cfg, deps, make_task, patch_usage,
                              write_tickets)
+from tests.statuses import failed, held, waking
+from dispatcher.state import operator_request
+from dispatcher.status import Kind, crashed
 
 REQUEST = PlanApprovalRequest(".agent/review.html")
 
@@ -16,7 +18,8 @@ REQUEST = PlanApprovalRequest(".agent/review.html")
 def _approved(tmp_path, tickets=3, sessions=None, **task_fields):
     """A task at the plan gate whose session reports the operator's approval."""
     config = cfg(tmp_path)
-    wt = make_task(config, stage=Stage.AWAITING_PLAN_REVIEW, **task_fields)
+    task_fields.setdefault("gated", True)
+    wt = make_task(config, stage=Stage.PLAN, **task_fields)
     write_tickets(wt, tickets)
     approve_plan(config, wt, task_fields.get("spec_path", ""))
     (wt / ".agent" / "stage.json").write_text(json.dumps({
@@ -45,7 +48,7 @@ def test_denied_start_mutates_nothing_and_recovery_starts_one_session(
         main.run_pass(config, dependencies)
     assert sessions.spawned == [] and sessions.ended == []
     task = _task(config)
-    assert (task.stage, task.ticket_count) == (Stage.AWAITING_PLAN_REVIEW, 0)
+    assert (task.stage, task.status.kind, task.ticket_count) == (Stage.PLAN, Kind.RUNNING, 0)
     assert read_stage_signal(wt).status == "done"
     assert _events(config, "stage-started") == []
 
@@ -87,7 +90,8 @@ def test_implement_done_launches_review_deferred_under_denial(tmp_path, monkeypa
     patch_usage(monkeypatch, util=0.99)
     main.run_pass(config, dependencies)
     assert sessions.spawned == []
-    assert _task(config).stage == Stage.IMPLEMENT
+    task = _task(config)    # review waits to launch, holding no capacity
+    assert (task.stage, task.status) == (Stage.REVIEW, waking(cause="next-stage"))
 
     patch_usage(monkeypatch, util=0.2)
     main.run_pass(config, dependencies)
@@ -108,8 +112,8 @@ def test_launcher_raise_does_not_record_the_start(tmp_path, monkeypatch):
     assert _events(config, "stage-started") == []
     assert "implement_started" not in dependencies.notifier.sent
     task = _task(config)
-    assert (task.stage, task.crashed_stage, task.ticket_count) == (
-        Stage.FAILED, "implement", 3)
+    assert (task.stage, task.status, task.ticket_count) == (
+        Stage.IMPLEMENT, failed("task-crash"), 3)
     assert len(_events(config, "failed")) == 1
 
 
@@ -125,7 +129,7 @@ def test_resume_after_a_failed_implement_launch_needs_no_second_approval(
     patch_usage(monkeypatch, util=0.2)
     main.run_pass(config, dependencies)
     failed = _task(config)
-    assert resumable_crash(failed) and failed.track == "deep"
+    assert crashed(failed.status) and failed.track == "deep"
 
     intents.write_intent(config.state_dir, "resume", "portfolio_eval", 42, {}, "op", 1)
     sessions = FakeSessions()
@@ -138,8 +142,8 @@ def test_resume_after_a_failed_implement_launch_needs_no_second_approval(
         (42, "implement", "anthropic/claude-opus-5")]
     assert sessions.spawned[0][4] == "medium"       # the deep track's entry
     task = _task(config)
-    assert (task.stage, task.crashed_stage, task.operator_request) == (
-        Stage.IMPLEMENT, "", None)
+    assert (task.stage, task.status.kind, operator_request(task)) == (
+        Stage.IMPLEMENT, Kind.RUNNING, None)
     assert (task.gated, task.asked, task.ticket_count) == (True, True, 3)
     assert not [n for n in d.notifier.sent if "review" in n or "parked" in n]
 
@@ -164,17 +168,17 @@ def test_counters_retained_on_denial_reset_on_start(tmp_path, monkeypatch):
 
 def test_operator_request_preserved_on_denial_cleared_on_start(tmp_path, monkeypatch):
     config, _wt, _sessions, dependencies = _approved(
-        tmp_path, operator_request=REQUEST, spec_path="specs/x/spec.md")
+        tmp_path, status=held(REQUEST), spec_path="specs/x/spec.md")
 
     patch_usage(monkeypatch, util=0.99)
     main.run_pass(config, dependencies)
     t = _task(config)
-    assert (t.operator_request, t.spec_path) == (REQUEST, "specs/x/spec.md")
+    assert (operator_request(t), t.spec_path) == (REQUEST, "specs/x/spec.md")
 
     patch_usage(monkeypatch, util=0.2)
     main.run_pass(config, dependencies)
     t = _task(config)
-    assert (t.operator_request, t.spec_path) == (None, "specs/x/spec.md")
+    assert (operator_request(t), t.spec_path) == (None, "specs/x/spec.md")
 
 
 def test_queued_messages_delivered_only_after_successful_start(tmp_path, monkeypatch):
@@ -209,7 +213,7 @@ def test_no_round_an_implement_session_reports_parks_it(tmp_path, monkeypatch, l
     main.run_pass(config, dependencies)
 
     task = _task(config)
-    assert (task.stage, task.park) == (Stage.IMPLEMENT, "")
+    assert (task.stage, task.status.kind) == (Stage.IMPLEMENT, Kind.RUNNING)
     assert (task.review_rounds, task.e2e_rounds, task.ci_rounds) == (0, 0, 0)
     assert sessions.ended == []
     assert not {"parked_question", "last_round"} & set(dependencies.notifier.sent)

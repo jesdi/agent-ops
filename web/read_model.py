@@ -7,7 +7,7 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from typing import Annotated, Collection, Literal, Mapping
+from typing import Annotated, Collection, Literal, Mapping, NamedTuple
 
 from pydantic import BaseModel, Field, StrictBool, StrictStr
 
@@ -20,13 +20,8 @@ from dispatcher.models import Entry
 from dispatcher.usage import (PaceConfig, ProviderUsage, Reading, Source,
                               WindowKind, admits, minutes_to_reset, readings,
                               required_pace, verdict_note)
-from dispatcher.state import (IN_FLIGHT_STAGES, NO_SLOT, PARK_CI,
-                              PARK_HUMAN, PARK_LOGIN, PARK_REVIEW, PARK_WAKE,
-                              Stage, StageSignal, TaskState, active,
-                              consumes_capacity, holds_slot, max_slots,
-                              resumable_crash, shown_stage)
-
-FINISHED_STAGES = frozenset({Stage.DONE, Stage.FAILED, Stage.CANCELED})
+from dispatcher.state import Stage, StageSignal, TaskState, max_slots
+from dispatcher.status import Cause, HumanReason, Kind, Status, crashed, ended, occupies
 
 Zone = Literal["needs-you", "pipeline"]
 
@@ -48,11 +43,20 @@ COLUMNS: tuple[tuple[str, str, Zone], ...] = (
     ("wont-do", "Wont do", "pipeline"),
 )
 
-# PARK_LOGIN shares the Parked column: it is a task waiting on the operator,
+# The console's fields of a task until the web reads the status (#132
+# ticket 13): what the task file stored before the status, derived from it.
+PARK_HUMAN = "parked"
+PARK_CI = "awaiting-ci"
+PARK_WAKE = "unpark-requested"
+PARK_LOGIN = "parked-login"
+PARK_REVIEW = "awaiting-review"
+GATE_STAGE = "awaiting-plan-review"
+
+# A login park shares the Parked column: it is a task waiting on the operator,
 # and the card keeps the exact park kind so the board can tell them apart.
 # Without the mapping it fell through to the stage column and a session stuck
 # at a /login prompt rendered as healthy "In progress" work.
-# PARK_REVIEW maps to Needs review — a finished plan waiting for a human is
+# A review park maps to Needs review — a finished plan waiting for a human is
 # exactly that column's meaning, parked or not.
 _PARK_COLUMN = {PARK_HUMAN: "parked", PARK_CI: "awaiting-ci",
                 PARK_WAKE: "resuming", PARK_LOGIN: "parked",
@@ -63,21 +67,71 @@ _STAGE_COLUMN = {
     Stage.PLAN.value: "in-progress",
     Stage.IMPLEMENT.value: "in-progress",
     Stage.REVIEW.value: "in-progress",
-    Stage.AWAITING_PLAN_REVIEW.value: "needs-review",
+    GATE_STAGE: "needs-review",
     Stage.PR_OPEN.value: "pr-open",
     Stage.ADDRESS_REVIEW.value: "in-progress",
-    Stage.DONE.value: "done",
-    Stage.FAILED.value: "failed",
-    Stage.BLOCKED.value: "failed",  # legacy stage, surfaced not hidden
-    Stage.STALLED_ON_BUDGET.value: "stalled",
-    Stage.CANCELED.value: "wont-do",
+    Kind.DONE.value: "done",
+    Kind.FAILED.value: "failed",
+    Kind.CANCELED.value: "wont-do",
 }
 
 
-def _park_reason(t: TaskState) -> str:
-    if t.park == PARK_LOGIN:
-        return "login"
-    return t.park_reason if t.park == PARK_HUMAN else ""
+class Shown(NamedTuple):
+    """A task's console fields as the park fields named them."""
+    stage: str
+    park: str
+    park_reason: str
+    park_note: str
+
+
+# Each park kind's park field, and the reason the card shows for it.
+_PARKS = {Kind.HELD_LOGIN: (PARK_LOGIN, "login"), Kind.PARKED_CI: (PARK_CI, ""),
+          Kind.PARKED_REVIEW: (PARK_REVIEW, ""), Kind.PARKED_ACCESS: (PARK_HUMAN, "access"),
+          Kind.PARKED_ANSWERS: (PARK_HUMAN, "decision")}
+_WHY = {HumanReason.LOOP_CAP: "loop cap", HumanReason.BAD_SIGNAL: "bad signal"}
+_AT_GATE = frozenset({Kind.HELD_PLAN_APPROVAL, Kind.PARKED_REVIEW})
+# The wakes a pass launches on its own: no park, and the card stays where the
+# task is (queued, review, pr-open).
+_UNPARKED_WAKES = frozenset({Cause.LAUNCH, Cause.NEXT_STAGE, Cause.ATTENTION_FEEDBACK,
+                             Cause.ATTENTION_CHECK_FAILED, Cause.ATTENTION_CONFLICT,
+                             Cause.ATTENTION_OPERATOR})
+
+
+def shown(t: TaskState) -> Shown:
+    status = t.status
+    if ended(status):
+        return Shown(status.kind.value, "", "", "")
+    stage = GATE_STAGE if _gate_family(status) else t.stage.value
+    return Shown(stage, *_park_fields(status))
+
+
+def _park_fields(status: Status) -> tuple[str, str, str]:
+    """(park, park_reason, park_note) of a task that has not ended."""
+    if status.kind is Kind.WAKING:
+        return _woken_fields(status)
+    if status.kind is Kind.PARKED_HUMAN:
+        return PARK_HUMAN, _WHY.get(status.reason, status.reason.value), status.note
+    park, reason = _PARKS.get(status.kind, ("", ""))
+    return park, reason, status.note if park else ""
+
+
+def _woken_fields(status: Status) -> tuple[str, str, str]:
+    """A wake keeps the question it answers; no reason is shown for it."""
+    if status.cause in _UNPARKED_WAKES:
+        return "", "", ""
+    return PARK_WAKE, "", status.origin.note
+
+
+def _gate_family(status: Status) -> bool:
+    """Held or parked at the plan gate, or woken from there."""
+    origin = status.origin if status.kind is Kind.WAKING else status
+    return origin is not None and origin.kind in _AT_GATE
+
+
+def feedback_pending(t: TaskState) -> bool:
+    """Woken by its PR's attention, the round not yet launched."""
+    return t.status.kind is Kind.WAKING and t.status.cause in _UNPARKED_WAKES - {
+        Cause.LAUNCH, Cause.NEXT_STAGE}
 
 
 def column_for(stage: str, park: str) -> str:
@@ -126,11 +180,11 @@ def delivery_contract(t: TaskState | None, *, wake_blocked: bool) -> str:
     actually do with the message."""
     if t is None:
         return "will deliver when this task is claimed"
-    if resumable_crash(t):
+    if crashed(t.status):
         return "will deliver when you resume this task"
-    if t.stage in FINISHED_STAGES:
+    if ended(t.status):
         return "will deliver if this task restarts"
-    if t.park:
+    if shown(t).park:
         if wake_blocked:
             return ("will deliver when the session resumes — waiting for a "
                     "free slot")
@@ -246,22 +300,23 @@ def task_card(t: TaskState, *, model: str,
               admission: TaskAdmissionView | None = None,
               pinned_track: str = "",
               project: str = "") -> TaskCard:
+    fields = shown(t)
     return TaskCard(
         issue=t.issue, repository=t.repository, project=project, title=t.title,
-        stage=shown_stage(t), park=t.park,
-        park_note=t.park_note,
-        park_reason=_park_reason(t),
-        column=column_for(shown_stage(t), t.park),
+        stage=fields.stage, park=fields.park,
+        park_note=fields.park_note,
+        park_reason=fields.park_reason,
+        column=column_for(fields.stage, fields.park),
         slot=t.slot, branch=t.branch, model=model, track=t.track,
         pinned_track=pinned_track,
         # PARK_HUMAN only: it is the one park whose Telegram ping may be
         # missing, and the console is then the only way to answer it. A login
         # park always has a message id (a failed send degrades to PARK_HUMAN),
         # and CI/wake parks ask the operator nothing.
-        park_note_pending=(t.park == PARK_HUMAN and t.park_msg_id == 0),
-        feedback_pending=t.feedback_pending,
+        park_note_pending=(fields.park == PARK_HUMAN and t.park_msg_id == 0),
+        feedback_pending=feedback_pending(t),
         updated_at=t.updated_at,
-        consuming_capacity=consumes_capacity(t),
+        consuming_capacity=occupies(t.status),
         claimed_at=claimed_at, cycle_seconds=cycle_seconds, score=score,
         undelivered_messages=undelivered_messages,
         wake_blocked=wake_blocked, admission=admission)
@@ -314,9 +369,7 @@ def _cards_by_column(cards: list[TaskCard]) -> dict[str, list[TaskCard]]:
 
 
 def _held_slots(tasks: list[TaskState]) -> list[int]:
-    in_flight = [task for task in tasks if task.stage in IN_FLIGHT_STAGES]
-    return sorted({task.slot for task in in_flight
-                   if holds_slot(task) and task.slot != NO_SLOT})
+    return sorted({task.slot for task in tasks if occupies(task.status)})
 
 
 def build_board_snapshot(tasks: list[TaskState], *, capacity: int,
@@ -342,7 +395,6 @@ def build_board_snapshot(tasks: list[TaskState], *, capacity: int,
                         pinned=pinned_tracks or {},
                         projects=projects or {})
     by_column = _cards_by_column(cards)
-    in_flight = [t for t in tasks if t.stage in IN_FLIGHT_STAGES]
     # Which numbers, not just how many: the console colours a card by its
     # slot, and the gauge must light the same segments. slots_used is the
     # LENGTH of that list, never a second count — counting `slot != NO_SLOT`
@@ -354,9 +406,9 @@ def build_board_snapshot(tasks: list[TaskState], *, capacity: int,
                         ghosts=(ghosts or []) if key == "queued" else [])
                  for key, title, zone in COLUMNS],
         capacity=CapacityView(
-            # via dispatcher.state.active so the console never shows a
+            # via dispatcher.status.occupies so the console never shows a
             # different capacity than the one the dispatcher enforces
-            active=len(active(in_flight)) + onboarding_running,
+            active=sum(occupies(t.status) for t in tasks) + onboarding_running,
             capacity=capacity,
             slots_used=len(slots_held),
             max_slots=max_slots(capacity),
@@ -467,7 +519,7 @@ def task_detail(t: TaskState, *, model: str,
         worktree=t.worktree,
         messages=message_views(msgs, pending_sends or []),
         delivery_contract=delivery_contract(t, wake_blocked=wake_blocked),
-        ci_run_id=t.ci_run_id, effort=t.effort, labels=list(t.labels),
+        ci_run_id=t.status.run_id, effort=t.effort, labels=list(t.labels),
         timeline=stage_timeline(events, t.repository, t.issue, now=now),
         track_when=track_when,
         implement_progress=_implement_progress(t, signal))

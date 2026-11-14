@@ -45,11 +45,11 @@ from dispatcher.classify import (BackgroundView, Look, Observation, Reads, artif
                                  classify, config_note)
 from dispatcher.lifecycle import (AcquireSlot, Admission, ApplyRound, At, ClearTurnMarkers,
                                   EndPokeStretch, EndSession, EnterGate, Event, EventType,
-                                  FailReason, Kind, LaunchFailure, LinkPR, MarkAsked, Notify,
+                                  LaunchFailure, LinkPR, MarkAsked, Notify,
                                   Pane, Poke, PublishSpec, RecordBackgroundWait, ReleaseSlot,
                                   ReportCrash, ReportTaskCrash, RespawnStage, RetryStage,
-                                  Status, Stranded, Transition, WakeBlocked, Woken, decide,
-                                  legacy_fields, login_at, occupies, operator_request)
+                                  Stranded, Transition, WakeBlocked, Woken, decide,
+                                  login_at, operator_request)
 from dispatcher.loops import Decision, Outcome, ResetCause
 from dispatcher.models import (Admitted, Entry, ModelPolicy,
                                Order, override_refusal,
@@ -59,19 +59,17 @@ from dispatcher.models import (Admitted, Entry, ModelPolicy,
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.runtimes import runtime_for
 from dispatcher.sessions import Sessions
-from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_POKES, NO_SLOT, PARK_CI,
-                              PARK_HUMAN,
-                              PARK_LOGIN, PARK_REVIEW, PARK_WAKE, WAKE_BLOCKED_PREFIX,
-                              WHY_ACCESS, WHY_DECISION, WHY_LOOP_CAP, WHY_OPERATOR,
-                              RESPAWNABLE_STAGES, Stage, StageSignal, TaskState, active, allocate_slot,
+from dispatcher.state import (NO_POKES, NO_SLOT, WAKE_BLOCKED_PREFIX,
+                              Stage, StageSignal, TaskState, allocate_slot,
                               clear_session, clear_turn_markers, delete, has_waiting,
-                              holds_slot, launch_entries, load,
+                              launch_entries, load,
                               load_all, max_slots,
                               next_stage, read_background, read_session,
-                              read_stage_doc, read_stage_signal, stage_signal,
-                              implement_done, resumable_crash, shown_stage,
-                              at_gate, end, gate_stage, park, save, task_key, unpark,
+                              read_stage_doc, read_stage_signal, scan, stage_signal,
+                              at_gate, end, park, save, task_key, unpark,
                               wake)
+from dispatcher.status import (Cause, FailReason, HumanReason, Kind, Status, crashed, ended,
+                               occupies)
 from dispatcher.workspace import (MissingBaseError, append_worktree_file, create_workspace,
                                   exclude_local_state, remove_workspace,
                                   write_task_identity, write_worktree_file)
@@ -324,11 +322,11 @@ def _drain(cfg: Config, repository: str, issue: int) -> tuple[str, list[str]]:
 
 
 def _wake(cfg: Config, task: TaskState, text: str, hold: bool = False,
-          actor: str = "dispatcher", *, model_override: str = "",
+          actor: str = "dispatcher", *, cause: Cause = Cause.REPLY, model_override: str = "",
           bypass_usage: bool = False) -> None:
     _queue_message(cfg, task.repository, task.issue, text, actor)
     task = loops.reset(task, ResetCause.OPERATOR_WAKE)
-    save(cfg.state_dir, replace(wake(task, hold=hold),
+    save(cfg.state_dir, replace(wake(task, cause, hold=hold),
                                 resume_model_override=model_override,
                                 resume_bypass_usage=bypass_usage,
                                 updated_at=_now()))
@@ -387,23 +385,30 @@ def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
 
 def _status_lines(cfg: Config) -> list[str]:
     by_name = {t.name: t for t in cfg.repositories}
-    tasks = [t for t in load_all(cfg.state_dir) if t.stage in IN_FLIGHT_STAGES]
+    tasks = [t for t in load_all(cfg.state_dir) if _in_flight(t)]
     lines = []
     for t in tasks:
         model = _display_entry(cfg, by_name.get(t.repository), t)
         slot = "(no slot)" if t.slot == NO_SLOT else f"(slot {t.slot})"
-        lines.append(f"{_ref(cfg, t)} {t.title} — {shown_stage(t)} [{model}]"
-                     + (f" [{t.park}]" if t.park else "") + f" {slot}")
+        kind = t.status.kind
+        lines.append(f"{_ref(cfg, t)} {t.title} — {t.stage.value} [{model}]"
+                     + (f" [{kind.value}]" if kind is not Kind.RUNNING else "") + f" {slot}")
     lines = lines or ["(nothing in flight)"]
-    # The sweep holds a real capacity unit that active() cannot see (its work
+    # The sweep holds a real capacity unit that occupies() cannot see (its work
     # is a herdr tab, not a TaskState) — _run_pass reduces effective
     # capacity for it, so status must count it too or it reports 1/2 on a full
     # box for as long as the sweep runs.
     held = 1 if triage.running() else 0
     if held:
         lines.append("triage sweep running (holds 1 slot)")
-    lines.append(f"capacity {len(active(tasks)) + held}/{cfg.capacity}")
+    lines.append(f"capacity {sum(occupies(t.status) for t in tasks) + held}/{cfg.capacity}")
     return lines
+
+
+def _in_flight(t: TaskState) -> bool:
+    """A task the pipeline still carries before its PR opens: not ended, not
+    at pr-open."""
+    return not ended(t.status) and t.stage is not Stage.PR_OPEN
 
 
 def _ref(cfg: Config, task: TaskState) -> str:
@@ -519,11 +524,23 @@ _COMMAND_ERRORS = (subprocess.CalledProcessError, OSError, LookupError,
                    ValueError, BoardError)
 
 
+# The parks a reply answers — text for the session.
+_REPLY_PARKS = frozenset({Kind.PARKED_HUMAN, Kind.PARKED_ANSWERS, Kind.PARKED_ACCESS,
+                          Kind.PARKED_REVIEW})
+
+
 def _reply_parked(tasks: list[TaskState]) -> list[TaskState]:
-    # Both parks answer the same way — a reply is text for the session. They
-    # stay distinct kinds so /status and the board can say "needs input
-    # mid-stage" vs "plan ready, review at leisure".
-    return [t for t in tasks if t.park in (PARK_HUMAN, PARK_REVIEW)]
+    return [t for t in tasks if t.status.kind in _REPLY_PARKS]
+
+
+# The statuses a Telegram wake (/attach, a reply) acts on: every park and hold.
+_WAKEABLE = _REPLY_PARKS | {Kind.HELD_LOGIN, Kind.PARKED_CI}
+
+
+def _parked(t: TaskState) -> bool:
+    """Parked, held at a login prompt, or woken from either: what a wake
+    acts on."""
+    return t.status.kind in _WAKEABLE or _woken(t)
 
 
 def _handle_telegram(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
@@ -553,7 +570,7 @@ def _handle_attach(cfg: Config, deps: Deps, tasks: list[TaskState],
                    issue: int) -> None:
     """A bare number names one task only while no other repository has the same
     number parked; when two do, wake nothing and list them."""
-    match = [t for t in tasks if t.issue == issue and t.park]
+    match = [t for t in tasks if t.issue == issue and _parked(t)]
     if len(match) == 1:
         _wake(cfg, match[0], "", hold=True)
     elif match:
@@ -581,7 +598,7 @@ def _handle_board_command(cfg: Config, deps: Deps, ev: Command) -> None:
 def _handle_reply(cfg: Config, deps: Deps, tasks: list[TaskState],
                   ev: Reply) -> None:
     login = [t for t in tasks
-             if t.park == PARK_LOGIN and t.park_msg_id == ev.reply_to_msg_id]
+             if t.status.kind is Kind.HELD_LOGIN and t.park_msg_id == ev.reply_to_msg_id]
     match = [t for t in _reply_parked(tasks)
              if t.park_msg_id == ev.reply_to_msg_id]
     if login:
@@ -679,7 +696,7 @@ def _handed_over(task: TaskState, doc: dict | None) -> StageSignal | None:
     """The report a launch replaced, while that launch never committed:
     stage.json names the launched stage, the task still the one before."""
     handover = doc.get(HANDOVER) if doc else None
-    if not isinstance(handover, dict) or doc.get("stage") == task.continued_stage.value:
+    if not isinstance(handover, dict) or doc.get("stage") == task.stage.value:
         return None
     return stage_signal(handover)
 
@@ -710,7 +727,7 @@ def _task_token(cfg: Config, deps: Deps, repository: Repository,
     """The gh config a launch of `task` mounts (`gh_config` of every launch):
     its token directory, never the host's own gh config. None: it can't launch
     this pass. An App error leaves the task as it is, for the next pass (a
-    claimed task that never launched is marked `unlaunched`, which the next
+    claimed task that never launched waits as waking(launch), which the next
     pass's drive launches); a repository the installation doesn't reach parks
     it for access (_wake_reached wakes it). The one place a launch asks for its
     token, before the launch changes anything."""
@@ -720,11 +737,12 @@ def _task_token(cfg: Config, deps: Deps, repository: Repository,
     except github_app.AppError as exc:
         print(f"[warn] #{task.issue}: GitHub App error, its launch waits for the next pass: {exc}",
               file=sys.stderr)
-        if task.stage is Stage.QUEUED and not task.park and not task.unlaunched:
-            save(cfg.state_dir, replace(task, unlaunched=True))
+        if task.stage is Stage.QUEUED and task.status.kind is Kind.RUNNING:
+            save(cfg.state_dir, replace(task, status=Status(Kind.WAKING, cause=Cause.LAUNCH)))
         return None
     except github_app.NoAccess as exc:
-        _park_for_input(cfg, deps, repository, task, f"{exc}: {exc.link}", reason=WHY_ACCESS)
+        _park_for_input(cfg, deps, repository, task,
+                        Status(Kind.PARKED_ACCESS, note=f"{exc}: {exc.link}"))
         return None
 
 
@@ -733,7 +751,7 @@ def _sync_task_tokens(cfg: Config, deps: Deps) -> None:
     (task_tokens.sync); a refresh that fails waits for the next pass."""
     repos = {r.name: r.repo for r in cfg.repositories}
     holders = {task_key(t.repository, t.issue): repos[t.repository]
-               for t in load_all(cfg.state_dir) if holds_slot(t) and t.repository in repos}
+               for t in load_all(cfg.state_dir) if occupies(t.status) and t.repository in repos}
     for why in task_tokens.sync(deps.access, cfg.state_dir, holders, deps.clock()):
         print(f"[warn] task token refresh waits for the next pass: {why}", file=sys.stderr)
 
@@ -779,11 +797,9 @@ def _spawned(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
                               stage.value, entry.model_id, entry.effort,
                               second=launch.second, gh_config=gh_config)
     messages.mark_delivered(cfg.state_dir, task.repository, task.issue, drained)
-    kept = gate_stage(task, stage)
-    return replace(unpark(task), stage=kept, spec_path=spec_path or task.spec_path,
-                   unlaunched=False,
-                   gate_respawn_pending=(task.gate_respawn_pending
-                                         and kept is Stage.AWAITING_PLAN_REVIEW),
+    return replace(unpark(task), stage=stage, spec_path=spec_path or task.spec_path,
+                   gate_respawn_pending=(task.gate_respawn_pending and stage is Stage.PLAN
+                                         and at_gate(task)),
                    **NO_POKES,
                    picks={**task.picks, pick_key(stage.value): str(entry)},
                    implement_providers=_with_implement_provider(task, stage, entry))
@@ -809,7 +825,7 @@ def _continued(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
                launch: Launch, message: str = "", *, gh_config: str) -> tuple[TaskState, str]:
     """Continue the stage's recorded conversation, else launch the stage
     afresh, saying why. Unsaved, with no stage.json and no event."""
-    stage = task.continued_stage
+    stage = task.stage
     record = read_session(cfg.state_dir, task.repository, task.issue)
     if record is None or record.stage != stage.value:
         detail = (f"new conversation: session recorded for {record.stage}" if record
@@ -841,10 +857,10 @@ def _continue_or_restart(cfg: Config, deps: Deps, repository: Repository,
     task, detail = _continued(cfg, deps, repository, task, launch, message,
                               gh_config=gh_config)
     if detail:
-        _write_working(task.worktree, task.continued_stage, launch.entry)
+        _write_working(task.worktree, task.stage, launch.entry)
         task = replace(task, updated_at=_now())
         save(cfg.state_dir, task)
-        _stage_started(cfg, task, replace(launch, stage=task.continued_stage))
+        _stage_started(cfg, task, replace(launch, stage=task.stage))
     _resumed(cfg, task, launch, detail)
     return task, detail
 
@@ -955,10 +971,11 @@ def _with_tail(note: str, tail: str) -> str:
 
 
 def _park_for_input(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
-                    note: str, reason: str = WHY_DECISION) -> None:
+                    status: Status) -> None:
     """The park of the events the table does not take yet: an unreached
     repository (access) and the operator's park intent (ticket 08). A
     session's own parks, answers included, are the table's."""
+    note = status.note
     tail = deps.sessions.capture_tail(task.repository, task.issue)
     login = relogin.classify_login(tail)
     if login is not None and _park_for_login(cfg, deps, repository, task, note,
@@ -971,9 +988,8 @@ def _park_for_input(cfg: Config, deps: Deps, repository: Repository, task: TaskS
     _end_session(cfg, deps, task.repository, task.issue)
     # A wake that ends here is over: the wake that follows this park says
     # for itself whether it is an attach, and on which model.
-    parked = park(task, PARK_HUMAN, note=note, msg_id=msg_id, reason=reason)
-    save(cfg.state_dir, replace(parked, slot=NO_SLOT,
-                                resume_model_override="",
+    parked = park(task, status, msg_id=msg_id)
+    save(cfg.state_dir, replace(parked, resume_model_override="",
                                 resume_bypass_usage=False,
                                 updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", repository=repository.name,
@@ -988,8 +1004,9 @@ def _park_exhausted(cfg: Config, deps: Deps, repository: Repository, task: TaskS
     msg_id = deps.notifier.send(
         "parked_question", issue=task.issue, title=task.title,
         url=_url(repository, task.issue), repository=repository.name, note=note)
-    parked = park(task, PARK_HUMAN, note=note, msg_id=msg_id, reason=WHY_LOOP_CAP)
-    save(cfg.state_dir, replace(parked, slot=NO_SLOT, updated_at=_now()))
+    parked = park(task, Status(Kind.PARKED_HUMAN, reason=HumanReason.LOOP_CAP, note=note),
+                  msg_id=msg_id)
+    save(cfg.state_dir, replace(parked, updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", repository=repository.name,
                           issue=task.issue, stage=task.stage.value,
                           detail="loop exhausted: " + note)
@@ -1030,15 +1047,19 @@ def _park_for_login(cfg: Config, deps: Deps, repository: Repository, task: TaskS
     other sessions hitting the shared-claude-home prompt are caught by
     their own stall timers.
 
-    Returns False when the ping could not be delivered (Notifier.send yields
-    0 on any send error). A park_msg_id of 0 matches no reply, so the task
-    would hold a live container forever with no way back in — the caller
-    falls through to the generic park, which at least releases it.
+    Returns False, and the caller parks, when the task holds no slot (a
+    wake, a PR feedback round: held(login) occupies one), or when the ping
+    could not be delivered (Notifier.send yields 0 on any send error): a
+    park_msg_id of 0 matches no reply, so the task would hold a live
+    container forever with no way back in — the generic park at least
+    releases it.
 
     The waiting marker is cleared like in every other park: it says "the
     session stopped mid-stage", and leaving it set makes the pass after the
     un-park re-park (and END) the freshly re-authenticated session. Pane
     liveness is what this park protects, and the marker has no part in it."""
+    if task.slot == NO_SLOT:
+        return False
     msg_id = deps.notifier.send(
         "needs_relogin", issue=task.issue, title=task.title,
         url=_url(repository, task.issue), repository=repository.name,
@@ -1047,7 +1068,7 @@ def _park_for_login(cfg: Config, deps: Deps, repository: Repository, task: TaskS
     if msg_id == 0:
         return False
     clear_turn_markers(cfg.state_dir, task.repository, task.issue)
-    save(cfg.state_dir, replace(park(task, PARK_LOGIN, note=note, msg_id=msg_id),
+    save(cfg.state_dir, replace(park(task, Status(Kind.HELD_LOGIN, note=note), msg_id=msg_id),
                                 **NO_POKES,
                                 updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", repository=repository.name,
@@ -1105,7 +1126,7 @@ def _spec_note(pub: "spec_publish.PublishResult") -> str:
 
 def _wake_ci(cfg: Config, deps: Deps, repository: Repository) -> None:
     for task in load_all(cfg.state_dir):
-        if task.repository == repository.name and task.park == PARK_CI:
+        if task.repository == repository.name and task.status.kind is Kind.PARKED_CI:
             _check_ci_run(cfg, deps, repository, task)
 
 
@@ -1113,9 +1134,9 @@ def _ci_conclusion(deps: Deps, repository: Repository, task: TaskState) -> str:
     """The conclusion of the run a task is parked on; "" while it runs, or
     when GitHub could not say (asked again next pass)."""
     try:
-        return deps.github.run_status(repository, task.ci_run_id)
+        return deps.github.run_status(repository, task.status.run_id)
     except (subprocess.CalledProcessError, OSError, host_auth.HostWait) as exc:
-        print(f"[warn] run_status failed for #{task.issue} run {task.ci_run_id}: {exc}",
+        print(f"[warn] run_status failed for #{task.issue} run {task.status.run_id}: {exc}",
               file=sys.stderr)
         return ""
 
@@ -1127,18 +1148,19 @@ def _check_ci_run(cfg: Config, deps: Deps, repository: Repository,
     conclusion = _ci_conclusion(deps, repository, task)
     if not conclusion:
         return
+    run_id = task.status.run_id
     if conclusion != "success":
-        dec = loops.evaluate(task, loops.FailedRun(f"run {task.ci_run_id} {conclusion}"),
+        dec = loops.evaluate(task, loops.FailedRun(f"run {run_id} {conclusion}"),
                              cfg.loop_caps)
         task, parked = _apply_loop_decision(
             cfg, deps, repository, task, dec,
             park_exhausted=lambda t, note: _park_exhausted(cfg, deps, repository, t, note))
         if parked:
             return
-    reply = (f"E2E run {task.ci_run_id} concluded: {conclusion} — "
-             f"fetch logs with: gh run view {task.ci_run_id} --log-failed")
+    reply = (f"E2E run {run_id} concluded: {conclusion} — "
+             f"fetch logs with: gh run view {run_id} --log-failed")
     _queue_message(cfg, task.repository, task.issue, reply, "dispatcher")
-    save(cfg.state_dir, replace(wake(task), updated_at=_now()))
+    save(cfg.state_dir, replace(wake(task, Cause.CI), updated_at=_now()))
 
 
 def _poll_pr(cfg: Config, deps: Deps, repository: Repository, task: TaskState
@@ -1158,7 +1180,7 @@ def _poll_pr(cfg: Config, deps: Deps, repository: Repository, task: TaskState
     res = pr_poll.classify(payload, task.feedback_cursor, login,
                            check_cursor=task.check_cursor,
                            conflict_cursor=task.conflict_cursor)
-    if res.kind in ("quiet", "conflict") and not task.park and not task.feedback_pending:
+    if res.kind in ("quiet", "conflict") and task.status.kind is Kind.PARKED_PR:
         statuses = deps.github.ci_statuses(
             repository, payload.get("headRefOid") or "",
             payload.get("headRefName") or "")
@@ -1175,7 +1197,8 @@ def _poll_prs(cfg: Config, deps: Deps, repository: Repository,
     Reaction (address-review spawn) is gated
     separately in _spawn_feedback."""
     for task in load_all(cfg.state_dir):
-        if task.repository != repository.name or task.stage is not Stage.PR_OPEN:
+        if (task.repository != repository.name or task.stage is not Stage.PR_OPEN
+                or ended(task.status)):
             continue
         polled = _poll_pr_or_warn(cfg, deps, repository, task)
         if polled is not None:
@@ -1204,8 +1227,8 @@ def _react_to_pr(cfg: Config, deps: Deps, repository: Repository, task: TaskStat
 
 def _react_to_open_pr(cfg: Config, deps: Deps, repository: Repository,
                       task: TaskState, res: "pr_poll.PollResult") -> None:
-    if task.park or task.feedback_pending:
-        # Parked: only merge/close still matter. Feedback pending: the round
+    if task.status.kind is not Kind.PARKED_PR:
+        # Parked otherwise: only merge/close still matter. Woken: the round
         # already queued reads the PR afresh, so new feedback waits for it.
         return
     if res.kind == "feedback":
@@ -1226,15 +1249,15 @@ def _finish_merged_or_warn(cfg: Config, deps: Deps, repository: Repository,
 
 def _fail_closed_pr(cfg: Config, deps: Deps, repository: Repository,
                     task: TaskState) -> None:
-    """Fail a pr-open task whose PR closed unmerged: unpark it, end its
-    session and send pr_closed once (the task leaves pr-open, so it is not
-    polled again). The session is ended because the implement session is
-    still alive at pr-open, and nothing will ever drive this task again (FAILED isn't in
-    IN_FLIGHT_STAGES), so its session and container would otherwise hold
-    their memory/cpu reservation until the box reboots. The worktree stays
-    for autopsy. A terminal task is never parked (#316)."""
+    """Fail a pr-open task whose PR closed unmerged: end its session and
+    send pr_closed once (an ended task is not polled again). The session is
+    ended because the implement session is still alive at pr-open, and
+    nothing will ever drive this task again, so its session and container
+    would otherwise hold their memory/cpu reservation until the box
+    reboots. The worktree stays for autopsy."""
     _end_session(cfg, deps, task.repository, task.issue)
-    save(cfg.state_dir, replace(end(task, Stage.FAILED), updated_at=_now()))
+    save(cfg.state_dir, replace(end(task, Status(Kind.FAILED, reason=FailReason.PR_CLOSED)),
+                                updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "pr-closed",
                           repository=repository.name, issue=task.issue,
                           stage=Stage.PR_OPEN.value,
@@ -1246,8 +1269,7 @@ def _fail_closed_pr(cfg: Config, deps: Deps, repository: Repository,
 def _pr_feedback(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
                  res: "pr_poll.PollResult") -> None:
     task = loops.reset(task, ResetCause.PR_CYCLE_STARTED)
-    save(cfg.state_dir, replace(task, feedback_pending=True,
-                                attention="feedback",
+    save(cfg.state_dir, replace(wake(task, Cause.ATTENTION_FEEDBACK), attention="feedback",
                                 updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "pr-feedback",
                           repository=repository.name, issue=task.issue,
@@ -1255,6 +1277,10 @@ def _pr_feedback(cfg: Config, deps: Deps, repository: Repository, task: TaskStat
                           detail=f"newest {res.latest_ts}")
     _notify(deps, repository, task, "pr_feedback",
             f"PR #{task.pr_number}, newest feedback {res.latest_ts}")
+
+
+_PR_ATTENTION = {"check-failed": Cause.ATTENTION_CHECK_FAILED,
+                 "conflict": Cause.ATTENTION_CONFLICT}
 
 
 def _pr_attention(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
@@ -1272,8 +1298,8 @@ def _pr_attention(cfg: Config, deps: Deps, repository: Repository, task: TaskSta
         park_exhausted=lambda t, note: _park_exhausted(cfg, deps, repository, t, note))
     if parked:
         return          # cursor already applied; _park_exhausted saved the cursor-advanced task
-    # not exhausted: set feedback_pending + attention, emit pr-attention event, pr_attention notify
-    save(cfg.state_dir, replace(task, feedback_pending=True, attention=res.kind,
+    # not exhausted: woken for the attention, pr-attention event, pr_attention notify
+    save(cfg.state_dir, replace(wake(task, _PR_ATTENTION[res.kind]), attention=res.kind,
                                 updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "pr-attention", repository=repository.name,
                           issue=task.issue, stage=Stage.PR_OPEN.value,
@@ -1304,10 +1330,10 @@ def _finish_merged(cfg: Config, deps: Deps, repository: Repository,
         task_artifacts.pin_published(cfg.state_dir, task, repository.repo)
     remove_workspace(repository, task.worktree, task.branch, dry_run=dry_run)
     deps.github.delete_branch(repository, task.branch)
-    save(cfg.state_dir, replace(end(task, Stage.DONE), feedback_pending=False,
-                                done_at=_now(), updated_at=_now()))
+    save(cfg.state_dir, replace(end(task, Status(Kind.DONE)), done_at=_now(),
+                                updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "merged", repository=repository.name,
-                          issue=task.issue, stage=Stage.DONE.value,
+                          issue=task.issue, stage="done",
                           detail=f"PR #{task.pr_number}")
     _notify(deps, repository, task, "task_done",
             f"https://github.com/{repository.repo}/pull/{task.pr_number}")
@@ -1340,7 +1366,7 @@ def _clear_wake_blocked(cfg: Config, repository: str, issue: int) -> None:
 def _expired(task: TaskState, cutoff_seconds: int) -> bool:
     """Finished for at least the retention window. An unparseable or
     missing terminal_at never expires: fail closed, the card stays."""
-    if task.stage not in TERMINAL_STAGES:
+    if not ended(task.status):
         return False
     try:
         since = datetime.fromisoformat(task.terminal_at)
@@ -1384,13 +1410,13 @@ def _wake_reached(cfg: Config, deps: Deps) -> None:
     """Wake each task parked for access whose repository the App reaches now."""
     repositories = {r.name: r for r in cfg.repositories}
     for task in load_all(cfg.state_dir):
-        if (task.park, task.park_reason) != (PARK_HUMAN, WHY_ACCESS) or task.repository not in repositories:
+        if task.status.kind is not Kind.PARKED_ACCESS or task.repository not in repositories:
             continue
         try:
             deps.access.reached([repositories[task.repository].repo])
         except (github_app.AppError, github_app.NoAccess):
             continue   # asked again next pass
-        save(cfg.state_dir, replace(wake(task), updated_at=_now()))
+        save(cfg.state_dir, replace(wake(task, Cause.ACCESS), updated_at=_now()))
 
 
 def _admissions(cfg: Config, deps: Deps, wants: Callable[[TaskState], bool],
@@ -1451,14 +1477,14 @@ def _seat(cfg: Config, repository: Repository, task: TaskState) -> TaskState | N
 
 def _slot_lost(task: TaskState, others: list[TaskState]) -> bool:
     """Whether the task has no slot, or another holder took its recorded one."""
-    return task.slot == NO_SLOT or any(holds_slot(t) and t.slot == task.slot
+    return task.slot == NO_SLOT or any(occupies(t.status) and t.slot == task.slot
                                        for t in others)
 
 def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
                   dry_run: bool = False) -> None:
     """Resume every woken task the shared admission loop admits."""
     admitted = _admissions(
-        cfg, deps, lambda t: t.park == PARK_WAKE,
+        cfg, deps, _woken,
         lambda repository, task: _wake_launch(cfg, deps, repository, task,
                                               admit, order))
     for repository, task, launch, gh_config in admitted:
@@ -1469,6 +1495,20 @@ def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
             _consume_execution_choice(cfg, task.repository, task.issue)
         except Exception:
             _fail_task_crash(cfg, deps, repository, task, dry_run)
+
+
+# The wakes the drive launches (a claim the App held back, review after
+# implement) and the ones _spawn_feedback launches (PR attention); every other
+# wake is an operator's or an event's, which _resume_woken launches.
+_DRIVEN_WAKES = frozenset({Cause.LAUNCH, Cause.NEXT_STAGE})
+_PR_WAKES = frozenset({Cause.ATTENTION_FEEDBACK, Cause.ATTENTION_CHECK_FAILED,
+                       Cause.ATTENTION_CONFLICT, Cause.ATTENTION_OPERATOR})
+
+
+def _woken(task: TaskState) -> bool:
+    """Woken by the operator or an event, from the status that waited."""
+    return (task.status.kind is Kind.WAKING
+            and task.status.cause not in _DRIVEN_WAKES | _PR_WAKES)
 
 
 def _wake_launch(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
@@ -1501,7 +1541,7 @@ def _resume_one(cfg: Config, deps: Deps, repository: Repository,
     text or a fresh stage prompt), and it is taken back, and the operator
     is not pinged, when the launch fails."""
     # End first, unconditionally. Most parks already stopped the session,
-    # but /attach on a PARK_LOGIN task reaches here with the pane still
+    # but /attach on a login-held task reaches here with the pane still
     # LIVE, and _launch would then type the podman command INTO the
     # running session (the failure _retry_stage and SpawnStage guard).
     _end_session(cfg, deps, task.repository, task.issue)
@@ -1529,10 +1569,9 @@ def _launch_woken(cfg: Config, deps: Deps, repository: Repository,
     _heal_exclude(repository, task)
     # The two fresh-spawn paths below write stage.json and the models.log
     # line themselves (_spawn_stage), with the stage that is launched.
-    if task.crashed_stage or (task.stage is Stage.IMPLEMENT
-                              and implement_done(task)):
-        # No session to continue: the stage it died in, or review after a
-        # done implement session, starts afresh (state.next_launch).
+    if task.status.origin.kind is Kind.FAILED:
+        # No session to continue: the stage it failed in starts afresh
+        # (state.next_stage).
         _respawn(cfg, deps, repository, task, launch, gh_config)
         return ""
     if task.stage is Stage.QUEUED:   # claimed, then parked for access before its first launch
@@ -1544,8 +1583,7 @@ def _launch_woken(cfg: Config, deps: Deps, repository: Repository,
         # No session to continue at pr-open: an operator wake on a parked
         # pr-open task is a fresh address-review round carrying their message.
         task = loops.reset(task, ResetCause.PR_CYCLE_STARTED)
-        task = replace(unpark(task), feedback_pending=False,
-                       attention="operator", feedback_cursor=_cursor_now(),
+        task = replace(unpark(task), attention="operator", feedback_cursor=_cursor_now(),
                        resume_model_override="", resume_bypass_usage=False)
         _clear_wake_blocked(cfg, task.repository, task.issue)
         _spawn_stage(cfg, deps, repository, task, launch, gh_config=gh_config)
@@ -1570,26 +1608,20 @@ def _launch_woken(cfg: Config, deps: Deps, repository: Repository,
 
 
 def _crash_failed(task: TaskState) -> TaskState:
-    """FAILED by a crash, remembering the stage of its next launch
-    (state.next_launch) so Resume can respawn it: its own stage; for a stage
-    with no session of its own (the PR is open, the spec waits at its gate)
-    the stage that has one; for a task that is already a resumable crash,
-    whose turn failed again, the stage it recorded."""
-    stage = next_stage(task)
-    crashed = stage if Stage(stage) in RESPAWNABLE_STAGES else ""
-    return replace(end(task, Stage.FAILED, crashed_stage=crashed),
+    """Failed by a task crash at the stage it had, which Resume starts
+    afresh (state.next_stage)."""
+    return replace(end(task, Status(Kind.FAILED, reason=FailReason.TASK_CRASH)),
                    updated_at=_now())
 
 
 def _respawn(cfg: Config, deps: Deps, repository: Repository,
              task: TaskState, launch: Launch, gh_config: str) -> None:
-    """Resume of a task that has no session to continue; `launch` is its
-    next launch. A crashed task: the stage it died in starts afresh in the
-    same worktree; an implement session continues from its ledger there. A
+    """Resume of a crashed task, which has no session to continue; `launch`
+    is its next launch. The stage it died in starts afresh in the same
+    worktree; an implement session continues from its ledger there. A
     fresh stage prompt, not a resume: the crashed launch may never have
     started a conversation. The queued messages ride in the stage prompt,
     an attach notice among them."""
-    detail = "after crash" if task.crashed_stage else "next launch"
     deps.github.set_status(repository, task.issue, "In progress")
     task = replace(unpark(task),
                    resume_model_override="", resume_bypass_usage=False,
@@ -1598,7 +1630,7 @@ def _respawn(cfg: Config, deps: Deps, repository: Repository,
     task = _spawn_stage(cfg, deps, repository, task, launch, gh_config=gh_config)
     eventlog.append_event(cfg.state_dir, "resumed", repository=repository.name,
                           issue=task.issue, stage=task.stage.value,
-                          model=str(launch.entry), detail=detail)
+                          model=str(launch.entry), detail="after crash")
 
 
 def _fail_task_crash(cfg: Config, deps: Deps, repository: Repository,
@@ -1633,10 +1665,9 @@ def _fail_task_crash(cfg: Config, deps: Deps, repository: Repository,
 
 
 def _awaiting_feedback_round(task: TaskState) -> bool:
-    """A pr-open task with pending feedback that _spawn_feedback launches.
-    A park keeps the feedback and leaves it to the wake that starts the
-    round (_launch_woken); a park lifted without one comes back here."""
-    return task.stage is Stage.PR_OPEN and task.feedback_pending and not task.park
+    """A pr-open task woken for its PR's attention, which _spawn_feedback
+    launches."""
+    return task.status.kind is Kind.WAKING and task.status.cause in _PR_WAKES
 
 
 def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit,
@@ -1661,8 +1692,7 @@ def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit,
         # _cursor_now(), not _now(): GitHub timestamps are second-granular
         # and pr_poll's trigger is a strict `>`, so the cursor has to be
         # quantised to seconds or a comment from the spawn second is lost.
-        task = replace(task, feedback_pending=False,
-                       feedback_cursor=_cursor_now())
+        task = replace(task, feedback_cursor=_cursor_now())
         # The implement session is still alive at pr-open (the pr-open
         # transition never ends it). End first so _launch doesn't type
         # the podman command into the live session's input box.
@@ -1719,7 +1749,7 @@ def _apply(turn: _Turn, task: TaskState, event: Event) -> None:
 
 
 def _execute(turn: _Turn, task: TaskState, t: Transition) -> None:
-    before = task.at
+    before = At(task.stage, task.status)
     if turn.tail is None and any(isinstance(a, Notify) and a.template in _TAIL_NOTICES
                                  for a in t.actions):
         turn.tail = turn.deps.sessions.capture_tail(task.repository, task.issue)
@@ -1758,7 +1788,7 @@ def _pane(deps: Deps, task: TaskState) -> Pane:
 def _login_prompt(turn: _Turn, task: TaskState) -> str:
     """The login prompt in the pane of a session that holds a slot, where a
     park holds instead; the pane is kept for the notice."""
-    if not occupies(task.at.status):
+    if not occupies(task.status):
         return ""
     turn.tail = turn.deps.sessions.capture_tail(task.repository, task.issue)
     login = relogin.classify_login(turn.tail)
@@ -1821,8 +1851,8 @@ def _commit(turn: _Turn, before: At, after: TaskState, t: Transition) -> TaskSta
     moves only with the stage or the status: the grace clock and the wake
     order read it."""
     changed = (before.stage, before.status) != (t.stage, t.status)
-    stored = replace(legacy_fields(after, t.stage, t.status),
-                     slot=after.slot if occupies(t.status) else NO_SLOT,
+    stored = replace(after, stage=t.stage, status=t.status, park_msg_id=0, hold_for_attach=False,
+                     plan_approval=_kept_approval(after, t),
                      updated_at=_now() if changed else after.updated_at,
                      **_parked_choice(t.status))
     _discard_stale_answers(before, t, stored)
@@ -1833,6 +1863,20 @@ def _commit(turn: _Turn, before: At, after: TaskState, t: Transition) -> TaskSta
                                       "event": turn.event.type.value,
                                       "to": t.status.kind.value, "stage": t.stage.value})
     return stored
+
+
+# The statuses a recorded plan approval outlives at plan: the wake it sends
+# and the session that reads it, and a park of that session for the operator.
+_APPROVAL_KEPT = frozenset({Kind.RUNNING, Kind.WAKING, Kind.HELD_LOGIN, Kind.PARKED_HUMAN,
+                            Kind.PARKED_ANSWERS})
+
+
+def _kept_approval(task: TaskState, t: Transition) -> str:
+    """The plan approval applies to the plan session it woke: a new review
+    round (held or parked for review), the move off plan or an end stops
+    it applying."""
+    kept = t.stage is Stage.PLAN and t.status.kind in _APPROVAL_KEPT
+    return task.plan_approval if kept else ""
 
 
 def _parked_choice(status: Status) -> dict:
@@ -1869,7 +1913,7 @@ def _remember_question(turn: _Turn, saved: TaskState) -> None:
     commit (ADR 0015). An operator's reply to it is matched by that id; a
     crash before this write leaves 0, which the console shows as a question
     not yet sent. A fact, never the stage or the status."""
-    if turn.msg_id and saved.park:
+    if turn.msg_id and saved.status.kind in _WAKEABLE:
         save(turn.cfg.state_dir, replace(saved, park_msg_id=turn.msg_id))
 
 
@@ -1902,9 +1946,8 @@ def _history(event: Event, status: Status) -> tuple[str, str] | None:
 def _legacy_event(turn: _Turn, saved: TaskState, t: Transition) -> None:
     entry = _history(turn.event, t.status)
     if entry is not None:
-        stage = t.stage if saved.stage is Stage.FAILED else saved.stage
         eventlog.append_event(turn.cfg.state_dir, entry[0], repository=saved.repository,
-                              issue=saved.issue, stage=stage.value, detail=entry[1])
+                              issue=saved.issue, stage=saved.stage.value, detail=entry[1])
 
 
 # ---- action handlers: (turn, task, action) -> the task they leave ----------
@@ -2233,9 +2276,10 @@ def _adopt_track(cfg: Config, policy: ModelPolicy, task: TaskState,
 
 def _sets_track(task: TaskState, signal: StageSignal | None) -> bool:
     """Is `signal` one that sets the track: the spec session's `done`, or the
-    approval (a `done` at the plan gate)?"""
+    approval (a plan session's `done` once the operator approved)?"""
     return (signal is not None and signal.status == "done"
-            and (task.stage is Stage.SPEC or at_gate(task)))
+            and (task.stage is Stage.SPEC
+                 or (task.stage is Stage.PLAN and bool(task.plan_approval))))
 
 
 def _background_view(cfg: Config, deps: Deps, task: TaskState,
@@ -2253,8 +2297,7 @@ def _park_stranded(cfg: Config, deps: Deps, repository: Repository, task: TaskSt
                    why: str) -> None:
     """Park a waiting task the config strands for `why` (models.stranded):
     the table's track-unconfigured. A live session at a login prompt is
-    held there instead; the task holds no slot (a wake, a PR feedback
-    round), which held(login) needs, so that hold stays outside the table
+    held there instead (_park_for_login); that hold stays outside the table
     until the scheduler events move (ticket 09)."""
     note = config_note(why)
     tail = deps.sessions.capture_tail(task.repository, task.issue)
@@ -2263,6 +2306,14 @@ def _park_stranded(cfg: Config, deps: Deps, repository: Repository, task: TaskSt
         return
     _apply(_Turn(cfg, deps, repository, None, None, False, tail=tail), task,
            Event(EventType.TRACK_UNCONFIGURED, Stranded(note, login="")))
+
+
+def _driven(task: TaskState) -> bool:
+    """A task whose turn a pass drives: a session runs that the pass
+    observes, or a launch waits on admission alone (_DRIVEN_WAKES)."""
+    status = task.status
+    return (status.kind in (Kind.RUNNING, Kind.HELD_PLAN_APPROVAL)
+            or (status.kind is Kind.WAKING and status.cause in _DRIVEN_WAKES))
 
 
 def _drive_task(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
@@ -2279,7 +2330,7 @@ def _observed(turn: _Turn, task: TaskState) -> tuple[TaskState, Event | None]:
     signal = _signal_of(task)
     policy = policy_for(turn.cfg, turn.repository)
     task, turn.signal = _adopt_track(turn.cfg, policy, task, signal, turn.dry_run)
-    if task.at.status.kind is Kind.WAKING:
+    if task.status.kind is Kind.WAKING:
         return task, _launch_due(turn, task, policy)
     return task, classify(_observation(turn, task, policy))
 
@@ -2289,7 +2340,7 @@ def _launch_due(turn: _Turn, task: TaskState, policy: ModelPolicy) -> Event | No
     after implement): resume-admitted once its launch is, nothing while it
     is denied, parked when the config strands it."""
     why = track_gone(policy, task.track)
-    stage = Stage.SPEC if task.at.stage is Stage.QUEUED else task.at.stage
+    stage = Stage.SPEC if task.stage is Stage.QUEUED else task.stage
     launch = None
     if not why:
         launch, _bypass, why = _action_launch(turn.cfg, turn.repository, task, stage,
@@ -2314,8 +2365,7 @@ def _wake_room(turn: _Turn, task: TaskState) -> Event | None:
 
 
 def _no_room(cfg: Config, task: TaskState) -> str:
-    """Why the wake has no room; its own file is left out (the legacy
-    `active` counts a waking review as running). A free unit has a free
+    """Why the wake has no room; its own file is left out. A free unit has a free
     slot: a slot is held only by a task that holds a unit, and there are two
     more slots than units (state.max_slots); AcquireSlot still refuses."""
     tasks = [t for t in load_all(cfg.state_dir)
@@ -2373,7 +2423,7 @@ def _done_reads(task: TaskState, signal: StageSignal) -> Reads:
     if task.stage is Stage.SPEC:
         return Reads(spec=check_spec(artifact_path(task, signal)))
     tickets = check_tickets(Path(task.worktree) / TICKETS_DIR)
-    if not at_gate(task):
+    if task.stage is not Stage.PLAN:
         return Reads(tickets=tickets)
     # The approval: the revision the dispatcher recorded when it drained the
     # operator's approve (never the worktree's answers file, which the
@@ -2418,7 +2468,7 @@ def _crash_repro(cfg: Config, task: TaskState) -> str:
             or _last_launched(task.worktree))
     runtime = runtime_for(parse_entry(pick, "pick").model_id if pick else "")
     record = read_session(cfg.state_dir, task.repository, task.issue)
-    if record is None or record.stage != task.continued_stage.value:
+    if record is None or record.stage != task.stage.value:
         return "Restart the stage from the dispatcher: no session recorded"
     return (f"cd {shlex.quote(task.worktree)} && "
             f"{runtime.resume_cmd(record.session_id)}  # inside session image")
@@ -2467,7 +2517,7 @@ def _reopened(stale: TaskState, pass_started: str) -> bool:
     back to Ready; its tombstone is swept for a fresh claim. The pass_started
     guard keeps a tombstone written by THIS pass's cancel intent (its board
     write lagging or failed) from resurrecting the task it just retired."""
-    return (stale.stage is Stage.CANCELED
+    return (stale.status.kind is Kind.CANCELED
             and not (pass_started and stale.updated_at >= pass_started))
 
 
@@ -2544,7 +2594,7 @@ def _commit_claim(cfg: Config, deps: Deps, repository: Repository, cand: Candida
     recoverable partial claim rather than a silently lost slot. A failure
     from here on releases the board claim back to Ready. A repository the
     installation doesn't reach is claimed and parked; an App error leaves it
-    claimed and unlaunched, for the next pass (_task_token)."""
+    claimed and waking(launch), for the next pass (_task_token)."""
     task = TaskState(issue=cand.number, repository=repository.name,
                      stage=Stage.QUEUED, slot=slot, worktree=wt,
                      branch=f"agent/task-{cand.number}",
@@ -2583,8 +2633,14 @@ def _claim_new(cfg: Config, deps: Deps, repositories: list[Repository],
                pass_started: str = "") -> None:
     """Claim free units one at a time, each via claims.pick_project. A paused
     project claims nothing; a project leaves the round when its candidates run
-    out or provisioning fails for it."""
-    all_tasks = load_all(cfg.state_dir)
+    out or provisioning fails for it. Nothing is claimed while a task file
+    cannot be read: the task it holds may own the issue a claim would take
+    again, and a capacity unit and a slot no count can see."""
+    all_tasks, unreadable = scan(cfg.state_dir)
+    if unreadable:
+        print(f"[warn] no claims this pass: task file(s) cannot be read: "
+              f"{', '.join(p.name for p in unreadable)}", file=sys.stderr)
+        return
     free = claims.claim_room(cfg.capacity, cfg.max_open, all_tasks,
                              triage_running=False)
     if free <= 0:
@@ -2665,7 +2721,7 @@ def _task_for_intent(cfg: Config, intent: intents.Intent) -> TaskState | None:
 def _apply_reply_intent(cfg: Config, deps: Deps, task: TaskState | None,
                         intent: intents.Intent) -> None:
     """Deliver a reply, or inject it when a login prompt owns the pane."""
-    if task is not None and task.park == PARK_LOGIN:
+    if task is not None and task.status.kind is Kind.HELD_LOGIN:
         _inject_login_code(cfg, deps, task, intent.payload.get("text", ""))
         return
     # A legacy intent (repository "") names its project only through its task,
@@ -2692,11 +2748,18 @@ def _wake_for_queued_message(cfg: Config, deps: Deps, task: TaskState) -> None:
         # So it parks now, as the grace park would (session ended, slot
         # freed), and wakes below.
         _end_session(cfg, deps, task.repository, task.issue)
-        task = replace(park(task, PARK_REVIEW, request=task.operator_request),
-                       slot=NO_SLOT)
-    if task.park in (PARK_HUMAN, PARK_REVIEW):
+        task = park(task, _review_park(task.status))
+    if task.status.kind in _REPLY_PARKS:
         task = loops.reset(task, ResetCause.OPERATOR_WAKE)
-        save(cfg.state_dir, replace(wake(task), updated_at=_now()))
+        save(cfg.state_dir, replace(wake(task, Cause.REPLY), updated_at=_now()))
+
+
+def _review_park(status: Status) -> Status:
+    """The gate's page parked for review: the held request, or for a session
+    reworking the plan the prescribed page armed for no revision."""
+    if status.kind is Kind.HELD_PLAN_APPROVAL:
+        return replace(status, kind=Kind.PARKED_REVIEW)
+    return Status(Kind.PARKED_REVIEW, path=REVIEW_PAGE)
 
 
 def _apply_answers_intent(cfg: Config, deps: Deps, task: TaskState | None,
@@ -2716,8 +2779,7 @@ def _apply_answers_intent(cfg: Config, deps: Deps, task: TaskState | None,
 
 def _parkable_task(deps: Deps, task: TaskState | None, issue: int) -> bool:
     return bool(task is not None
-                and task.stage in IN_FLIGHT_STAGES
-                and not task.park
+                and task.status.kind in (Kind.RUNNING, Kind.HELD_PLAN_APPROVAL)
                 and deps.sessions.is_alive(task.repository, issue))
 
 
@@ -2733,8 +2795,9 @@ def _apply_park_intent(cfg: Config, deps: Deps, by_name: dict,
         print(f"[warn] park intent for #{issue}: repository "
               f"{task.repository!r} left the config — skipped", file=sys.stderr)
         return
-    _park_for_input(cfg, deps, repository, task, note="parked by operator",
-                    reason=WHY_OPERATOR)
+    _park_for_input(cfg, deps, repository, task,
+                    Status(Kind.PARKED_HUMAN, reason=HumanReason.OPERATOR,
+                           note="parked by operator"))
 
 
 def _release_killed_task(cfg: Config, deps: Deps, by_name: dict,
@@ -2746,7 +2809,8 @@ def _release_killed_task(cfg: Config, deps: Deps, by_name: dict,
         except Exception as exc:
             print(f"[warn] release failed while killing #{issue}: {exc}",
                   file=sys.stderr)
-    save(cfg.state_dir, replace(end(task, Stage.FAILED), updated_at=_now()))
+    save(cfg.state_dir, replace(end(task, Status(Kind.FAILED, reason=FailReason.KILLED)),
+                                updated_at=_now()))
 
 
 def _apply_kill_intent(cfg: Config, deps: Deps, by_name: dict,
@@ -2791,8 +2855,7 @@ def _apply_cancel_intent(cfg: Config, deps: Deps, by_name: dict,
     _end_session(cfg, deps, cancel_repository, issue)
     _cancel_board_issue(deps, by_name, cancel_repository, issue)
     if task is not None:
-        save(cfg.state_dir, replace(end(task, Stage.CANCELED), slot=NO_SLOT,
-                                    updated_at=_now()))
+        save(cfg.state_dir, replace(end(task, Status(Kind.CANCELED)), updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "canceled", repository=cancel_repository,
                           issue=issue, stage=task.stage.value if task else "",
                           actor=intent.actor, detail="canceled by operator")
@@ -2843,22 +2906,14 @@ def _save_queued_resume(cfg: Config, task: TaskState, model: str,
                                 resume_bypass_usage=bypass_usage))
 
 
-def _is_parked(task: TaskState | None) -> bool:
-    return task is not None and bool(task.park)
-
-
 def _to_resume(task: TaskState | None, issue: int) -> TaskState | None:
     """The task a resume wakes; None (skipped) unless it is parked or a
-    resumable crash."""
-    if task is not None and resumable_crash(task):
-        # Back to the stage it crashed in, queued like any wake so capacity,
-        # slots and admission still decide when; crashed_stage stays set so
-        # _resume_one respawns the stage instead of continuing a transcript.
-        # A crash at the gate (an older file) resumes plan: no session runs
-        # at the gate before it reports a plan ready again.
-        crashed = replace(task, stage=Stage(task.crashed_stage))
-        return replace(task, stage=crashed.continued_stage, terminal_at="")
-    if not _is_parked(task):
+    crash. A crash is queued like any wake, so capacity, slots and admission
+    still decide when; it wakes from failed, so _resume_one respawns its
+    stage instead of continuing a transcript."""
+    if task is not None and crashed(task.status):
+        return task
+    if task is None or not _parked(task):
         print(f"[warn] resume intent for #{issue}: task not parked — skipped",
               file=sys.stderr)
         return None
@@ -2873,13 +2928,13 @@ def _apply_resume_intent(cfg: Config, by_name: dict,
     requested_model = str(intent.payload.get("model") or "")
     _require_resume_model(cfg, by_name, task, requested_model)
     bypass_usage = intent.payload.get("bypass_usage") is True
-    if task.park == PARK_WAKE:
+    if task.status.kind is Kind.WAKING:
         _save_queued_resume(cfg, task, requested_model, bypass_usage)
         return
     _wake(cfg, task,
           intent.payload.get("text")
           or "The operator resumed this task. Continue.",
-          hold=False, actor=intent.actor or "operator",
+          hold=False, actor=intent.actor or "operator", cause=Cause.RESUME,
           model_override=requested_model, bypass_usage=bypass_usage)
 
 
@@ -2976,8 +3031,7 @@ def _prune_snapshots(cfg: Config) -> None:
     if not root.exists():
         return
     try:
-        in_flight = [t for t in load_all(cfg.state_dir)
-                     if t.stage in IN_FLIGHT_STAGES]
+        in_flight = [t for t in load_all(cfg.state_dir) if _in_flight(t)]
     except Exception:
         return  # unreadable/corrupt state dir: skip, never abort the sweep
     live = {f"task-{t.repository}-{t.issue}.txt" for t in in_flight} \
@@ -3021,17 +3075,11 @@ def _sandboxed_state(cfg: Config):
 
 def _starving(task: TaskState) -> bool:
     """Is this task legitimately still waiting for the capacity/slot it was
-    denied? Exactly the two queues that mark the marker: _resume_woken's
-    (park == PARK_WAKE) and _spawn_feedback's (_awaiting_feedback_round).
-    Anything else is not waiting for anything, but the driven waits whose
-    wake the table blocks (_wake_room): a claim the App held back, review
-    after implement."""
-    return task.park == PARK_WAKE or _awaiting_feedback_round(task) or _waits_to_launch(task)
-
-
-def _waits_to_launch(task: TaskState) -> bool:
-    return not task.park and (task.unlaunched or (task.stage is Stage.IMPLEMENT
-                                                  and implement_done(task)))
+    denied? Exactly the queues that mark the marker, which wake it: a
+    waking task (_resume_woken, _spawn_feedback, and the driven waits whose
+    wake the table blocks, _wake_room). Anything else is not waiting for
+    anything."""
+    return task.status.kind is Kind.WAKING
 
 
 def _migrate_legacy_keys(cfg: Config) -> None:
@@ -3051,37 +3099,16 @@ def _migrate_legacy_keys(cfg: Config) -> None:
             p.unlink(missing_ok=True)
 
 
-def _reconcile_slots(cfg: Config) -> None:
-    """Re-establish two invariants from disk at the top of every pass, so no
-    terminal path has to remember them and no manual state surgery is ever
-    needed.
-
-    Slots: a task that no longer holds its slot by holds_slot() gives the
-    number back. That is every session-ending park (the leak older code left
-    behind) AND every task that reached a terminal stage — pr-open, done,
-    failed — still recording one.
-
-    Wake-blocked markers: the marker (and the "waiting for a free slot"
-    badge and delivery_contract suffix it drives) is dropped for every task
-    that is not _starving(), plus every marker whose task file is gone. It
-    used to be unlinked only on a successful resume/feedback-spawn and in
-    _flush_done, so every other terminal transition — the kill intent's
-    FAILED tombstone, a crash, a closed PR, a done task inside its retention
-    window — left a dead card claiming forever that it was waiting for a
-    slot, and a re-claim of the same issue inherited the stale badge."""
+def _reconcile_wake_blocked(cfg: Config) -> None:
+    """Re-establish from disk, at the top of every pass, that the wake-blocked
+    marker (and the "waiting for a free slot" badge and delivery_contract
+    suffix it drives) stands only for a task that is _starving(): no
+    terminal path has to remember it, and a re-claim of the same issue never
+    inherits a stale badge. A marker whose task file is gone goes too. (A
+    slot needs no such pass: the save gives it back with the status.)"""
     known: set[str] = set()
     for task in load_all(cfg.state_dir):
         known.add(_wake_blocked_path(cfg, task.repository, task.issue).name)
-        if not holds_slot(task) and task.slot != NO_SLOT:
-            eventlog.append_event(cfg.state_dir, "slot-reclaimed",
-                                  repository=task.repository, issue=task.issue,
-                                  stage=task.stage.value,
-                                  detail=f"stage {task.stage.value}"
-                                         + (f" park {task.park}" if task.park
-                                            else " unparked")
-                                         + f" released slot {task.slot}")
-            task = replace(task, slot=NO_SLOT)
-            save(cfg.state_dir, task)
         if not _starving(task):
             _clear_wake_blocked(cfg, task.repository, task.issue)
     for p in Path(cfg.state_dir).glob(f"{WAKE_BLOCKED_PREFIX}*"):
@@ -3104,7 +3131,7 @@ def _sync_artifacts(cfg: Config, *, dry_run: bool = False,
     for task in load_all(cfg.state_dir):
         try:
             task_artifacts.collect(cfg.state_dir, task, repos.get(task.repository, ""),
-                                   publish=not dry_run and task.stage not in TERMINAL_STAGES,
+                                   publish=not dry_run and not ended(task.status),
                                    auth=auth)
         except (OSError, ValueError, host_auth.HostWait):
             log.exception("Artifact collection failed for %s/%s", task.repository, task.issue)
@@ -3129,7 +3156,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     pass_started = _now()
     _begin_pass_auth(cfg, deps)
     _migrate_legacy_keys(cfg)
-    _reconcile_slots(cfg)
+    _reconcile_wake_blocked(cfg)
     if not dry_run:
         _sync_task_tokens(cfg, deps)
         _apply_intents(cfg, deps)
@@ -3140,7 +3167,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     # Evaluate each triage signal once — triage.running() is a real herdr
     # subprocess; calling it per repository would spawn (1 + len(repositories)) processes
     # each pass. The two signals are semantically distinct: eff is reduced when
-    # the sweep is running (it holds a real capacity unit active() cannot see);
+    # the sweep is running (it holds a real capacity unit occupies() cannot see);
     # claims are paused when any request is in flight (pending = file OR running).
     sweep_running = triage.running()
     occupied = int(sweep_running) + onboarding_sessions.running(cfg.state_dir)
@@ -3161,8 +3188,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     # so one repository's new claims never starve another's approved spec.
     for repository in eff.repositories:
         for task in [t for t in load_all(cfg.state_dir)
-                     if t.repository == repository.name and not t.park
-                     and t.stage in IN_FLIGHT_STAGES]:
+                     if t.repository == repository.name and _driven(t)]:
             try:
                 _drive_task(eff, deps, repository, task, admit, order, dry_run)
             except host_auth.HostWait as exc:   # the turn waits for the App, not a crash

@@ -19,7 +19,7 @@ import dispatcher.main as main
 from dispatcher import execution_overrides, priority, triage
 from dispatcher.config import load_config
 from dispatcher.models import parse_policy
-from dispatcher.state import PARK_WAKE, Stage, load
+from dispatcher.state import Stage, load
 from dispatcher.usage import PaceConfig
 from tests.test_config import SAMPLE
 from tests.test_main import (FakeSessions, approve_plan, cfg, deps, make_task,
@@ -27,6 +27,7 @@ from tests.test_main import (FakeSessions, approve_plan, cfg, deps, make_task,
 from tests.test_priority_auto import both, usage, wk
 from tests.test_triage import BLOB, OLD, RESULT, FakeDeps, _sweep_cfg
 from tests.configfakes import with_project
+from tests.statuses import waking
 
 NOW = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
 PACE = PaceConfig(weekend_weight=1.0, pace_margin=1.0)
@@ -114,8 +115,8 @@ def enter(c, issue, track, stage, **kw):
     """A task whose previous stage just signalled done: PLAN done (the
     operator's approval at the plan review gate) enters implement;
     IMPLEMENT done enters review."""
-    gate = Stage.AWAITING_PLAN_REVIEW if stage is Stage.PLAN else stage
-    wt = make_task(c, issue=issue, stage=gate, track=track, **kw)
+    gated = stage is Stage.PLAN   # a plan session at the review gate
+    wt = make_task(c, issue=issue, stage=stage, track=track, gated=gated, **kw)
     write_tickets(wt, 1)
     if stage is Stage.PLAN:
         approve_plan(c, wt, kw.get("spec_path", ""))
@@ -290,8 +291,8 @@ def test_a_single_entry_pinned_list_waits(tmp_path, monkeypatch):
 
 def test_a_pick_on_a_pinned_track_is_kept(tmp_path, monkeypatch):
     c = make_cfg(tmp_path, monkeypatch, ahead())
-    make_task(c, issue=42, stage=Stage.PLAN, track="architecture",
-              park=PARK_WAKE, picks={"plan": f"{FABLE}@high"})
+    make_task(c, issue=42, stage=Stage.PLAN, status=waking(), track="architecture",
+              picks={"plan": f"{FABLE}@high"})
     sess = FakeSessions()
     main.run_pass(c, deps(sess=sess))
     assert [(r[2], r[3]) for r in sess.resumed] == [

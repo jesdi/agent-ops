@@ -13,9 +13,9 @@ import pytest
 import dispatcher.main as main
 from dispatcher import answers, eventlog, intents as intents_mod, spec_publish
 from dispatcher.artifacts import plan_revision
-from dispatcher.lifecycle import (GATE_STOPPED, PLAN_NO_APPROVAL, At, Kind, Status,
-                                  operator_request)
-from dispatcher.state import NO_SLOT, PlanApprovalRequest, Stage, at_gate, load, save
+from dispatcher.lifecycle import (GATE_STOPPED, PLAN_NO_APPROVAL, At, FailReason, Kind,
+                                  Status, operator_request)
+from dispatcher.state import (NO_SLOT, PlanApprovalRequest, Stage, at_gate, load, save)
 
 from tests.test_main import (PLAN_SUMMARY, SPEC_PATH, POLICY, FakeSessions, approve_plan,
                              cfg, deps, make_task, patch_usage, patch_workspace,
@@ -76,12 +76,12 @@ def _fingerprint(wt):
 def _held(c, minutes=0, **kw):
     """`stage=plan, held(plan-approval(page, fp))` armed for the plan on
     disk, its ready report re-read on every pass."""
-    wt = _plan(c, Stage.AWAITING_PLAN_REVIEW, gated=True, updated_at=_ago(minutes), **kw)
+    wt = _plan(c, gated=True, updated_at=_ago(minutes), **kw)
     t = _task(c)
-    save(c.state_dir, dc_replace(t, operator_request=PlanApprovalRequest(
-        PLAN_SUMMARY, fingerprint=_fingerprint(wt))))
+    save(c.state_dir, dc_replace(t, status=Status(
+        HELD, path=PLAN_SUMMARY, fingerprint=_fingerprint(wt))))
     _ready(wt)
-    assert _task(c).at == At(Stage.PLAN, Status(HELD, path=PLAN_SUMMARY,
+    assert (_task(c).stage, _task(c).status) == At(Stage.PLAN, Status(HELD, path=PLAN_SUMMARY,
                                                 fingerprint=_fingerprint(wt)))
     return wt
 
@@ -107,7 +107,7 @@ def test_plan_gate_holds_during_grace(c, published):
     _ready(wt)
     d = _run(c)
     t, fp = _task(c), _fingerprint(wt)
-    assert t.at == At(Stage.PLAN, Status(HELD, path=PLAN_SUMMARY, fingerprint=fp))
+    assert (t.stage, t.status) == At(Stage.PLAN, Status(HELD, path=PLAN_SUMMARY, fingerprint=fp))
     assert (t.slot, t.gated) == (0, True)
     assert operator_request(t) == PlanApprovalRequest(PLAN_SUMMARY, fingerprint=fp)
     assert "awaiting_plan_review" in d.notifier.sent and len(published) == 1
@@ -118,7 +118,7 @@ def test_plan_gate_is_skipped(c):
     _ready(wt)
     d = _run(c)
     t = _task(c)
-    assert t.at.stage is Stage.IMPLEMENT and operator_request(t) is None
+    assert t.stage is Stage.IMPLEMENT and operator_request(t) is None
     assert (t.gated, t.asked) == (False, False)
     assert _transitions(c) == [{"from": "running", "event": "session-signal",
                                 "to": "running", "stage": "implement"}]
@@ -129,7 +129,7 @@ def test_plan_gate_grace_expires(c):
     wt = _held(c, minutes=16)
     d = _run(c)
     t, fp = _task(c), _fingerprint(wt)
-    assert t.at == At(Stage.PLAN, Status(PARKED_REVIEW, path=PLAN_SUMMARY, fingerprint=fp,
+    assert (t.stage, t.status) == At(Stage.PLAN, Status(PARKED_REVIEW, path=PLAN_SUMMARY, fingerprint=fp,
                                          note="plan ready for review"))
     assert t.slot == NO_SLOT and N in d.sessions.ended
     assert operator_request(t) == PlanApprovalRequest(PLAN_SUMMARY, fingerprint=fp)
@@ -142,14 +142,14 @@ def test_plan_gate_session_dies_during_grace(c):
     t = _task(c)
     assert [s[:2] for s in d.sessions.spawned] == [(N, "plan")]
     assert t.worktree == before.worktree and t.slot == 0
-    assert t.at == At(Stage.PLAN, Status(Kind.RUNNING))
+    assert (t.stage, t.status) == At(Stage.PLAN, Status(Kind.RUNNING))
 
 
 def test_plan_gate_session_dies_with_no_rounds_left(c):
     wt = _held(c, unattended_rounds=2)
     d = _run(c, FakeSessions(alive=set()))
     t, fp = _task(c), _fingerprint(wt)
-    assert t.at == At(Stage.PLAN, Status(PARKED_REVIEW, path=PLAN_SUMMARY, fingerprint=fp,
+    assert (t.stage, t.status) == At(Stage.PLAN, Status(PARKED_REVIEW, path=PLAN_SUMMARY, fingerprint=fp,
                                          note=GATE_STOPPED))
     assert "plan_session_stopped" in d.notifier.sent and d.sessions.spawned == []
 
@@ -158,11 +158,11 @@ def test_a_rework_session_that_dies_with_no_rounds_left_parks_for_review_armed_f
     """A session reworking the plan (its request disarmed) offers no checked
     plan: it parks for review on the prescribed page, armed for no revision,
     so nothing can be approved before a ready report passes the check."""
-    wt = _plan(c, Stage.AWAITING_PLAN_REVIEW, gated=True, unattended_rounds=2)
+    wt = _plan(c, gated=True, unattended_rounds=2)   # running at the gate
     _signal(wt, "working")
     d = _run(c, FakeSessions(alive=set()))
     t = _task(c)
-    assert t.at == At(Stage.PLAN, Status(PARKED_REVIEW, path=PLAN_SUMMARY, note=GATE_STOPPED))
+    assert (t.stage, t.status) == At(Stage.PLAN, Status(PARKED_REVIEW, path=PLAN_SUMMARY, note=GATE_STOPPED))
     assert operator_request(t) == PlanApprovalRequest(PLAN_SUMMARY, fingerprint="")
     assert "plan_session_stopped" in d.notifier.sent and t.slot == NO_SLOT
 
@@ -175,7 +175,7 @@ def _answered(c, wt, submit):
         actor="op", epoch_ms=1)
     sess = FakeSessions(alive={N})
     _run(c, sess)
-    assert _task(c).at.status.kind in (Kind.RUNNING, Kind.WAKING)
+    assert _task(c).status.kind in (Kind.RUNNING, Kind.WAKING)
     return sess
 
 
@@ -189,14 +189,14 @@ def test_plan_approval_moves_to_implement(c):
     _done(wt)
     _run(c, sess)
     t = _task(c)
-    assert t.at.stage is Stage.IMPLEMENT and operator_request(t) is None
+    assert t.stage is Stage.IMPLEMENT and operator_request(t) is None
     assert [s[1] for s in sess.spawned] == ["implement"]
     assert t.plan_approval == ""          # it left the gate: the record goes
 
 
 def _bounced_at_the_gate(c, sess):
     t = _task(c)
-    assert t.at == At(Stage.PLAN, Status(Kind.RUNNING)) and at_gate(t)
+    assert (t.stage, t.status) == At(Stage.PLAN, Status(Kind.RUNNING)) and at_gate(t)
     assert t.plan_slips == 1 and sess.spawned == []
     assert PLAN_NO_APPROVAL in sess.resumed[-1][1]
 
@@ -233,7 +233,7 @@ def test_done_with_no_approval_is_bounced(c):
     wt = _plan(c)
     _signal(wt, "done", track="standard")
     d = _run(c)
-    assert _task(c).at == At(Stage.PLAN, Status(Kind.RUNNING))
+    assert (_task(c).stage, _task(c).status) == At(Stage.PLAN, Status(Kind.RUNNING))
     (resume,) = d.sessions.resumed
     assert PLAN_NO_APPROVAL in resume[1]
 
@@ -243,8 +243,8 @@ def test_a_gated_plan_task_that_signals_done_is_bounced_like_any_unapproved_done
     _signal(wt, "done", track="standard")
     d = _run(c)
     t = _task(c)
-    assert t.at == At(Stage.PLAN, Status(Kind.RUNNING)) and t.plan_slips == 1
-    assert not at_gate(t)    # `gated` moved it nowhere: a second `done` is bounced too
+    assert (t.stage, t.status) == At(Stage.PLAN, Status(Kind.RUNNING)) and t.plan_slips == 1
+    assert at_gate(t)    # a gated plan session runs at the gate, yet only an approval passes
     (resume,) = d.sessions.resumed
     assert PLAN_NO_APPROVAL in resume[1]
     assert d.sessions.spawned == []
@@ -259,7 +259,7 @@ def test_an_armed_ready_report_read_ten_times_keeps_the_grace_clock(c, monkeypat
     later = datetime.now(timezone.utc) + timedelta(minutes=10, seconds=1)
     monkeypatch.setattr(main, "datetime", _Clock(later))
     _run(c)
-    assert _task(c).at.status.kind is PARKED_REVIEW
+    assert _task(c).status.kind is PARKED_REVIEW
 
 
 class _Clock:
@@ -280,19 +280,18 @@ def test_a_ready_report_armed_for_another_revision_is_a_new_round_not_a_grace_pa
     (wt / PLAN_SUMMARY).write_text((wt / PLAN_SUMMARY).read_text() + "<p>changed</p>")
     d = _run(c)
     t, fp = _task(c), _fingerprint(wt)
-    assert t.at == At(Stage.PLAN, Status(HELD, path=PLAN_SUMMARY, fingerprint=fp))
+    assert (t.stage, t.status) == At(Stage.PLAN, Status(HELD, path=PLAN_SUMMARY, fingerprint=fp))
     assert (t.unattended_rounds, d.notifier.sent) == (1, ["awaiting_plan_review"])
     assert t.updated_at > _ago(1)        # the new round has a fresh grace clock
     assert N not in d.sessions.ended
 
 
 def test_an_approval_with_a_failing_ticket_check_and_no_retry_left_fails(c):
-    wt = _plan(c, Stage.AWAITING_PLAN_REVIEW, gated=True, plan_retries=1)
+    wt = _plan(c, gated=True, plan_retries=1)
     (wt / ".agent" / "tickets" / "01-t1.md").write_text("# tiny\n")
     approve_plan(c, wt, SPEC_PATH)
     _done(wt)
     d = _run(c)
     t = _task(c)
-    # The legacy file keeps no reason or stage for an artifact failure (ticket 06).
-    assert (t.stage, t.at.status.kind) == (Stage.FAILED, Kind.FAILED)
+    assert (t.stage, t.status) == (Stage.PLAN, Status(Kind.FAILED, reason=FailReason.ARTIFACT))
     assert "artifact_failed" in d.notifier.sent and d.sessions.spawned == []

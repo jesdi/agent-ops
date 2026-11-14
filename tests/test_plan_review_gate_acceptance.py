@@ -19,12 +19,14 @@ import dispatcher.main as main
 from dispatcher import intents as intents_mod
 from dispatcher.github import Candidate
 from dispatcher.models import parse_policy
-from dispatcher.state import (NO_SLOT, PARK_HUMAN, PARK_REVIEW, PlanApprovalRequest,
-                              Stage, load, save)
+from dispatcher.state import (NO_SLOT, Stage, load, save)
 
 from tests.test_main import (FakeGitHub, FakeNotifier, FakeSessions, approve_plan,
                              armed_request, cfg, deps, make_task, patch_usage, patch_workspace,
                              write_tickets, GOOD_TICKET)
+from dispatcher.status import Kind
+from dispatcher.state import at_gate, operator_request
+from tests.statuses import held
 
 ISSUE = 412
 BRANCH = "agent/412-csv-export"
@@ -32,7 +34,6 @@ FOLDER = "specs/2026-10-12-csv-export"
 SPEC = f"{FOLDER}/spec.md"
 SUMMARY = ".agent/review.html"
 FOLDER_URL = f"https://github.com/jesdi/portfolio_eval/tree/{BRANCH}/{FOLDER}"
-GATE = "awaiting-plan-review"
 
 SUMMARY_TEXT = (
     '<!doctype html><meta name="agent-ops-review" content="1">'
@@ -153,7 +154,7 @@ def _arm(c):
     """A request armed by hand is bound to the plan on disk, as a pass binds it."""
     t = _task(c)
     save(c.state_dir, dc_replace(
-        t, operator_request=armed_request(t, t.operator_request.path)))
+        t, status=held(armed_request(t, operator_request(t).path))))
 
 
 # 1. The task waits at the plan review gate.
@@ -162,12 +163,11 @@ def test_ready_report_makes_the_task_wait_with_a_folder_link(tmp_path, monkeypat
     wt, sess, d = _first_gate(c, tmp_path)
 
     t = _task(c)
-    assert t.stage.value == GATE
-    assert t.park == ""
+    assert (t.stage, t.status.kind) == (Stage.PLAN, Kind.HELD_PLAN_APPROVAL)
     assert [s for s in sess.spawned if s[1] == "implement"] == []
-    assert t.operator_request is not None
-    assert t.operator_request.kind == "plan-approval"
-    assert t.operator_request.path == SUMMARY
+    assert operator_request(t) is not None
+    assert operator_request(t).kind == "plan-approval"
+    assert operator_request(t).path == SUMMARY
     seen = _everything(d)
     assert FOLDER_URL.lower() in seen
     assert (FOLDER_URL + "/spec.md").lower() not in seen
@@ -207,7 +207,7 @@ def test_gate_commits_and_pushes_the_whole_folder_but_not_the_tickets(tmp_path, 
 
     main.run_pass(c, d)
 
-    assert _task(c).stage.value == GATE
+    assert at_gate(_task(c))
     for name in ("proposal.md", "spec.md", "design.md"):
         assert _blob(tmp_path, f"{FOLDER}/{name}") is not None, name
     assert "CORRECTION-MARKER" in _blob(tmp_path, SPEC)
@@ -223,7 +223,7 @@ def test_push_failure_does_not_block_the_gate_and_is_named(tmp_path, monkeypatch
 
     main.run_pass(c, d)
 
-    assert _task(c).stage.value == GATE
+    assert at_gate(_task(c))
     notified = json.dumps([x for x in d.notifier.contexts]).lower()
     assert "push" in notified
 
@@ -232,7 +232,7 @@ def test_push_failure_does_not_block_the_gate_and_is_named(tmp_path, monkeypatch
 def test_approval_starts_one_implement_session_on_the_standard_track(tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
     wt, sess, d = _first_gate(c, tmp_path)
-    assert _task(c).stage.value == GATE   # the task did wait first
+    assert at_gate(_task(c))   # the task did wait first
     _done(c, wt)
 
     main.run_pass(c, deps(sess=sess))
@@ -249,7 +249,7 @@ def test_approval_starts_one_implement_session_on_the_standard_track(tmp_path, m
 def test_approval_naming_security_runs_implement_on_the_security_entries(tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
     wt, sess, d = _first_gate(c, tmp_path)
-    assert _task(c).stage.value == GATE   # the task did wait first
+    assert at_gate(_task(c))   # the task did wait first
     _done(c, wt, track="security")
 
     main.run_pass(c, deps(sess=sess))
@@ -271,7 +271,7 @@ def test_approval_naming_security_runs_implement_on_the_security_entries(tmp_pat
 def test_approval_naming_an_unconfigured_track_is_bounced_once(tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
     wt, sess, d = _first_gate(c, tmp_path)
-    assert _task(c).stage.value == GATE   # the task did wait first
+    assert at_gate(_task(c))   # the task did wait first
     _done(c, wt, track="fast")
 
     main.run_pass(c, deps(sess=sess))
@@ -280,15 +280,17 @@ def test_approval_naming_an_unconfigured_track_is_bounced_once(tmp_path, monkeyp
     assert "security, standard, trivial" in resume[1].replace("'", "")
     assert [s for s in sess.spawned if s[1] == "implement"] == []
     t = _task(c)
-    assert t.stage.value == GATE
+    assert at_gate(t)
     assert t.track == "standard"
 
 
-# 5. A plan done that never waited at the gate is not accepted.
+# 5. A plan done that never waited at the gate is not accepted: only the
+# operator's recorded approval is, and none was given.
 def test_plan_done_without_the_gate_is_resumed_once_then_parks(tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
     wt = _plan_task(c, tmp_path, git=False)
-    _done(c, wt)
+    _signal(wt, stage="plan", status="done", note="approved",
+            artifact=".agent/tickets", track="standard")
     sess = FakeSessions(alive={ISSUE})
 
     main.run_pass(c, deps(sess=sess))
@@ -297,15 +299,16 @@ def test_plan_done_without_the_gate_is_resumed_once_then_parks(tmp_path, monkeyp
     (resume,) = sess.resumed
     assert "review" in resume[1].lower()
     t = _task(c)
-    assert t.stage is Stage.PLAN and t.park == ""
+    assert t.stage is Stage.PLAN and t.status.kind is Kind.RUNNING
 
-    _done(c, wt)   # the session reports done a second time
+    _signal(wt, stage="plan", status="done", note="approved",
+            artifact=".agent/tickets", track="standard")   # done a second time
     main.run_pass(c, deps(sess=sess))
 
     assert len(sess.resumed) == 1
     assert [s for s in sess.spawned if s[1] == "implement"] == []
     t = _task(c)
-    assert t.stage is Stage.PLAN and t.park == PARK_HUMAN
+    assert t.stage is Stage.PLAN and t.status.kind is Kind.PARKED_HUMAN
 
 
 # 6. An invalid ticket set does not reach the gate.
@@ -324,7 +327,7 @@ def test_ticket_gap_resumes_the_session_and_does_not_ask_for_review(tmp_path, mo
     assert "ticket numbers must be contiguous from 01" in resume[1]
     t = _task(c)
     assert t.stage is Stage.PLAN
-    assert t.operator_request is None
+    assert operator_request(t) is None
     assert not any("review" in n for n in d.notifier.sent)
 
 
@@ -333,8 +336,8 @@ def test_ticket_gap_resumes_the_session_and_does_not_ask_for_review(tmp_path, mo
 def test_respawn_ready_report_reuses_its_round_and_starts_a_fresh_grace_clock(
         tmp_path, monkeypatch, used):
     c = _setup(tmp_path, monkeypatch)
-    wt = _plan_task(c, tmp_path, Stage(GATE), gated=True,
-                    unattended_rounds=used, operator_request=PlanApprovalRequest(SUMMARY))
+    wt = _plan_task(c, tmp_path, Stage.PLAN, gated=True,
+                    unattended_rounds=used, status=held(SUMMARY))
     _ready(wt)
     _arm(c)
     sess = FakeSessions()
@@ -351,8 +354,8 @@ def test_respawn_ready_report_reuses_its_round_and_starts_a_fresh_grace_clock(
 
     t = _task(c)
     assert t.unattended_rounds == used + 1
-    assert t.park == "" and t.slot != NO_SLOT
-    assert t.operator_request == armed_request(t, SUMMARY)
+    assert t.status.kind is Kind.HELD_PLAN_APPROVAL and t.slot != NO_SLOT
+    assert operator_request(t) == armed_request(t, SUMMARY)
     assert t.updated_at > old_clock and not main._grace_elapsed(c, t)
     assert d.notifier.sent == ["awaiting_plan_review"]
 
@@ -361,7 +364,7 @@ def test_respawn_ready_report_reuses_its_round_and_starts_a_fresh_grace_clock(
     assert _task(c) == t
     save(c.state_dir, dc_replace(t, updated_at=old_clock))
     main.run_pass(c, d)
-    assert _task(c).park == PARK_REVIEW
+    assert _task(c).status.kind is Kind.PARKED_REVIEW
     assert _task(c).unattended_rounds == used + 1
 
 
@@ -370,7 +373,7 @@ def test_gate_parks_after_the_grace_time_and_a_later_approval_starts_implement(
     c = dc_replace(_setup(tmp_path, monkeypatch), capacity=1)
     wt = _plan_task(c, tmp_path)
     save(c.state_dir, dc_replace(
-        _task(c), stage=Stage(GATE), operator_request=PlanApprovalRequest(SUMMARY),
+        _task(c), stage=Stage.PLAN, status=held(SUMMARY),
         updated_at=(datetime.now(timezone.utc) - timedelta(minutes=16)).isoformat()))
     _ready(wt)
     _arm(c)
@@ -380,7 +383,7 @@ def test_gate_parks_after_the_grace_time_and_a_later_approval_starts_implement(
     main.run_pass(c, deps(gh, sess))
 
     t = _task(c)
-    assert t.park == PARK_REVIEW
+    assert t.status.kind is Kind.PARKED_REVIEW
     assert sess.ended[:1] == [ISSUE]
     assert t.slot == NO_SLOT
     assert gh.claimed == [99]
@@ -403,7 +406,7 @@ def test_null_grace_never_parks_the_gate(tmp_path, monkeypatch):
                    capacity=1)
     wt = _plan_task(c, tmp_path)
     save(c.state_dir, dc_replace(
-        _task(c), stage=Stage(GATE), operator_request=PlanApprovalRequest(SUMMARY),
+        _task(c), stage=Stage.PLAN, status=held(SUMMARY),
         updated_at=(datetime.now(timezone.utc) - timedelta(hours=12)).isoformat()))
     _ready(wt)
     _arm(c)
@@ -413,7 +416,7 @@ def test_null_grace_never_parks_the_gate(tmp_path, monkeypatch):
     main.run_pass(c, deps(gh, sess))
 
     t = _task(c)
-    assert t.park == "" and t.stage.value == GATE
+    assert (t.stage, t.status.kind) == (Stage.PLAN, Kind.HELD_PLAN_APPROVAL)
     assert sess.ended == []
     assert gh.claimed == []
 
@@ -422,8 +425,7 @@ def test_null_grace_never_parks_the_gate(tmp_path, monkeypatch):
 def test_gate_task_with_a_dead_session_gets_a_fresh_plan_session(tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
     wt = _plan_task(c, tmp_path, track="security")
-    save(c.state_dir, dc_replace(_task(c), stage=Stage(GATE),
-                                 operator_request=PlanApprovalRequest(SUMMARY)))
+    save(c.state_dir, dc_replace(_task(c), stage=Stage.PLAN, status=held(SUMMARY)))
     _ready(wt)
     _arm(c)
     sess = FakeSessions(alive=set())
@@ -432,7 +434,7 @@ def test_gate_task_with_a_dead_session_gets_a_fresh_plan_session(tmp_path, monke
 
     assert [s[:2] for s in sess.spawned] == [(ISSUE, "plan")]
     t = _task(c)
-    assert t.stage is not Stage.FAILED
+    assert t.status.kind is not Kind.FAILED
     assert t.spec_path == SPEC
     assert t.track == "security"
 
@@ -518,6 +520,7 @@ def test_stage_is_never_the_spec_stage_across_a_feedback_round(tmp_path, monkeyp
     c = _setup(tmp_path, monkeypatch)
     wt, sess, d = _first_gate(c, tmp_path)
     seen = [_task(c).stage.value]
+    assert at_gate(_task(c))
 
     intents_mod.write_intent(c.state_dir, "reply", "portfolio_eval", ISSUE,
                              {"text": "drop the currency column, requirement 3"},
@@ -532,6 +535,6 @@ def test_stage_is_never_the_spec_stage_across_a_feedback_round(tmp_path, monkeyp
     main.run_pass(c, d2)
     seen.append(_task(c).stage.value)
 
-    assert seen[0] == GATE and seen[-1] == GATE
+    assert set(seen) == {"plan"} and at_gate(_task(c))
     assert not any(s in ("spec", "awaiting-spec-review") for s in seen), seen
     assert [s for s in sess.spawned if s[1] == "implement"] == []

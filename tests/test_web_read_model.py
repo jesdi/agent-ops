@@ -1,64 +1,71 @@
 """Pure view-model tests: every (stage, park) combination, board grouping."""
 import pytest
 
-from dispatcher.state import (NO_SLOT, PARK_CI, PARK_HUMAN, PARK_LOGIN,
-                              PARK_REVIEW, PARK_WAKE, Stage)
+from dispatcher.state import (NO_SLOT, Stage)
 from tests.configfakes import make_project
 from tests.webfakes import make_task
 from web.read_model import (COLUMNS, build_board, build_board_snapshot,
                              column_for, task_card)
+from tests.statuses import (CANCELED, DONE, PR, RUNNING, access, answers, ci, failed, human,
+                            login, review, waking)
+from web.read_model import PARK_CI, PARK_HUMAN, PARK_LOGIN, PARK_REVIEW, PARK_WAKE
+from dispatcher.status import Kind
 
 # repository -> its project: every repository here is a project of its own
 PROJECTS = {"alpha": make_project("alpha"), "beta": make_project("beta")}
 ALPHA_CAPPED = {**PROJECTS, "alpha": make_project("alpha", max_active=1)}
 
+# The card's stage: a pipeline stage, or what an ended or gate task shows.
 STAGE_COLUMNS = {
-    Stage.QUEUED: "queued",
-    Stage.SPEC: "in-progress",
-    Stage.PLAN: "in-progress",
-    Stage.IMPLEMENT: "in-progress",
-    Stage.REVIEW: "in-progress",
-    Stage.AWAITING_PLAN_REVIEW: "needs-review",
-    Stage.PR_OPEN: "pr-open",
-    Stage.ADDRESS_REVIEW: "in-progress",
-    Stage.DONE: "done",
-    Stage.FAILED: "failed",
-    Stage.BLOCKED: "failed",         # legacy stage: surfaced, not hidden
-    Stage.STALLED_ON_BUDGET: "stalled",
-    Stage.CANCELED: "wont-do",
+    "queued": "queued",
+    "spec": "in-progress",
+    "plan": "in-progress",
+    "implement": "in-progress",
+    "review": "in-progress",
+    "awaiting-plan-review": "needs-review",
+    "pr-open": "pr-open",
+    "address-review": "in-progress",
+    "done": "done",
+    "failed": "failed",
+    "canceled": "wont-do",
 }
 
 
-@pytest.mark.parametrize("stage", list(Stage))
+@pytest.mark.parametrize("stage", list(STAGE_COLUMNS))
 def test_park_overrides_stage(stage):
-    assert column_for(stage.value, PARK_HUMAN) == "parked"
-    assert column_for(stage.value, PARK_CI) == "awaiting-ci"
-    assert column_for(stage.value, PARK_WAKE) == "resuming"
+    assert column_for(stage, PARK_HUMAN) == "parked"
+    assert column_for(stage, PARK_CI) == "awaiting-ci"
+    assert column_for(stage, PARK_WAKE) == "resuming"
     # a login park is the state that most needs an operator — never let it
     # render as healthy in-progress work
-    assert column_for(stage.value, PARK_LOGIN) == "parked"
-    assert column_for(stage.value, PARK_REVIEW) == "needs-review"
+    assert column_for(stage, PARK_LOGIN) == "parked"
+    assert column_for(stage, PARK_REVIEW) == "needs-review"
 
 
-@pytest.mark.parametrize("park, stored, shown", [
-    (PARK_HUMAN, "stalled", "stalled"),
-    (PARK_HUMAN, "", ""),               # a park from before the field
-    (PARK_LOGIN, "", "login"),
-    (PARK_CI, "stalled", ""),           # only Parked-column parks have a reason
-    ("", "decision", ""),               # left over from an earlier park
+@pytest.mark.parametrize("status, shown", [
+    (human("stalled"), "stalled"),
+    (human("loop-cap"), "loop cap"),        # the spelling the console knows
+    (human("bad-signal"), "bad signal"),
+    (login(), "login"),
+    (access(), "access"),
+    (answers("q.html"), "decision"),
+    (ci(7), ""),                            # only Parked-column parks have a reason
+    (waking(human("decision")), ""),
 ])
-def test_card_park_reason(park, stored, shown):
-    t = make_task(park=park, park_reason=stored, slot=NO_SLOT)
+def test_card_park_reason(status, shown):
+    stage = Stage.SPEC
+    t = make_task(stage=stage, status=status, slot=NO_SLOT if status.kind is not Kind.HELD_LOGIN
+                  else 0)
     assert task_card(t, model="m").park_reason == shown
 
 
-@pytest.mark.parametrize("stage", list(Stage))
+@pytest.mark.parametrize("stage", list(STAGE_COLUMNS))
 def test_unparked_column_per_stage(stage):
-    assert column_for(stage.value, "") == STAGE_COLUMNS[stage]
+    assert column_for(stage, "") == STAGE_COLUMNS[stage]
 
 
 def test_task_card_fields():
-    t = make_task(issue=7, stage=Stage.SPEC, slot=1, park=PARK_HUMAN,
+    t = make_task(issue=7, stage=Stage.SPEC, status=human(), slot=1,
                   park_msg_id=0)
     card = task_card(t, model="claude-sonnet-4-5")
     assert card.issue == 7
@@ -71,12 +78,12 @@ def test_task_card_fields():
 
 
 def test_park_note_not_pending_once_notified():
-    t = make_task(park=PARK_HUMAN, park_msg_id=123)
+    t = make_task(status=human(), park_msg_id=123)
     assert task_card(t, model="m").park_note_pending is False
 
 
 def test_login_park_card_shows_its_park_kind_in_the_parked_column():
-    t = make_task(issue=9, stage=Stage.IMPLEMENT, park=PARK_LOGIN,
+    t = make_task(issue=9, stage=Stage.IMPLEMENT, status=login(),
                   park_msg_id=77)
     card = task_card(t, model="m")
     assert card.column == "parked"
@@ -87,8 +94,8 @@ def test_login_park_card_shows_its_park_kind_in_the_parked_column():
 
 
 def test_login_park_counts_towards_active_capacity():
-    tasks = [make_task(issue=1, stage=Stage.IMPLEMENT, slot=0, park=PARK_LOGIN),
-             make_task(issue=2, stage=Stage.SPEC, slot=1, park=PARK_HUMAN)]
+    tasks = [make_task(issue=1, stage=Stage.IMPLEMENT, status=login(), slot=0),
+             make_task(issue=2, stage=Stage.SPEC, status=human(), slot=1)]
     board = build_board(tasks, capacity=2, models={},
                         events=[], heartbeat=None, now=NOW, gate=GATE_OK,
                         queues=[], queue_stale=False,
@@ -104,7 +111,7 @@ def test_login_park_counts_towards_active_capacity():
 def test_build_board_groups_and_counts():
     tasks = [
         make_task(issue=1, stage=Stage.IMPLEMENT, slot=0),
-        make_task(issue=2, stage=Stage.SPEC, slot=1, park=PARK_HUMAN),
+        make_task(issue=2, stage=Stage.SPEC, status=human(), slot=1),
         make_task(issue=3, stage=Stage.PR_OPEN, slot=0),
     ]
     board = build_board(
@@ -150,7 +157,7 @@ def test_task_cards_carry_their_backlog_score():
 
 def test_task_card_score_is_none_when_not_in_ranking():
     """A claimed task that dropped off the backlog board has no score."""
-    tasks = [make_task(issue=5, stage=Stage.DONE)]
+    tasks = [make_task(issue=5, stage=Stage.QUEUED, status=DONE)]
     board = build_board(tasks, capacity=2, models={},
                         events=[], heartbeat=None, now=NOW, gate=GATE_OK,
                         queues=[], queue_stale=False,
@@ -212,13 +219,12 @@ def test_column_titles():
 
 
 def test_task_card_carries_feedback_pending():
-    t = make_task(stage=Stage.PR_OPEN, feedback_pending=True)
+    t = make_task(stage=Stage.PR_OPEN, status=waking(PR, "attention(feedback)"))
     assert task_card(t, model="").feedback_pending is True
 
 
 def test_review_park_shows_in_the_needs_review_column():
-    t = make_task(issue=9, stage=Stage.AWAITING_PLAN_REVIEW, slot=NO_SLOT,
-                  park=PARK_REVIEW, park_msg_id=77)
+    t = make_task(issue=9, stage=Stage.PLAN, status=review(), slot=NO_SLOT, park_msg_id=77)
     card = task_card(t, model="m")
     assert card.column == "needs-review"
     assert card.park == PARK_REVIEW   # the card still distinguishes the kind
@@ -227,8 +233,8 @@ def test_review_park_shows_in_the_needs_review_column():
 
 def test_gate_parked_tasks_hold_neither_capacity_nor_a_slot():
     tasks = [make_task(issue=1, stage=Stage.IMPLEMENT, slot=0),
-             make_task(issue=2, stage=Stage.AWAITING_PLAN_REVIEW,
-                       slot=NO_SLOT, park=PARK_REVIEW)]
+             make_task(issue=2, stage=Stage.PLAN, status=review(),
+                       slot=NO_SLOT)]
     board = build_board(tasks, capacity=2, models={},
                         events=[], heartbeat=None, now=NOW, gate=GATE_OK,
                         queues=[], queue_stale=False,
@@ -239,7 +245,7 @@ def test_gate_parked_tasks_hold_neither_capacity_nor_a_slot():
 
 
 def test_task_card_carries_park_note():
-    t = make_task(park="parked", park_note="which URL?")
+    t = make_task(status=human("operator", "which URL?"))
     card = task_card(t, model="opus")
     assert card.park_note == "which URL?"
 
@@ -250,7 +256,7 @@ def test_task_card_flags_an_unparked_in_flight_task():
 
 
 def test_task_card_does_not_flag_a_ci_parked_task():
-    card = task_card(make_task(stage=Stage.IMPLEMENT, park=PARK_CI),
+    card = task_card(make_task(stage=Stage.IMPLEMENT, status=ci(0)),
                      model="opus")
     assert card.consuming_capacity is False
 
@@ -258,7 +264,7 @@ def test_task_card_does_not_flag_a_ci_parked_task():
 def test_task_card_flags_a_login_parked_task():
     """The card the operator most needs to spot: parked, yet still holding a
     unit, which is why the dispatcher has stopped claiming."""
-    card = task_card(make_task(stage=Stage.SPEC, park=PARK_LOGIN),
+    card = task_card(make_task(stage=Stage.SPEC, status=login()),
                      model="opus")
     assert card.consuming_capacity is True
 
@@ -268,11 +274,11 @@ def test_flagged_cards_reconcile_with_the_capacity_count():
     header. The two must never disagree."""
     tasks = [
         make_task(issue=1, stage=Stage.IMPLEMENT),
-        make_task(issue=2, stage=Stage.SPEC, park=PARK_LOGIN),
-        make_task(issue=3, stage=Stage.IMPLEMENT, park=PARK_CI),
-        make_task(issue=4, stage=Stage.AWAITING_PLAN_REVIEW, park=PARK_REVIEW),
-        make_task(issue=5, stage=Stage.DONE),
-        make_task(issue=6, stage=Stage.FAILED),
+        make_task(issue=2, stage=Stage.SPEC, status=login()),
+        make_task(issue=3, stage=Stage.IMPLEMENT, status=ci(0)),
+        make_task(issue=4, stage=Stage.PLAN, status=human()),
+        make_task(issue=5, stage=Stage.QUEUED, status=DONE),
+        make_task(issue=6, stage=Stage.QUEUED, status=failed("unknown")),
         make_task(issue=7, stage=Stage.QUEUED),
     ]
     board = build_board(tasks, capacity=3, models={},
@@ -705,7 +711,7 @@ def queued(board):
 
 def test_build_board_merges_ghosts_next_claim_and_durations():
     tasks = [make_task(issue=7, stage=Stage.IMPLEMENT),
-             make_task(issue=9, stage=Stage.DONE, slot=-1,
+             make_task(issue=9, stage=Stage.QUEUED, status=DONE, slot=-1,
                        done_at="2026-08-01T12:00:00+00:00")]
     events = [ev(T0, "claimed", 7), ev(T0, "claimed", 9),
               ev("2026-08-01T12:00:00+00:00", "merged", 9)]
@@ -880,21 +886,21 @@ def test_delivery_contract_unclaimed_issue():
         "will deliver when this task is claimed")
 
 
-@pytest.mark.parametrize("stage", [Stage.DONE, Stage.FAILED, Stage.CANCELED])
-def test_delivery_contract_finished_task(stage):
-    t = make_task(stage=stage)
+@pytest.mark.parametrize("status", [DONE, failed("killed"), CANCELED])
+def test_delivery_contract_finished_task(status):
+    t = make_task(status=status)
     assert delivery_contract(t, wake_blocked=False) == (
         "will deliver if this task restarts")
 
 
 def test_delivery_contract_crashed_task_waits_for_resume():
-    t = make_task(stage=Stage.FAILED, crashed_stage="implement")
+    t = make_task(stage=Stage.IMPLEMENT, status=failed())
     assert delivery_contract(t, wake_blocked=False) == (
         "will deliver when you resume this task")
 
 
 def test_delivery_contract_parked_and_starved():
-    t = make_task(park=PARK_HUMAN)
+    t = make_task(status=human())
     assert delivery_contract(t, wake_blocked=True) == (
         "will deliver when the session resumes — waiting for a free slot")
     assert delivery_contract(t, wake_blocked=False) == (
@@ -902,14 +908,14 @@ def test_delivery_contract_parked_and_starved():
 
 
 def test_delivery_contract_running_session():
-    t = make_task(park="")
+    t = make_task(status=RUNNING)
     assert delivery_contract(t, wake_blocked=False) == (
         "will deliver at the next session boundary — this session is still "
         "running")
 
 
 def test_task_detail_carries_thread_and_contract():
-    t = make_task(issue=7, park=PARK_HUMAN)
+    t = make_task(issue=7, status=human())
     detail = task_detail(t, model="m", pane_tail="",
                          session_alive=False, events=[],
                          now=NOW,
@@ -989,7 +995,7 @@ def test_slots_used_never_disagrees_with_the_lit_segments():
     (a parked task still recording a slot) counting `slot != NO_SLOT` read
     "1/4" with zero segments lit. One derivation, one truth."""
     tasks = [make_task(issue=1, stage=Stage.IMPLEMENT, slot=0),
-             make_task(issue=2, stage=Stage.SPEC, slot=1, park=PARK_HUMAN)]
+             make_task(issue=2, stage=Stage.SPEC, status=human(), slot=1)]
     board = build_board(tasks, capacity=2, models={},
                         events=[], heartbeat=None, now=NOW, gate=GATE_OK,
                         queues=[], queue_stale=False,

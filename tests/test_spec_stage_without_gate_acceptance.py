@@ -19,10 +19,12 @@ import dispatcher.main as main
 from dispatcher import intents as intents_mod
 from dispatcher.github import Candidate
 from dispatcher.models import parse_policy
-from dispatcher.state import PARK_HUMAN, Stage, load
+from dispatcher.state import (Stage, load)
 
 from tests.test_main import (FakeGitHub, FakeNotifier, FakeSessions, cfg,
                              deps, make_task, patch_usage, patch_workspace)
+from dispatcher.status import Kind
+from dispatcher.state import operator_request
 
 FOLDER = "specs/2026-10-12-csv-export"
 SPEC = f"{FOLDER}/spec.md"
@@ -93,11 +95,11 @@ def test_spec_session_ends_without_a_review_gate(tmp_path, monkeypatch):
     assert [s[:2] for s in sess.spawned] == [(42, "plan")]
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.stage is Stage.PLAN
-    assert t.park == ""
+    assert t.status.kind is Kind.RUNNING
     assert not any("review" in n for n in d.notifier.sent)
-    assert (t.operator_request is None
-            or t.operator_request.kind != "plan-approval")
-    assert t.stage.value != "awaiting-plan-review"
+    assert (operator_request(t) is None
+            or operator_request(t).kind != "plan-approval")
+    assert not t.gated
 
 
 # 2. A track that is not configured is bounced once.
@@ -115,7 +117,7 @@ def test_spec_session_naming_an_unconfigured_track_is_bounced(tmp_path, monkeypa
     assert "security, standard, trivial" in resume[1].replace("'", "")
     assert [s for s in sess.spawned if s[1] == "plan"] == []
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert t.stage is Stage.SPEC and t.park == ""
+    assert t.stage is Stage.SPEC and t.status.kind is Kind.RUNNING
 
 
 # 3. A done report with a bad spec.md fails the task.
@@ -132,7 +134,7 @@ def test_done_report_with_a_bad_spec_md_fails_the_task(tmp_path, monkeypatch, ma
 
     main.run_pass(c, d)
 
-    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.FAILED
+    assert load(c.state_dir, "portfolio_eval", 42).status.kind is Kind.FAILED
     assert [s for s in sess.spawned if s[1] == "plan"] == []
     (ctx,) = [x for t, x in d.notifier.contexts if t == "artifact_failed"]
     assert "spec.md" in json.dumps(ctx)
@@ -208,7 +210,7 @@ def test_parking_for_answers_records_a_questionnaire_and_survives_a_fresh_sessio
     wt = make_task(c, issue=42, stage=Stage.SPEC, track="standard")
     _ask(c, wt)
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert t.park == PARK_HUMAN
+    assert t.status.kind is Kind.PARKED_ANSWERS
     assert t.asked is True
 
     # The operator answers; the session dies; the operator resumes: a fresh
@@ -216,7 +218,7 @@ def test_parking_for_answers_records_a_questionnaire_and_survives_a_fresh_sessio
     intents_mod.write_intent(c.state_dir, "resume", "portfolio_eval", 42, {}, "op", 1)
     main.run_pass(c, deps(sess=FakeSessions()))
     main.run_pass(c, deps(sess=FakeSessions(alive=set())))
-    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.FAILED
+    assert load(c.state_dir, "portfolio_eval", 42).status.kind is Kind.FAILED
     intents_mod.write_intent(c.state_dir, "resume", "portfolio_eval", 42, {}, "op", 2)
     sess = FakeSessions()
     main.run_pass(c, deps(sess=sess))

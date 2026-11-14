@@ -8,12 +8,14 @@ import pytest
 
 import dispatcher.main as main
 from dispatcher import execution_overrides, messages
-from dispatcher.state import PARK_WAKE, save
+from dispatcher.state import save
 from tests import webfakes
 from tests.pinned import (ASTRA, OPUS, PLAN_DONE, SOL, ahead, anthropic,
                           cards, deny, detail, openai, rig, saved, setup, step,
                           usage_now, wake)
 from tests.test_main import FakeNotifier, FakeSessions, deps, record_session
+from tests.statuses import waking
+from dispatcher.status import Kind
 
 LUNA = "openai/gpt-luna"
 ATTACHING = "The operator is attaching to talk to you directly"
@@ -66,7 +68,7 @@ def test_a_stored_override_on_a_wake_is_still_gated(tmp_path, monkeypatch):
     usage_now(monkeypatch, deny(ahead(), "gpt-sol"))
     sess = wake(c)
     assert sess.resumed == [] and sess.spawned == []
-    assert saved(c).park == PARK_WAKE and stored(c).model == SOL
+    assert saved(c).status.kind is Kind.WAKING and stored(c).model == SOL
 
 
 def test_a_stored_bypass_on_a_wake_skips_the_gate(tmp_path, monkeypatch):
@@ -82,7 +84,7 @@ def test_the_console_shows_the_wait_of_a_denied_stored_override(tmp_path):
     fake, client = rig(tmp_path, {"anthropic": anthropic(),
                                   "openai": openai(0.99)})
     fake.tasks_list = [webfakes.make_task(
-        issue=7, track="architecture", park=PARK_WAKE)]
+        issue=7, track="architecture", status=waking())]
     fake.set_execution_override("alpha", 7, model=SOL, bypass_usage=False)
     card = cards(client)[7]
     assert card["model"] == SOL and card["pinned_track"] == ""
@@ -98,7 +100,7 @@ def test_the_console_shows_the_wait_of_a_denied_stored_override(tmp_path):
 def test_a_failed_attach_resume_says_nothing_and_leaves_no_notice(
         tmp_path, monkeypatch):
     c, wt = implementing(tmp_path, monkeypatch)
-    save(c.state_dir, replace(saved(c), park=PARK_WAKE, hold_for_attach=True))
+    save(c.state_dir, replace(saved(c), status=waking(), hold_for_attach=True))
     notifier = FakeNotifier()
     main.run_pass(c, deps(sess=FakeSessions(resume_raises=[42]),
                           notifier=notifier))
@@ -109,7 +111,7 @@ def test_a_failed_attach_resume_says_nothing_and_leaves_no_notice(
 def test_an_attach_resume_that_starts_pings_after_the_launch(
         tmp_path, monkeypatch):
     c, wt = implementing(tmp_path, monkeypatch)
-    save(c.state_dir, replace(saved(c), park=PARK_WAKE, hold_for_attach=True))
+    save(c.state_dir, replace(saved(c), status=waking(), hold_for_attach=True))
     sess, notifier = FakeSessions(), FakeNotifier()
     main.run_pass(c, deps(sess=sess, notifier=notifier))
     assert ATTACHING in sess.resumed[0][1]

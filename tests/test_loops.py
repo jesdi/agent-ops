@@ -4,6 +4,7 @@ from dataclasses import replace
 from dispatcher.loops import (Loop, ReportedRound, FailedRun, PRAttention, Outcome, evaluate,
                               ResetCause, crash_resume_fields, gate_fields, reset, unattended_rounds_used)
 from dispatcher.state import LoopCaps, Stage, TaskState
+from tests.statuses import failed, waking
 
 # ---------------------------------------------------------------------------
 # Shared fixture helpers
@@ -297,7 +298,7 @@ def test_reset_operator_wake():
 
 
 def test_gate_fields_count_only_what_the_task_does_at_the_gate():
-    gate = _task(stage=Stage.AWAITING_PLAN_REVIEW, unattended_rounds=1)
+    gate = _task(stage=Stage.PLAN, gated=True, unattended_rounds=1)
     assert gate_fields(gate) == {"gated": True, "unattended_rounds": 2,
                                 "gate_respawn_pending": False}
     assert unattended_rounds_used(replace(gate, **gate_fields(gate)))
@@ -311,12 +312,12 @@ def test_gate_fields_count_only_what_the_task_does_at_the_gate():
                                     "gate_respawn_pending": False}
 
 
-def test_crash_resume_spends_the_operator_round_only_at_the_gate():
-    answered = reset(_task(gated=True, crashed_stage="plan"), ResetCause.OPERATOR_WAKE)
+def test_crash_resume_spends_the_operator_round_only_after_the_gate():
+    resumed = _task(stage=Stage.PLAN, gated=True, status=waking(failed(), "resume"))
+    answered = reset(resumed, ResetCause.OPERATOR_WAKE)
     assert crash_resume_fields(answered) == {"unattended_rounds": 0}
     assert crash_resume_fields(replace(answered, unattended_rounds=1)) == {"unattended_rounds": 1}
     assert crash_resume_fields(replace(answered, gated=False)) == {}
-    assert crash_resume_fields(replace(answered, crashed_stage="")) == {}
 
 
 # ---------------------------------------------------------------------------

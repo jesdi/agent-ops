@@ -14,16 +14,15 @@ import dispatcher.main as main
 from dispatcher import eventlog, spec_publish
 from dispatcher.classify import Observation, classify
 from dispatcher.lifecycle import (At, Cause, Event, EventType, FailReason, HumanReason,
-                                  Death, Kind, Pane, Silence, Status, decide, legacy_fields,
-                                  legacy_view, occupies)
-from dispatcher.state import (NO_SLOT, BackgroundWait, Stage, StageSignal, TaskState,
-                              active, load, load_all, mark_background, mark_waiting,
-                              save)
+                                  Death, Kind, Pane, Silence, Status, Transition, decide,
+                                  occupies)
+from dispatcher.state import (NO_SLOT, BackgroundWait, Stage, StageSignal, TaskState, load, load_all, mark_background, mark_waiting, save)
 from tests.test_herdr_liveness_poke_acceptance import HerdrSessions
 from tests.test_main import (FakeGitHub, FakeSessions, cfg, deps, make_task,
                              patch_usage, patch_workspace)
 from tests.test_lifecycle import LOOKED, report
 from tests.test_session_rules_characterization import GOOD_SPEC, LOGIN_TAIL, WORK
+from tests.statuses import RUNNING, DONE, waking
 
 T = "portfolio_eval"
 HOUR = 3600
@@ -66,7 +65,7 @@ def test_a_crash_keeps_the_stage(c):
     task(c, issue=363)
     run(c, FakeSessions(alive=set()))
     t = load(c.state_dir, T, 363)
-    assert t.at == At(Stage.IMPLEMENT, Status(Kind.FAILED, reason=FailReason.SESSION_CRASH))
+    assert At(t.stage, t.status) == At(Stage.IMPLEMENT, Status(Kind.FAILED, reason=FailReason.SESSION_CRASH))
     assert t.slot == NO_SLOT
     assert transitions(c) == [{"from": "running", "event": "session-died", "to": "failed",
                                "stage": "implement"}]
@@ -76,17 +75,17 @@ def test_parking_releases_the_slot(c):
     signal(task(c, slot=3), "blocked", note="which DB?")
     run(c, FakeSessions(alive={42}))
     t = load(c.state_dir, T, 42)
-    assert t.at.status == Status(Kind.PARKED_HUMAN, reason=HumanReason.DECISION,
+    assert t.status == Status(Kind.PARKED_HUMAN, reason=HumanReason.DECISION,
                                  note="which DB?")
-    assert t.slot == NO_SLOT and not occupies(t.at.status)
+    assert t.slot == NO_SLOT and not occupies(t.status)
 
 
 def test_login_hold_keeps_the_slot(c):
     signal(task(c, stage=Stage.SPEC, slot=1), "blocked", stage="spec", note="stuck")
     d = run(c, FakeSessions(alive={42}, tail=LOGIN_TAIL))
     t = load(c.state_dir, T, 42)
-    assert t.at == At(Stage.SPEC, Status(Kind.HELD_LOGIN, note="stuck"))
-    assert t.slot == 1 and active(load_all(c.state_dir)) == [t]
+    assert At(t.stage, t.status) == At(Stage.SPEC, Status(Kind.HELD_LOGIN, note="stuck"))
+    assert t.slot == 1 and [x for x in load_all(c.state_dir) if occupies(x.status)] == [t]
     assert d.sessions.ended == [] and d.notifier.sent == ["needs_relogin"]
 
 
@@ -99,13 +98,13 @@ def test_a_stopped_session_is_poked_then_parked(c):
     for _ in range(2):
         mark_waiting(c.state_dir, T, 42)
         run(c, sess)
-        assert load(c.state_dir, T, 42).at.status.kind is Kind.RUNNING
+        assert load(c.state_dir, T, 42).status.kind is Kind.RUNNING
     assert len(sess.sent_text) == 2
     t = load(c.state_dir, T, 42)
     save(c.state_dir, dc_replace(t, poked_since=time.time() - 2 * HOUR - 1))
     mark_waiting(c.state_dir, T, 42)
     run(c, sess)
-    status = load(c.state_dir, T, 42).at.status
+    status = load(c.state_dir, T, 42).status
     assert (status.kind, status.reason) == (Kind.PARKED_HUMAN, HumanReason.STALLED)
 
 
@@ -115,19 +114,19 @@ def test_a_background_wait_holds_the_task_running_until_its_cap(c):
     sess = HerdrSessions({42: ("idle", 5)}, alive=[42], idle={42: 3 * HOUR})
     run(c, sess)
     run(c, sess)
-    assert load(c.state_dir, T, 42).at.status.kind is Kind.RUNNING
+    assert load(c.state_dir, T, 42).status.kind is Kind.RUNNING
     marker = Path(c.state_dir) / f"background-{T}-42"
     wait = json.loads(marker.read_text())
     marker.write_text(json.dumps({**wait, "since": time.time() - 4 * HOUR}))
     run(c, sess)
-    status = load(c.state_dir, T, 42).at.status
+    status = load(c.state_dir, T, 42).status
     assert (status.kind, status.reason) == (Kind.PARKED_HUMAN, HumanReason.STALLED)
 
 
 def test_a_task_whose_track_left_the_config_is_parked_for_config(c):
     signal(task(c, track="renamed"), "working")
     run(c, FakeSessions(alive={42}))
-    status = load(c.state_dir, T, 42).at.status
+    status = load(c.state_dir, T, 42).status
     assert (status.kind, status.reason) == (Kind.PARKED_HUMAN, HumanReason.CONFIG)
     assert transitions(c)[0]["event"] == "track-unconfigured"
 
@@ -141,10 +140,8 @@ def test_a_launch_that_raises_fails_at_the_stage_that_could_not_start(c):
     gh = FakeGitHub()
     run(c, FakeSessions(alive={42, 43}, spawn_raises={42}), gh)
     t = load(c.state_dir, T, 42)
-    # The legacy file stores no failure reason: crashed_stage reads back as a
-    # session crash until the status is stored (ticket 06). The reason is
-    # the one the transition's event decides: task-crash.
-    assert (t.at.stage, t.at.status.kind) == (Stage.PLAN, Kind.FAILED)
+    # The stored reason is the one the transition's event decides: task-crash.
+    assert (t.stage, t.status) == (Stage.PLAN, Status(Kind.FAILED, reason=FailReason.TASK_CRASH))
     assert (t.spec_path, t.track) == ("spec.md", "standard")
     assert {"from": "running", "event": "launch-failed", "to": "failed",
             "stage": "plan"} in transitions(c)
@@ -181,12 +178,12 @@ def test_a_dispatcher_killed_between_the_launch_and_the_commit_repeats_the_launc
     with pytest.raises(Killed):
         run(c, sess)
     t = load(c.state_dir, T, 42)
-    assert t.at == At(Stage.SPEC, Status(Kind.RUNNING)) and sess.spawned
+    assert At(t.stage, t.status) == At(Stage.SPEC, Status(Kind.RUNNING)) and sess.spawned
     monkeypatch.setattr(main, "save", real)
     sess.ended.clear()
     run(c, sess)
     t = load(c.state_dir, T, 42)
-    assert t.at == At(Stage.PLAN, Status(Kind.RUNNING)) and t.spec_path == "spec.md"
+    assert At(t.stage, t.status) == At(Stage.PLAN, Status(Kind.RUNNING)) and t.spec_path == "spec.md"
     assert sess.ended == [42] and [s[1] for s in sess.spawned] == ["plan", "plan"]
     assert json.loads((wt / ".agent" / "stage.json").read_text())["status"] == "working"
 
@@ -214,7 +211,7 @@ def test_a_dispatcher_killed_after_the_commit_leaves_no_stale_done(c, monkeypatc
     monkeypatch.setattr(main, "save", real)
     run(c, sess)
     t = load(c.state_dir, T, 42)
-    assert t.at == At(Stage.REVIEW, Status(Kind.RUNNING)) and t.pr_number == 0
+    assert At(t.stage, t.status) == At(Stage.REVIEW, Status(Kind.RUNNING)) and t.pr_number == 0
     assert [s[1] for s in sess.spawned] == ["review"]
 
 
@@ -234,7 +231,7 @@ def test_a_new_session_that_reports_at_once_keeps_its_report(c):
     assert json.loads((wt / ".agent" / "stage.json").read_text())["status"] == "blocked"
     run(c, sess)
     t = load(c.state_dir, T, 42)
-    assert (t.at.stage, t.at.status.kind, t.at.status.note) == (
+    assert (t.stage, t.status.kind, t.status.note) == (
         Stage.REVIEW, Kind.PARKED_HUMAN, "which base?")
 
 
@@ -365,12 +362,12 @@ def test_a_gate_session_dead_mid_rework_with_no_rounds_parks_for_review_armed_fo
     (Stage.REVIEW, Status(Kind.WAKING, cause=Cause.NEXT_STAGE)),
     (Stage.IMPLEMENT, Status(Kind.FAILED, reason=FailReason.SESSION_CRASH)),
 ])
-def test_the_legacy_fields_read_back_as_the_status_they_store(stage, status):
-    t = TaskState(issue=42, repository=T, stage=Stage.IMPLEMENT, slot=0, worktree="/w",
-                  branch="b", title="t", updated_at="",
-                  picks={"implement": "anthropic/claude-opus-5"},
-                  implement_providers=["anthropic"])
-    assert legacy_view(legacy_fields(t, stage, status)) == (stage, status)
+def test_a_saved_status_reads_back_as_it_was_stored(tmp_path, stage, status):
+    t = TaskState(issue=42, repository=T, stage=stage, status=status, slot=0, worktree="/w",
+                  branch="b", title="t", updated_at="")
+    save(tmp_path, t)
+    got = load(tmp_path, T, 42)
+    assert (got.stage, got.status) == (stage, status)
 
 
 @pytest.mark.parametrize("stage, status, kept", [
@@ -381,18 +378,9 @@ def test_the_legacy_fields_read_back_as_the_status_they_store(stage, status):
     (Stage.PLAN, Status(Kind.FAILED, reason=FailReason.SESSION_CRASH), ""),
 ])
 def test_the_plan_approval_lasts_only_until_the_task_leaves_the_round(stage, status, kept):
-    t = TaskState(issue=42, repository=T, stage=Stage.AWAITING_PLAN_REVIEW, slot=0,
+    t = TaskState(issue=42, repository=T, stage=Stage.PLAN, status=RUNNING, slot=0,
                   worktree="/w", branch="b", title="t", updated_at="", plan_approval="fp")
-    assert legacy_fields(t, stage, status).plan_approval == kept
-
-
-@pytest.mark.parametrize("status", [Status(Kind.PARKED_ACCESS), Status(Kind.DONE),
-                                    Status(Kind.WAKING, cause=Cause.REPLY)])
-def test_a_status_no_session_event_enters_has_no_legacy_fields(status):
-    t = TaskState(issue=42, repository=T, stage=Stage.IMPLEMENT, slot=0, worktree="/w",
-                  branch="b", title="t", updated_at="")
-    with pytest.raises(ValueError):
-        legacy_fields(t, Stage.IMPLEMENT, status)
+    assert main._kept_approval(t, Transition(status, stage)) == kept
 
 
 def test_a_failed_turn_the_table_cannot_read_is_failed_directly(c, monkeypatch):
@@ -403,7 +391,8 @@ def test_a_failed_turn_the_table_cannot_read_is_failed_directly(c, monkeypatch):
     except RuntimeError:
         main._fail_task_crash(c, deps(), c.repositories[0], load(c.state_dir, T, 42))
     t = load(c.state_dir, T, 42)
-    assert (t.stage, t.crashed_stage) == (Stage.FAILED, "implement")
+    assert (t.stage, t.status) == (Stage.IMPLEMENT,
+                                   Status(Kind.FAILED, reason=FailReason.TASK_CRASH))
 
 
 # --- machine.py is gone --------------------------------------------------------
@@ -421,16 +410,17 @@ def test_the_machine_module_is_gone_and_nothing_imports_it():
 
 def _review_waits(c, **kw):
     """Implement reported done and review was denied: waking(next-stage)."""
-    wt = task(c, slot=NO_SLOT, implement_providers=["anthropic"], **kw)
+    wt = task(c, stage=Stage.REVIEW, status=waking(cause="next-stage"),
+              implement_providers=["anthropic"], **kw)
     signal(wt, "done")
-    assert load(c.state_dir, T, 42).at.status.cause is Cause.NEXT_STAGE
+    assert load(c.state_dir, T, 42).status.cause is Cause.NEXT_STAGE
 
 
 def test_review_takes_a_slot_once_admitted(c):
     _review_waits(c)
     d = run(c, FakeSessions(alive={42}))
     t = load(c.state_dir, T, 42)
-    assert t.at == At(Stage.REVIEW, Status(Kind.RUNNING)) and t.slot == 0
+    assert At(t.stage, t.status) == At(Stage.REVIEW, Status(Kind.RUNNING)) and t.slot == 0
     assert [s[1] for s in d.sessions.spawned] == ["review"]
     assert "review_started" in d.notifier.sent
     assert transitions(c) == [{"from": "waking", "event": "resume-admitted",
@@ -452,12 +442,12 @@ def test_review_with_no_room_stays_waking_and_says_so_once(c):
     for _ in range(2):
         d = run(c, sess)
         t = load(c.state_dir, T, 42)
-        assert t.at == At(Stage.REVIEW, Status(Kind.WAKING, cause=Cause.NEXT_STAGE))
+        assert At(t.stage, t.status) == At(Stage.REVIEW, Status(Kind.WAKING, cause=Cause.NEXT_STAGE))
     assert d.sessions.spawned == []
     assert [e["detail"] for e in _wake_blocked(c)] == ["capacity full"]
-    save(c.state_dir, dc_replace(load(c.state_dir, T, 2), stage=Stage.DONE, slot=NO_SLOT))
+    save(c.state_dir, dc_replace(load(c.state_dir, T, 2), stage=Stage.QUEUED, status=DONE, slot=NO_SLOT))
     run(c, sess)
-    assert load(c.state_dir, T, 42).at == At(Stage.REVIEW, Status(Kind.RUNNING))
+    assert At(load(c.state_dir, T, 42).stage, load(c.state_dir, T, 42).status) == At(Stage.REVIEW, Status(Kind.RUNNING))
 
 
 # --- decide runs once, on facts gathered before it -----------------------------
@@ -489,7 +479,7 @@ def test_a_launch_is_decided_once_with_its_admission_already_asked(c, monkeypatc
     calls = _counted(monkeypatch)
     run(c, FakeSessions(alive={42}))
     assert calls == [EventType.SESSION_SIGNAL]
-    assert load(c.state_dir, T, 42).at == At(Stage.PLAN, Status(Kind.RUNNING))
+    assert At(load(c.state_dir, T, 42).stage, load(c.state_dir, T, 42).status) == At(Stage.PLAN, Status(Kind.RUNNING))
 
 
 def test_a_park_is_decided_once_with_the_login_prompt_already_read(c, monkeypatch):
@@ -497,7 +487,7 @@ def test_a_park_is_decided_once_with_the_login_prompt_already_read(c, monkeypatc
     calls = _counted(monkeypatch)
     run(c, FakeSessions(alive={42}, tail=LOGIN_TAIL))
     assert calls == [EventType.SESSION_SIGNAL]
-    assert load(c.state_dir, T, 42).at.status.kind is Kind.HELD_LOGIN
+    assert load(c.state_dir, T, 42).status.kind is Kind.HELD_LOGIN
 
 
 @pytest.mark.parametrize("stage, at_gate", [(Stage.SPEC, False), (Stage.PLAN, False),
@@ -574,12 +564,11 @@ def test_a_park_saves_its_commit_then_only_the_message_that_asked(c, monkeypatch
 def test_a_wake_the_config_strands_parks_through_the_table(c):
     """_park_stranded is track-unconfigured: one transition, the park's
     question, the slot given back."""
-    from dispatcher.state import PARK_WAKE
-    task(c, park=PARK_WAKE, slot=NO_SLOT, track="renamed")
+    task(c, status=waking(), slot=NO_SLOT, track="renamed")
     d = deps(FakeGitHub(), FakeSessions())
     main._park_stranded(c, d, c.repositories[0], load(c.state_dir, T, 42), "track gone")
     t = load(c.state_dir, T, 42)
-    assert (t.at.status.kind, t.at.status.reason) == (Kind.PARKED_HUMAN, HumanReason.CONFIG)
+    assert (t.status.kind, t.status.reason) == (Kind.PARKED_HUMAN, HumanReason.CONFIG)
     assert transitions(c) == [{"from": "waking", "event": "track-unconfigured",
                                "to": "parked-human", "stage": "implement"}]
     assert d.notifier.sent == ["parked_question"] and t.park_msg_id

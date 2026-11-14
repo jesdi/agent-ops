@@ -16,6 +16,7 @@ from typing import Callable, NamedTuple, TextIO
 from urllib.parse import quote
 
 from dispatcher import config, herdr, sessions, state, triage
+from dispatcher.status import HumanReason, Kind, ended, occupies
 from dispatcher.usage import unavailable
 from dispatcher.usage_providers import cache_path, usage_from_json
 from web import read_model
@@ -220,7 +221,7 @@ def _evidence(name, gate, usages, marker, request, projects, tasks, cfg, now, tr
 
 
 def _used(tasks, triage_tab: bool) -> int:
-    return len(state.active(tasks)) + int(triage_tab)
+    return sum(occupies(t.status) for t in tasks) + int(triage_tab)
 
 
 def _dispatcher_row(root, hb, units, now) -> str:
@@ -275,8 +276,10 @@ def _unreadable(root: Path) -> list[str]:
 
 def _task_line(t: state.TaskState, now, tabs, tabs_why) -> str:
     ref = f"{t.repository}#{t.issue}"
-    word = f"{t.park}/{t.park_reason}" if t.park == state.PARK_HUMAN and t.park_reason else t.park
-    if state.consumes_capacity(t):  # unparked or parked-login: a session runs
+    fields = read_model.shown(t)
+    word = f"{fields.park}/{fields.park_reason}" if (
+        fields.park == read_model.PARK_HUMAN and fields.park_reason) else fields.park
+    if occupies(t.status):  # running or held: a session runs
         tab = sessions.session_name(t.repository, t.issue)
         if tabs is None:
             word = word or f"unknown ({tabs_why})"
@@ -293,7 +296,7 @@ def _lines(lines: list[str]) -> str:
 
 
 def _tasks_row(root, tasks, now, tabs, tabs_why) -> str:
-    open_tasks = [t for t in tasks if t.stage != state.Stage.DONE]
+    open_tasks = [t for t in tasks if t.status.kind is not Kind.DONE]
     lines = [_task_line(t, now, tabs, tabs_why) for t in open_tasks]
     lines += [f"{ref}  unknown (unreadable task file)" for ref in _unreadable(root)]
     return _lines(lines)
@@ -302,19 +305,19 @@ def _tasks_row(root, tasks, now, tabs, tabs_why) -> str:
 def _question(t: state.TaskState, now, url: str) -> str | None:
     base = f"{url}/task/{quote(t.repository, safe='')}/{t.issue}" if url else ""
     ref, age = f"{t.repository}#{t.issue}", _age(t, now)
-    req = t.operator_request
+    req = state.operator_request(t)
     if req is not None:
         what = "plan approval" if req.kind == "plan-approval" else "answers"
         return "  ".join(filter(None, [ref, what, req.path, age, base and base + "/review"]))
-    if t.park == state.PARK_HUMAN and t.park_reason == state.WHY_DECISION:
-        note = t.park_note
+    if t.status.kind is Kind.PARKED_HUMAN and t.status.reason is HumanReason.DECISION:
+        note = t.status.note
         note = note[:59] + "…" if len(note) > 60 else note
         return "  ".join(filter(None, [ref, "decision", f'"{note}"', age, base]))
     return None
 
 
 def _questions_row(tasks, now, url) -> str:
-    live = [t for t in tasks if t.stage not in state.TERMINAL_STAGES]
+    live = [t for t in tasks if not ended(t.status)]
     return _lines([q for q in (_question(t, now, url) for t in live) if q])
 
 

@@ -141,8 +141,9 @@ def gate_fields(task: TaskState, *, respawn: bool = False) -> dict[str, object]:
 
 def crash_resume_fields(task: TaskState) -> dict[str, object]:
     """What the Resume of a crash records on the task: a resume of a crash
-    at the gate spends the operator's round, so the count is at least 0."""
-    if task.crashed_stage and task.gated:
+    of a task that waited at the gate spends the operator's round, so the
+    count is at least 0."""
+    if task.gated:
         return {"unattended_rounds": max(task.unattended_rounds, 0)}
     return {}
 

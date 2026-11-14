@@ -8,12 +8,13 @@ from dataclasses import replace as dc_replace
 
 import dispatcher.main as main
 from dispatcher import state
-from dispatcher.state import PARK_WAKE, Stage, load
+from dispatcher.state import Stage, load
 from tests.test_main import (FakeSessions, approve_plan, deps, make_task, record_session,
                              write_tickets)
 from tests.test_pinned_tracks_order import (ASTRA, FABLE, OPUS, SOL, SONNET,
                                             ahead, enter, launched, make_cfg,
                                             run_pass)
+from tests.statuses import waking
 
 BOTH = ["openai", "anthropic"]
 
@@ -35,7 +36,7 @@ def review_after(tmp_path, monkeypatch, track, mode, implement_pick,
 def test_implement_on_one_provider_reviews_on_the_other(
         tmp_path, monkeypatch):
     c = make_cfg(tmp_path, monkeypatch, ahead(), mode="openai")
-    wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW,
+    wt = make_task(c, issue=42, stage=Stage.PLAN, gated=True,
                    track="standard")
     write_tickets(wt, 3)
     approve_plan(c, wt)
@@ -83,7 +84,7 @@ def test_two_models_of_one_provider_record_one_provider(
 def test_a_parked_implement_session_resumes_on_its_pick_without_a_second_provider(
         tmp_path, monkeypatch):
     c = make_cfg(tmp_path, monkeypatch, ahead(), mode="openai")
-    wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW,
+    wt = make_task(c, issue=42, stage=Stage.PLAN, gated=True,
                    track="standard")
     write_tickets(wt, 2)
     approve_plan(c, wt)
@@ -93,7 +94,7 @@ def test_a_parked_implement_session_resumes_on_its_pick_without_a_second_provide
     sess = FakeSessions(alive={42})
     main.run_pass(c, deps(sess=sess))
     assert saved(c).implement_providers == ["openai"]
-    state.save(c.state_dir, dc_replace(saved(c), park=PARK_WAKE))
+    state.save(c.state_dir, dc_replace(saved(c), status=waking()))
     record_session(c, "implement")
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "implement", "status": "blocked", "note": "q"}))

@@ -17,6 +17,7 @@ from dispatcher.state import Stage
 from tests.test_claim_base_acceptance import BodyGitHub
 from tests.test_main import (FakeSessions, approve_plan, cfg, deps, make_task, patch_usage,
                              patch_workspace, payload, pr_open_task, write_tickets)
+from tests.statuses import RUNNING
 
 NEW = "feat/new-cart"
 SPEC_TEXT = "# t — design\n\n## Problem\n\n" + "x " * 400 + "\n\n## Decisions\n\n" + "y " * 400
@@ -44,7 +45,7 @@ def run_for(c, stage, gh=None, **task_fields):
         signal(wt, stage="spec", status="done", note="", artifact="spec.md",
                track="standard")
     elif stage == "implement":
-        wt = make_task(c, stage=Stage.AWAITING_PLAN_REVIEW, **task_fields)
+        wt = make_task(c, stage=Stage.PLAN, status=RUNNING, **task_fields)
         write_tickets(wt, 1)
         approve_plan(c, wt, task_fields.get("spec_path", ""))
         signal(wt, stage="plan", status="done", note="approved",

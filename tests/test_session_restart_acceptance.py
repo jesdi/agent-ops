@@ -13,15 +13,15 @@ import pytest
 import dispatcher.main as main
 from dispatcher import eventlog, messages
 from dispatcher.models import parse_policy
-from dispatcher.state import (
-    PARK_HUMAN, PARK_WAKE, SessionRecord, Stage, load, write_session,
-)
+from dispatcher.state import (SessionRecord, Stage, at_gate, load, write_session)
 from telegram.inbound import Command
 from tests.test_main import (
     REVIEW_PAGE_STUB, EveryRepoApp, FakeGitHub, FakeNotifier, FakeSessions, cfg, gate_signal,
     make_task, patch_events, write_tickets,
 )
 from tests.usagefakes import session_usage
+from tests.statuses import RUNNING, human, review, waking
+from dispatcher.status import Kind
 
 
 MODELS = [
@@ -65,7 +65,7 @@ class RecordingSessions(FakeSessions):
 
 def _arrange(tmp_path, monkeypatch, model, kind="wake", record="absent",
              stage=None, issue=281, operator_text=OPERATOR_TEXT,
-             bypass=False, attach_command=False):
+             bypass=False, attach_command=False, at_gate=False):
     assert not attach_command or (kind == "attach" and not bypass)
     c = cfg(tmp_path)
     policy = parse_policy({
@@ -84,11 +84,13 @@ def _arrange(tmp_path, monkeypatch, model, kind="wake", record="absent",
     if stage is None:
         stage = {"plan-retry": Stage.PLAN, "spec-retry": Stage.SPEC}.get(
             kind, Stage.REVIEW)
-    park = (PARK_HUMAN if attach_command else PARK_WAKE
-            if kind in ("wake", "attach") else "")
+    note = "the old conversation needed operator input"
+    # Woken at the gate: from the plan's review park, in a task that waited there.
+    parked = review(".agent/review.html", note) if at_gate else human(note=note)
+    status = (parked if attach_command else waking(parked)
+              if kind in ("wake", "attach") else RUNNING)
     wt = make_task(
-        c, issue=issue, stage=stage, park=park, session=False,
-        park_note="the old conversation needed operator input" if park else "",
+        c, issue=issue, stage=stage, status=status, session=False, gated=at_gate,
         updated_at=datetime.now(timezone.utc).isoformat(),
         spec_path=SPEC_PATH,
         plan_retries=0 if kind == "plan-retry" else 1,
@@ -123,12 +125,11 @@ def _arrange(tmp_path, monkeypatch, model, kind="wake", record="absent",
                   "artifact": SPEC_PATH, "track": "tivial"}
         (wt / ".agent" / "stage.json").write_text(json.dumps(signal))
     else:
-        continued = "plan" if stage is Stage.AWAITING_PLAN_REVIEW else stage.value
-        signal = {"stage": continued, "status": "working"}
+        signal = {"stage": stage.value, "status": "working"}
         (wt / ".agent" / "stage.json").write_text(json.dumps(signal))
 
     record_path = Path(c.state_dir) / f"session-portfolio_eval-{issue}"
-    continued = "plan" if stage is Stage.AWAITING_PLAN_REVIEW else stage.value
+    continued = stage.value
     wrong_stage = "review" if continued == "spec" else "spec"
     if record == "truncated":
         record_path.write_text('{"session_id":')
@@ -249,14 +250,14 @@ def test_awaiting_plan_review_restarts_plan_with_the_operator_reply(
         tmp_path, monkeypatch, model, record):
     c, d, before, queued = _arrange(
         tmp_path, monkeypatch, model, record=record,
-        stage=Stage.AWAITING_PLAN_REVIEW, issue=384,
+        stage=Stage.PLAN, at_gate=True, issue=384,
         operator_text="Drop the second endpoint")
     launch, after = _pass(c, d, before)
     _assert_stage_prompt(launch, before, "plan")
     _assert_delivered(c, before, queued, launch["prompt"])
-    # Woken at the gate, the fresh plan session runs there (#132 ticket 05):
-    # the gate stage it is woken in, not `gated`, decides.
-    assert after.stage is Stage.AWAITING_PLAN_REVIEW
+    # Woken at the gate, the fresh plan session runs there: at plan, once
+    # it waited at the gate (#132 ticket 06).
+    assert (after.stage, after.status.kind) == (Stage.PLAN, Kind.RUNNING) and at_gate(after)
     assert after.spec_path == before.spec_path
     _assert_retained_context(before, after)
 
@@ -351,13 +352,13 @@ def test_fresh_wake_clears_park_note_one_shot_model_and_usage_bypass(
         tmp_path, monkeypatch, model, kind, record, bypass=True)
     assert before.resume_model_override == model
     assert before.resume_bypass_usage is True
-    assert before.park and before.park_note
+    assert before.status.kind is Kind.WAKING and before.status.origin.note
     if kind == "attach":
-        assert before.park == PARK_WAKE
+        assert before.status.kind is Kind.WAKING
         assert before.hold_for_attach is True
     _, after = _pass(c, d, before)
-    assert after.park == ""
-    assert after.park_note == ""
+    assert after.status.kind is Kind.RUNNING
+    assert after.status.note == ""
     assert after.resume_model_override == ""
     assert after.resume_bypass_usage is False
 

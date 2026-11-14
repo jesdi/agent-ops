@@ -11,15 +11,18 @@ import dispatcher.main as main
 from dispatcher import github_app, task_tokens
 from dispatcher.github import Candidate
 from dispatcher.models import Entry
-from dispatcher.state import NO_SLOT, PARK_HUMAN, WHY_ACCESS, Stage, TaskState, load, load_all
+from dispatcher.state import NO_SLOT, Stage, TaskState, load, load_all
 from tests.test_host_installation_tokens_acceptance import INSTALL, FakeApp
 from tests.test_main import (FakeGitHub, FakeNotifier, FakeSessions, cfg, make_task, patch_usage,
                              patch_workspace, valid_spec)
 from tests.test_task_container_tokens_acceptance import (SpawnFailsApp, home, spawn_pass,  # noqa: F401
                                                          world_of)
+from tests.statuses import PR, RUNNING, waking
+from dispatcher.status import Kind
 
 REPO = SimpleNamespace(name="analytics", repo="jesdi/analytics")
 PORTFOLIO = "jesdi/portfolio_eval"
+FEEDBACK = waking(PR, "attention(feedback)")
 
 
 class App(FakeApp):
@@ -65,7 +68,7 @@ def test_an_app_error_at_a_stage_hand_over_waits_and_a_later_pass_hands_over(tmp
     for _ in range(2):                                   # an outage of two passes
         main.run_pass(c, deps_of(app, sess))
         task = load(c.state_dir, "portfolio_eval", 42)
-        assert (task.stage, task.park) == (Stage.SPEC, "")
+        assert (task.stage, task.status) == (Stage.SPEC, RUNNING)
         assert sess.spawned == [] and sess.ended == []
     app.down = False
     main.run_pass(c, deps_of(app, sess))
@@ -79,8 +82,8 @@ def test_an_unreached_repository_at_a_stage_hand_over_parks_the_task_with_the_li
     sess = FakeSessions(alive={42})
     main.run_pass(c, deps_of(App(reached=()), sess))
     task = load(c.state_dir, "portfolio_eval", 42)
-    assert (task.park, task.park_reason) == (PARK_HUMAN, WHY_ACCESS)
-    assert INSTALL.settings_url in task.park_note and task.stage is not Stage.FAILED
+    assert task.status.kind is Kind.PARKED_ACCESS
+    assert INSTALL.settings_url in task.status.note and task.stage is Stage.SPEC
     assert sess.spawned == []
 
 
@@ -89,8 +92,8 @@ def test_an_unreached_repository_at_a_stage_hand_over_parks_the_task_with_the_li
 def feedback_pending(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
-    make_task(c, issue=42, stage=Stage.PR_OPEN, slot=NO_SLOT, pr_number=12,
-              feedback_pending=True, attention="feedback")
+    make_task(c, issue=42, stage=Stage.PR_OPEN, status=FEEDBACK, slot=NO_SLOT, pr_number=12,
+              attention="feedback")
     return c
 
 
@@ -102,7 +105,7 @@ def test_an_app_error_at_a_feedback_spawn_keeps_the_feedback_and_the_pass_goes_o
     sess = FakeSessions(alive={42})
     main.run_pass(c, deps_of(app, sess))                 # does not raise
     task = load(c.state_dir, "portfolio_eval", 42)
-    assert (task.stage, task.feedback_pending, task.park) == (Stage.PR_OPEN, True, "")
+    assert (task.stage, task.status) == (Stage.PR_OPEN, FEEDBACK)
     assert sess.spawned == [] and sess.ended == []
     app.down = False
     main.run_pass(c, deps_of(app, sess))
@@ -116,7 +119,8 @@ def test_an_unreached_repository_at_a_feedback_spawn_parks_it_with_the_feedback_
     sess = FakeSessions(alive={42})
     main.run_pass(c, deps_of(App(reached=()), sess))
     task = load(c.state_dir, "portfolio_eval", 42)
-    assert (task.park, task.park_reason, task.feedback_pending) == (PARK_HUMAN, WHY_ACCESS, True)
+    # the park replaces the wake; the attention it answers stays on the task
+    assert (task.status.kind, task.attention) == (Kind.PARKED_ACCESS, "feedback")
     assert sess.spawned == []
 
 
@@ -131,12 +135,12 @@ def test_a_claim_waits_out_an_app_outage_of_several_passes_then_launches(
         sessions = spawn_pass(world)
         assert sessions.launches == []
         [task] = [t for t in load_all(world.cfg.state_dir) if t.repository == "analytics"]
-        assert (task.stage, task.park, task.unlaunched) == (Stage.QUEUED, "", True)
+        assert (task.stage, task.status) == (Stage.QUEUED, waking(cause="launch"))
     world.app.fail.clear()
     sessions = spawn_pass(world)
     assert [(x["repository"], x["issue"]) for x in sessions.launches] == [("analytics", 7)]
     [task] = [t for t in load_all(world.cfg.state_dir) if t.repository == "analytics"]
-    assert (task.stage, task.unlaunched) == (Stage.SPEC, False)
+    assert (task.stage, task.status) == (Stage.SPEC, RUNNING)
 
 
 def test_a_claimed_task_left_queued_without_the_mark_still_fails_as_a_crash(tmp_path, monkeypatch):
@@ -148,7 +152,7 @@ def test_a_claimed_task_left_queued_without_the_mark_still_fails_as_a_crash(tmp_
     sess = FakeSessions()
     main.run_pass(c, deps_of(App(), sess))
     assert sess.spawned == []
-    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.FAILED
+    assert load(c.state_dir, "portfolio_eval", 42).status.kind is Kind.FAILED
 
 
 # --- no App registered ----------------------------------------------------------------------

@@ -13,7 +13,7 @@ from dispatcher.loops import (Decision, Loop, ReportedRound, Retry, evaluate, re
                               unattended_rounds_used)
 from dispatcher.loops import Outcome as Rounds
 from dispatcher.state import (BackgroundWait, LoopCaps, OperatorRequest, Stage, StageSignal,
-                              TaskState, at_gate)
+                              TaskState, at_gate, operator_request)
 
 
 class BackgroundView(NamedTuple):
@@ -213,7 +213,7 @@ def _gate(o: Observation) -> Gate:
     t = o.task
     return Gate(at=at_gate(t), rounds_used=unattended_rounds_used(t),
                 respawn_pending=t.gate_respawn_pending,
-                armed=_armed(t.operator_request, o.reads.revision),
+                armed=_armed(operator_request(t), o.reads.revision),
                 approved=_approves(o.reads))
 
 
@@ -230,10 +230,11 @@ def _report(o: Observation) -> Report:
         signal=o.signal, round=d, gate=gate,
         retries=frozenset(x for x in Retry if retry_left(t, x)),
         asks=t.stage in (Stage.SPEC, Stage.PLAN),
-        bad_track=_bad_track(o.signal, o.tracks, optional=gate.at),
+        bad_track=_bad_track(o.signal, o.tracks, optional=t.stage is Stage.PLAN),
         skips_gate=_skips_gate(o), tickets=r.tickets, revision=r.revision, spec=r.spec,
         answers=r.answers,
-        launches=o.look.launches(_launchable(t.at.stage, gate.at, o.signal.status)),
+        launches=o.look.launches(_launchable(t.stage, gate.at or gate.approved,
+                                             o.signal.status)),
         login=o.look.login() if _may_park(o.signal.status, d, gate.armed) else "",
         moved_on=_moved_on(o))
 

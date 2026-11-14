@@ -28,9 +28,9 @@ from dispatcher.models import (ModelPolicy, candidates, override_allowed,
                                stage_pick, track_from_labels)
 from dispatcher.usage import admits
 from dispatcher import answers as answers_file, intents
-from dispatcher.state import (TERMINAL_STAGES, PARK_WAKE, TaskState,
-                              launch_entries, launch_track, next_stage,
-                              resumable_crash)
+from dispatcher.state import (TaskState, launch_entries, launch_track, next_stage,
+                              operator_request)
+from dispatcher.status import Kind, crashed, ended
 from web import model_settings_view as msv
 from web import read_model
 from web.artifacts import router as artifacts_router
@@ -138,7 +138,7 @@ def launch_pinned_track(t: TaskState, policy: ModelPolicy, *,
     track (state.launch_track: the task track) when it is pinned, unless no launch comes from the
     list — a terminal task or a pending one-shot override (`overridden`). A
     pick keeps the pin."""
-    if t.stage in TERMINAL_STAGES or overridden:
+    if ended(t.status) or overridden:
         return ""
     track = launch_track(t, policy)
     return track if track in policy.pinned else ""
@@ -199,7 +199,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         dispatcher's own rule (execution_overrides.pending)."""
         return execution_overrides.pending(
             sources.execution_override(t.repository, t.issue),
-            t.resume_model_override if t.park == PARK_WAKE else "",
+            t.resume_model_override if t.status.kind is Kind.WAKING else "",
             t.resume_bypass_usage)
 
     def _choices(live: Config, t, order):
@@ -207,6 +207,8 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         return launch_entries(t, _policy(live, t.repository), order)
 
     def _model_for(live: Config, t, order, usages=None, now=None):
+        if ended(t.status) and not crashed(t.status):
+            return ""   # no launch follows: only a crash is resumed
         override = _one_shot(t)
         if override and override.model:
             return override.model
@@ -225,7 +227,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
 
     def _task_admission(live: Config, t, order, usages, now):
         override = _one_shot(t)
-        if t.stage in TERMINAL_STAGES or (override and override.bypass_usage):
+        if ended(t.status) or (override and override.bypass_usage):
             return None
         stage = next_stage(t)
         pinned = _pinned_track(live, t)
@@ -461,7 +463,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
     def task_request(repository: str, issue: int,
                      op: Operator = Depends(current_operator)):
         t = _find_task(repository, issue)
-        req = t.operator_request
+        req = operator_request(t)
         if req is None:
             return None
         # Both request kinds are one file in the worktree: the plan review
@@ -484,7 +486,8 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         drain would apply next (made on the request's revision), else the
         answers file's. A whole set, never
         merged: a note cleared in the newer set stays cleared."""
-        kind = t.operator_request.kind
+        request = operator_request(t)
+        kind = request.kind
         pending = [intents.Intent(i["action"], i["repository"], i["issue"],
                                   i["payload"], i["actor"], i["created_at"],
                                   Path(i["id"]))
@@ -493,7 +496,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
                    == ("answers", t.repository, t.issue)
                    and isinstance(i["payload"], dict)
                    and isinstance(i["payload"].get("answers"), dict)]
-        win = answers_file.select(pending, t.operator_request.fingerprint)
+        win = answers_file.select(pending, request.fingerprint)
         saved = (win.payload if win is not None
                  else answers_file.read(t.worktree, kind) or {}).get("answers")
         try:
@@ -567,7 +570,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         dispatcher's park, see there)."""
         stranded_tasks = [
             f"{t.repository}#{t.issue} ({why})" for t in sources.tasks()
-            if t.stage not in TERMINAL_STAGES and t.repository in repositories_by_name
+            if not ended(t.status) and t.repository in repositories_by_name
             and (why := stranded(candidate, repositories_by_name[t.repository], t,
                                  next_stage(t)))]
         if stranded_tasks:
@@ -767,10 +770,10 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
     def intent_resume(repository: str, issue: int, req: ResumeReq,
                       op: Operator = Depends(current_operator)):
         task = _find_task(repository, issue)
-        if task.stage in TERMINAL_STAGES and not resumable_crash(task):
+        if ended(task.status) and not crashed(task.status):
             # The dispatcher would drop it; say so instead of queueing it.
-            raise HTTPException(409, f"task {repository}/{issue} is {task.stage.value} "
-                                "and cannot be resumed")
+            raise HTTPException(409, f"task {repository}/{issue} is "
+                                f"{task.status.kind.value} and cannot be resumed")
         configured_repository = repositories_by_name.get(task.repository)
         policy = policy_for(_cfg(), configured_repository)
         configured = policy.model_ids()
@@ -802,7 +805,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
                     None)
         if task is None:
             return None, _queue_candidate(configured_repository, repository, issue)
-        if task.stage in TERMINAL_STAGES:
+        if ended(task.status):
             raise HTTPException(422, f"task {repository}/{issue} is terminal")
         return task, None
 
@@ -826,7 +829,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
 
     def _arm_run(repository: str, issue: int, req: RunReq, task, model: str,
                  op: Operator):
-        if task is not None and task.park:
+        if task is not None and read_model.shown(task).park:
             payload = {"model": model}
             if req.bypass_usage:
                 payload["bypass_usage"] = True
