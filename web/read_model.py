@@ -391,15 +391,15 @@ def build_board_snapshot(tasks: list[TaskState], *, capacity: int,
                         pinned=pinned_tracks or {},
                         projects=projects or {})
     return BoardSnapshot(
-        columns=_columns(_cards_by_column(cards), ghosts or []),
+        columns=_columns(_cards_by_column(cards), ghosts),
         capacity=_capacity_view(tasks, capacity, onboarding_running),
         median_cycle_seconds=median_cycle_seconds(events))
 
 
-def _columns(by_column, ghosts: list[GhostCard]) -> list[Column]:
+def _columns(by_column, ghosts: list[GhostCard] | None) -> list[Column]:
     """The board's columns in order; the ghosts join the Queued one."""
     return [Column(key=key, title=title, zone=zone, cards=by_column[key],
-                   ghosts=ghosts if key == "queued" else [])
+                   ghosts=(ghosts or []) if key == "queued" else [])
             for key, title, zone in COLUMNS]
 
 
