@@ -322,6 +322,19 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
             mode=mode, routed=routed_providers(live), pinned=live.models.pinned,
             auth_dark_since=sources.auth_dark_since())
 
+    def _ranked_queues():
+        queues, stale_any = [], False
+        for name, members in project_members.items():
+            rows, _as_of, stale = sources.rank_rows(members)
+            stale_any = stale_any or stale
+            queues.append((name, rows))
+        return queues, stale_any
+
+    def _task_admissions(live: Config, tasks, order, usages, now) -> dict:
+        return {(t.repository, t.issue): admission
+                for t in tasks
+                if (admission := _task_admission(live, t, order, usages, now))}
+
     @app.get("/api/board", response_model=read_model.BoardView)
     def board(op: Operator = Depends(current_operator)):
         live = _cfg()
@@ -332,11 +345,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         order = _order(mode, usages, now)
         usage = _usage_view(live, usages, now, mode)
         claims_paused, triage_running = sources.triage_state()
-        queues, stale_any = [], False
-        for name, members in project_members.items():
-            rows, _as_of, stale = sources.rank_rows(members)
-            stale_any = stale_any or stale
-            queues.append((name, rows))
+        queues, stale_any = _ranked_queues()
         mail = sources.undelivered_counts()
         return read_model.build_board(
             tasks, capacity=boot.capacity,
@@ -354,9 +363,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
             undelivered={(t.repository, t.issue): mail.get((t.repository, t.issue), 0)
                         for t in tasks},
             wake_blocked=sources.wake_blocked_issues(),
-            admissions={(t.repository, t.issue): admission
-                        for t in tasks
-                        if (admission := _task_admission(live, t, order, usages, now))},
+            admissions=_task_admissions(live, tasks, order, usages, now),
             candidate_admissions=_candidate_admissions(live, queues, order,
                                                        usages, now),
             projects=repository_projects,

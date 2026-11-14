@@ -29,7 +29,7 @@ def test_session_cmd_mounts_worktree_clone_and_claude_home(tmp_path: Path, monke
     wt, clone = make_worktree(tmp_path)
     cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5",
                                  "--continue 'hi'", clone=clone, gh_config=TOKENS)
-    assert "podman run --rm -it --name task-42 " in cmd
+    assert "podman run --rm --init -it --name task-42 " in cmd
     assert "--memory 2g --cpus 2" in cmd
     assert f"-v {wt}:{wt}" in cmd and f"-w {wt}" in cmd
     assert f"-v {clone}:{clone}" in cmd
@@ -167,7 +167,7 @@ def test_session_cmd_resolves_claude_token_at_spawn_via_wrapper(
     cmd = containers.session_cmd("task-42", wt, "2g", "2", "claude-fable-5",
                                  "P", gh_config=TOKENS)
     wrapper = "/opt/infra/token-wrapper"
-    assert cmd.startswith(f"{wrapper} podman run --rm -it --name task-42 ")
+    assert cmd.startswith(f"{wrapper} podman run --rm --init -it --name task-42 ")
     assert "-e CLAUDE_CODE_OAUTH_TOKEN " in cmd
     assert "claude-token.env" not in cmd
 
