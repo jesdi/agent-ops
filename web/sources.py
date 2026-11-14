@@ -49,10 +49,6 @@ class ArtifactListing:
     expired: bool
 
 
-_QUARANTINE_DEFAULTS = {"task_issue": 0, "blocker_repo": "", "blocker_issue": 0,
-                        "fingerprint": "", "created_at": ""}
-
-
 def _quarantine_key(p: Path) -> tuple[str, int | None]:
     """(repository, issue) from the filename; issue None if it does not parse."""
     return state.parse_task_key(p.stem) or (p.stem.rsplit("-", 1)[0], None)
@@ -63,25 +59,17 @@ def _blocks_nothing(d, keyed_issue: int | None) -> bool:
     return d is failures.GONE or (not isinstance(d, dict) and keyed_issue is None)
 
 
-def _well_typed(entry: dict) -> bool:
-    """A wrong-typed field would 500 FailuresView or reach GitHub; skip it
-    like an unreadable record. bool is an int subclass: reject it."""
-    return all(type(entry[k]) is type(default)
-               for k, default in _QUARANTINE_DEFAULTS.items())
-
-
 def _quarantine_entry(p: Path) -> dict | None:
-    """One quarantine_entries row, or None for a record that blocks nothing
-    or whose fields have the wrong types."""
+    """One quarantine_entries row, or None for a record that blocks nothing."""
     repository, keyed_issue = _quarantine_key(p)
     d = failures.read_quarantine(p)
+    if _blocks_nothing(d, keyed_issue):
+        return None
     readable = isinstance(d, dict)
     # Blank defaults keep FailuresView's model valid for a readable record
     # that is missing a field, and for an unreadable one.
-    entry = {**_QUARANTINE_DEFAULTS, **(d if readable else {})}
-    if _blocks_nothing(d, keyed_issue) or not _well_typed(entry):
-        return None
-    entry.update(repository=repository, readable=readable)
+    entry = {**failures.QUARANTINE_DEFAULTS, **(d if readable else {}),
+             "repository": repository, "readable": readable}
     if keyed_issue is not None:
         entry["task_issue"] = keyed_issue
     return entry

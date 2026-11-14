@@ -147,6 +147,12 @@ def quarantine_path(state_dir: str | Path, repository_name: str,
     return Path(state_dir) / "quarantine" / f"{repository_name}-{issue}.json"
 
 
+# A record's fields and their blank values. A field present with another
+# type (bool is not an int) makes the record unreadable.
+QUARANTINE_DEFAULTS = {"task_issue": 0, "blocker_repo": "", "blocker_issue": 0,
+                       "fingerprint": "", "created_at": ""}
+
+
 def write_quarantine(state_dir: str | Path, repository_name: str, issue: int,
                      blocker_repo: str, blocker_issue: int, fp: str) -> None:
     p = quarantine_path(state_dir, repository_name, issue)
@@ -162,7 +168,8 @@ def write_quarantine(state_dir: str | Path, repository_name: str, issue: int,
 
 # What read_quarantine returns for a record it has no object for.
 GONE = "gone"              # deleted before the read: blocks nothing
-UNREADABLE = "unreadable"  # unreadable bytes or not a JSON object: blocks
+UNREADABLE = "unreadable"  # unreadable bytes, not a JSON object or a
+                           # wrong-typed field: blocks
 
 
 def read_quarantine(p: Path) -> dict | str:
@@ -170,14 +177,22 @@ def read_quarantine(p: Path) -> dict | str:
 
     The one reader for check_quarantine, the retry intent and the console,
     so the three cannot disagree. A torn write is invalid UTF-8, a
-    ValueError like invalid JSON; `null` or a list is not a record."""
+    ValueError like invalid JSON; `null` or a list is not a record, nor is
+    an object with a wrong-typed field (it would reach GitHub or 500 the
+    console). A missing field is fine."""
     try:
         rec = json.loads(p.read_text())
     except FileNotFoundError:
         return GONE
     except (OSError, ValueError):
         return UNREADABLE
-    return rec if isinstance(rec, dict) else UNREADABLE
+    return rec if _well_typed(rec) else UNREADABLE
+
+
+def _well_typed(rec) -> bool:
+    return isinstance(rec, dict) and all(
+        type(rec[k]) is type(default)
+        for k, default in QUARANTINE_DEFAULTS.items() if k in rec)
 
 
 def _blocker_open(name: str, github, rec: dict) -> bool:
