@@ -86,28 +86,49 @@ def migrate(state_dir: str | Path,
     never raised."""
     lines: list[str] = []
     for task in load_all(state_dir):
-        name, legacy = session_name(task.repository, task.issue), f"task-{task.issue}"
-        live = [n for n in (name, legacy) if _has_session(n)]
-        if not live:
-            continue
-        # Kill first, wake last: the wake is what queues the task for a
-        # herdr resume, and it must never be queued while its tmux session
-        # and container are still up.
-        lines.extend(_kill_session(n) for n in live)
-        lines.extend(_remove_container(n) for n in (name, legacy))
-        if not occupies(task.status):
-            lines.append(f"ended {name} (not resumed: stage "
-                         f"{task.stage.value} {task.status.kind.value})")
-            continue
-        wake(task, MESSAGE)
-        lines.append(f"handed {name} to the park/resume path "
-                     f"(resumes in herdr on the next pass)")
+        lines.extend(_migrate_task(task, wake))
+    return lines + _migrate_triage(state_dir)
 
-    if _has_session(triage.TAB_LABEL):
-        lines.append(_kill_session(triage.TAB_LABEL))
-        # The sweep has no state file and no park, so it cannot be woken —
-        # re-request it instead and let the next pass launch it in herdr.
-        lines.append("re-enqueued the triage sweep"
-                     if triage.enqueue(state_dir)
-                     else "triage sweep already pending; not re-enqueued")
-    return lines
+
+def _migrate_task(task: TaskState, wake: Callable[[TaskState, str], None]) -> list[str]:
+    """Kill the task's tmux sessions and containers, then hand it over."""
+    name = session_name(task.repository, task.issue)
+    killed = _kill_task_sessions(name, f"task-{task.issue}")
+    if not killed:
+        return []
+    # Kill first, wake last: the wake is what queues the task for a
+    # herdr resume, and it must never be queued while its tmux session
+    # and container are still up.
+    return killed + [_hand_over(task, name, wake)]
+
+
+def _kill_task_sessions(name: str, legacy: str) -> list[str]:
+    """Kill the live sessions of both names and remove both containers;
+    [] when neither session is live."""
+    live = [n for n in (name, legacy) if _has_session(n)]
+    if not live:
+        return []
+    return ([_kill_session(n) for n in live]
+            + [_remove_container(n) for n in (name, legacy)])
+
+
+def _hand_over(task: TaskState, name: str, wake: Callable[[TaskState, str], None]) -> str:
+    """Wake a task the dispatcher would still drive; end any other."""
+    if not occupies(task.status):
+        return (f"ended {name} (not resumed: stage "
+                f"{task.stage.value} {task.status.kind.value})")
+    wake(task, MESSAGE)
+    return (f"handed {name} to the park/resume path "
+            f"(resumes in herdr on the next pass)")
+
+
+def _migrate_triage(state_dir: str | Path) -> list[str]:
+    """Kill a triage tmux session and re-enqueue the sweep."""
+    if not _has_session(triage.TAB_LABEL):
+        return []
+    # The sweep has no state file and no park, so it cannot be woken —
+    # re-request it instead and let the next pass launch it in herdr.
+    return [_kill_session(triage.TAB_LABEL),
+            "re-enqueued the triage sweep"
+            if triage.enqueue(state_dir)
+            else "triage sweep already pending; not re-enqueued"]
