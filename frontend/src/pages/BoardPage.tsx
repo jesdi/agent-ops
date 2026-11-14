@@ -5,6 +5,7 @@ import { BoardHeader } from '../components/BoardHeader'
 import { ColumnTabs } from '../components/ColumnTabs'
 import { CountStrip } from '../components/CountStrip'
 import { GhostCardView } from '../components/GhostCard'
+import { UsageBanner } from '../components/UsageBanner'
 import { ProjectPanel, ProjectTabs } from '../components/ProjectTabs'
 import { useProjectBoard } from '../components/useProjectTab'
 import { useActiveColumn } from '../components/useActiveColumn'
@@ -209,6 +210,7 @@ export function BoardPage() {
   // full width.
   return (
     <div className="flex flex-col gap-4 p-4 md:min-h-0 md:grow md:basis-0 md:pb-0">
+      <UsageBanner />
       {/* Capacity and the next claim are the box's, shared by every project. */}
       <BoardHeader board={board} />
       <div className="flex min-w-0 items-center gap-5">
