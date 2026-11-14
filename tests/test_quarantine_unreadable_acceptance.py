@@ -252,3 +252,59 @@ def test_the_claim_forecast_skips_an_unreadable_head(tmp_path):
         cfg.state_dir, _NullSessions(), _QueueGitHub())))
     nc = client.get("/api/board", headers=HEADERS).json()["next_claim"]
     assert (nc["verdict"], nc["next_issue"]) == ("will-claim", 213)
+
+
+# --- a wrong-typed record is unreadable: blocks, listed, retryable ----------
+
+WRONG_TYPED = {80: {"blocker_issue": "x"}, 81: {"fingerprint": None},
+               82: {"blocker_issue": True}, 83: {"task_issue": "83"},
+               84: {"blocker_repo": 5}, 85: {"created_at": 1}}
+
+
+def _wrong_typed(state_dir):
+    """Each record is well formed but for one field, so only the type check
+    stands between it and a blocker lookup."""
+    for issue, bad in WRONG_TYPED.items():
+        rec = {"task_issue": issue, "blocker_repo": "r", "blocker_issue": 5,
+               "fingerprint": "fp", "created_at": "c", **bad}
+        _write_record(state_dir, issue, json.dumps(rec).encode())
+
+
+@pytest.mark.parametrize("issue", sorted(WRONG_TYPED))
+def test_dispatcher_blocks_a_wrong_typed_record_without_a_lookup(tmp_path, issue):
+    _wrong_typed(tmp_path)
+    gh = _CountingGitHub()
+    assert failures.check_quarantine(tmp_path, gh, "alpha", issue) is True
+    assert gh.lookups == []
+    assert failures.quarantine_path(tmp_path, "alpha", issue).exists()
+
+
+def test_failures_lists_a_wrong_typed_record_as_unreadable(tmp_path):
+    _wrong_typed(tmp_path)
+    d = tmp_path / "quarantine"
+    (d / "broken.json").write_text(json.dumps({"blocker_issue": "x"}))
+    gh = _CountingGitHub()
+    client = _client(tmp_path, gh)
+    rows = {q["task_issue"]: q for q in _quarantined(client)}
+    assert sorted(rows) == sorted(WRONG_TYPED)
+    for row in rows.values():
+        assert (row["repository"], row["readable"], row["blocker_open"],
+                row["blocker_repo"], row["blocker_issue"], row["fingerprint"],
+                row["created_at"]) == ("alpha", False, None, "", 0, "", "")
+    assert gh.lookups == []
+    resp = client.post("/api/task/alpha/80/retry", headers=HEADERS)
+    assert resp.status_code == 202, resp.text
+
+
+def test_retrying_a_wrong_typed_record_clears_it(tmp_path, monkeypatch):
+    import dispatcher.main as main
+    from dispatcher import intents
+    from tests.test_main import (FakeGitHub, FakeSessions, deps, patch_usage,
+                                 patch_workspace)
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = _two_repository_cfg(tmp_path)
+    record = _write_record(c.state_dir, 81, b'{"fingerprint": null}')
+    intents.write_intent(c.state_dir, "retry", "alpha", 81, {}, "op", 1)
+    main.run_pass(c, deps(FakeGitHub(), FakeSessions()))
+    assert not record.exists()

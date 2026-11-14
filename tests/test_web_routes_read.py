@@ -574,8 +574,8 @@ def test_failures_degrades_to_200_on_wrong_typed_quarantine_record(tmp_path):
     """Issue #88: a quarantine record that is readable, valid JSON and an
     object can still carry a wrong-typed field (a hand edit, a partial
     write). It must not reach QuarantineEntry validation and 500
-    /api/failures: a malformed record is skipped exactly like an unreadable
-    one, and the well-formed records still list."""
+    /api/failures: since #87 a malformed record is unreadable, listed with
+    blank fields, and the well-formed records still list."""
     from web.sources import Sources
     cfg = make_config(tmp_path)
     q = tmp_path / "quarantine"
@@ -601,7 +601,9 @@ def test_failures_degrades_to_200_on_wrong_typed_quarantine_record(tmp_path):
                         raise_server_exceptions=False)
     resp = client.get("/api/failures", headers=HEADERS)
     assert resp.status_code == 200
-    assert [q["task_issue"] for q in resp.json()["quarantined"]] == [75]
+    assert [(q["task_issue"], q["readable"], q["blocker_repo"])
+            for q in resp.json()["quarantined"]] == [
+        (73, False, ""), (74, False, ""), (75, True, "r")]
 
 
 def test_terminal_websocket_route_is_gone(tmp_path):
