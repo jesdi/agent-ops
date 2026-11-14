@@ -209,35 +209,57 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
     def _model_for(live: Config, t, order, usages=None, now=None):
         if ended(t.status) and not crashed(t.status):
             return ""   # no launch follows: only a crash is resumed
+        chosen = _chosen_model(t)
+        if chosen is not None:
+            return chosen
+        return _policy_model(live, t, order, usages, now)
+
+    def _chosen_model(t):
+        """The model the operator chose for t's next launch: the one-shot
+        override's, else the stage pick's; None when neither chose one."""
         override = _one_shot(t)
         if override and override.model:
             return override.model
         pick = stage_pick(t.picks, next_stage(t))
-        if pick:
-            return parse_entry(pick, "pick").model_id
+        return parse_entry(pick, "pick").model_id if pick else None
+
+    def _policy_model(live: Config, t, order, usages, now):
+        """The policy's model for t's next launch: the first entry the usage
+        admits (the first entry when usage is not consulted), "" for none."""
         choices = _choices(live, t, order)
         if not choices:
             return ""
-        if usages is not None:
-            admitted = next((e for e in choices
-                             if admits(usages, e.model_id, now, boot.pace).admitted), None)
-            if admitted is not None:
-                return admitted.model_id
-        return choices[0].model_id
+        if usages is None:
+            return choices[0].model_id
+        return _first_admitted(choices, usages, now).model_id
+
+    def _first_admitted(choices, usages, now):
+        """The first entry the usage admits, else the first entry."""
+        return next((e for e in choices
+                     if admits(usages, e.model_id, now, boot.pace).admitted), choices[0])
 
     def _task_admission(live: Config, t, order, usages, now):
-        override = _one_shot(t)
-        if ended(t.status) or (override and override.bypass_usage):
+        if _admission_waived(t):
             return None
-        stage = next_stage(t)
         pinned = _pinned_track(live, t)
+        return _admission_for_model(
+            _model_for(live, t, order, usages, now),
+            _offered_models(live, t, order, pinned),
+            usages, now, pinned_track=pinned)
+
+    def _admission_waived(t) -> bool:
+        """No admission applies: the task ended, or its one-shot bypasses usage."""
+        override = _one_shot(t)
+        return ended(t.status) or bool(override and override.bypass_usage)
+
+    def _offered_models(live: Config, t, order, pinned):
+        """The models t's next launch may be overridden with, less those the
+        stage's picks rule out."""
+        stage = next_stage(t)
         # A pinned wait may be overridden with any model of the policy.
         offered = (_policy(live, t.repository).model_ids() if pinned
                    else [e.model_id for e in _choices(live, t, order)])
-        return _admission_for_model(
-            _model_for(live, t, order, usages, now),
-            [m for m in offered if override_allowed(t.picks, stage, m)],
-            usages, now, pinned_track=pinned)
+        return [m for m in offered if override_allowed(t.picks, stage, m)]
 
     def _pinned_track(live: Config, t):
         override = _one_shot(t)
@@ -487,22 +509,27 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         answers file's. A whole set, never
         merged: a note cleared in the newer set stays cleared."""
         request = operator_request(t)
-        kind = request.kind
-        pending = [intents.Intent(i["action"], i["repository"], i["issue"],
-                                  i["payload"], i["actor"], i["created_at"],
-                                  Path(i["id"]))
-                   for i in sources.pending_intents()
-                   if (i["action"], i["repository"], i["issue"])
-                   == ("answers", t.repository, t.issue)
-                   and isinstance(i["payload"], dict)
-                   and isinstance(i["payload"].get("answers"), dict)]
-        win = answers_file.select(pending, request.fingerprint)
+        win = answers_file.select(_pending_answers(t), request.fingerprint)
         saved = (win.payload if win is not None
-                 else answers_file.read(t.worktree, kind) or {}).get("answers")
+                 else answers_file.read(t.worktree, request.kind) or {}).get("answers")
         try:
             return _ANSWERS.validate_python(saved)
         except ValidationError:   # a session wrote the file: anything goes
             return {}
+
+    def _pending_answers(t) -> list[intents.Intent]:
+        """t's pending answers intents that carry an answers set."""
+        return [intents.Intent(i["action"], i["repository"], i["issue"],
+                               i["payload"], i["actor"], i["created_at"],
+                               Path(i["id"]))
+                for i in sources.pending_intents()
+                if _is_answers_intent(i, t)]
+
+    def _is_answers_intent(i: dict, t) -> bool:
+        return ((i["action"], i["repository"], i["issue"])
+                == ("answers", t.repository, t.issue)
+                and isinstance(i["payload"], dict)
+                and isinstance(i["payload"].get("answers"), dict))
 
     HISTORY_MAX_LINES = 10000
 
@@ -770,23 +797,32 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
     def intent_resume(repository: str, issue: int, req: ResumeReq,
                       op: Operator = Depends(current_operator)):
         task = _find_task(repository, issue)
+        _require_resumable(task, repository, issue)
+        _require_resume_model(task, repository, req.model)
+        _require_same_provider(task, req.model)
+        return _accepted("resume", repository, issue, _resume_payload(req), op)
+
+    def _require_resumable(task, repository: str, issue: int):
         if ended(task.status) and not crashed(task.status):
             # The dispatcher would drop it; say so instead of queueing it.
             raise HTTPException(409, f"task {repository}/{issue} is "
                                 f"{task.status.kind.value} and cannot be resumed")
+
+    def _require_resume_model(task, repository: str, model: str):
+        """A resume may name only a model of the task's policy."""
         configured_repository = repositories_by_name.get(task.repository)
-        policy = policy_for(_cfg(), configured_repository)
-        configured = policy.model_ids()
-        if req.model and req.model not in configured:
-            raise HTTPException(422, f"model {req.model!r} is not configured "
+        configured = policy_for(_cfg(), configured_repository).model_ids()
+        if model and model not in configured:
+            raise HTTPException(422, f"model {model!r} is not configured "
                                 f"for repository {repository!r}")
-        _require_same_provider(task, req.model)
+
+    def _resume_payload(req: ResumeReq) -> dict:
         payload = {"text": req.text} if req.text else {}
         if req.model:
             payload["model"] = req.model
         if req.bypass_usage:
             payload["bypass_usage"] = True
-        return _accepted("resume", repository, issue, payload, op)
+        return payload
 
     def _queue_candidate(configured_repository, repository: str, issue: int):
         rows, _as_of, stale = _repository_rows(configured_repository)
