@@ -127,3 +127,16 @@ def test_the_dispatcher_waits_for_the_migration(tmp_path, monkeypatch):
     _, passes = run_dispatcher(tmp_path, monkeypatch)
     assert len(passes) == 1
     assert json.loads(p.read_text())["status"]
+
+
+def test_migrate_tmux_leaves_an_old_shape_file_alone(tmp_path, monkeypatch):
+    """provision/update.sh runs --migrate-tmux before migrate-tasks: the
+    loader leaves the legacy file out of its tasks, so the deploy goes on
+    and the file waits for migrate-tasks unchanged."""
+    p = write(Path(cfg(tmp_path).state_dir), legacy_file(issue=5))
+    before = p.read_bytes()
+    probed = []
+    monkeypatch.setattr(main.tmux_migration, "_run", lambda args, timeout: probed.append(args))
+    run_dispatcher(tmp_path, monkeypatch, "--migrate-tmux")   # returns: exit zero
+    assert p.read_bytes() == before
+    assert all("task-portfolio_eval-5" not in " ".join(a) for a in probed)
