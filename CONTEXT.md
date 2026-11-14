@@ -6,6 +6,11 @@ sessions to a finished PR.
 
 ## Language
 
+**Triage probe cache**:
+The five-second, per-`Sources` cache of `triage.running()` used by the board.
+It stores a failed probe as `False`, uses the injected clock, and leaves the
+triage request file readable on every board load.
+
 **Dark usage**:
 A dispatcher pass whose usage fetch returns no providers or only providers
 whose source is `unavailable`. The box fails closed during this state; a
