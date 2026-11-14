@@ -276,18 +276,30 @@ def _unreadable(root: Path) -> list[str]:
 
 def _task_line(t: state.TaskState, now, tabs, tabs_why) -> str:
     ref = f"{t.repository}#{t.issue}"
-    fields = read_model.shown(t)
-    word = f"{fields.park}/{fields.park_reason}" if (
-        fields.park == read_model.PARK_HUMAN and fields.park_reason) else fields.park
+    word = _park_word(t)
     if occupies(t.status):  # running or held: a session runs
-        tab = sessions.session_name(t.repository, t.issue)
-        if tabs is None:
-            word = word or f"unknown ({tabs_why})"
-        else:
-            live = tab in tabs
-            word = "  ".join(filter(None, [word or ("live" if live else "no session"),
-                                           tab if live else ""]))
+        word = _session_word(t, word, tabs, tabs_why)
     return f"{ref}  {t.stage.value}  {word}  {_age(t, now)}"
+
+
+def _park_word(t: state.TaskState) -> str:
+    """Where t is parked, with the reason when a human holds it."""
+    fields = read_model.shown(t)
+    if fields.park == read_model.PARK_HUMAN and fields.park_reason:
+        return f"{fields.park}/{fields.park_reason}"
+    return fields.park
+
+
+def _session_word(t: state.TaskState, word: str, tabs, tabs_why) -> str:
+    """The park word of a task whose session runs, completed by its tab: the
+    tab's name when live, "no session" when gone, "unknown" when the tabs
+    could not be listed."""
+    if tabs is None:
+        return word or f"unknown ({tabs_why})"
+    tab = sessions.session_name(t.repository, t.issue)
+    if tab not in tabs:
+        return word or "no session"
+    return "  ".join(filter(None, [word or "live", tab]))
 
 
 def _lines(lines: list[str]) -> str:
@@ -309,11 +321,19 @@ def _question(t: state.TaskState, now, url: str) -> str | None:
     if req is not None:
         what = "plan approval" if req.kind == "plan-approval" else "answers"
         return "  ".join(filter(None, [ref, what, req.path, age, base and base + "/review"]))
-    if t.status.kind is Kind.PARKED_HUMAN and t.status.reason is HumanReason.DECISION:
-        note = t.status.note
-        note = note[:59] + "…" if len(note) > 60 else note
-        return "  ".join(filter(None, [ref, "decision", f'"{note}"', age, base]))
+    if _awaits_decision(t):
+        return "  ".join(filter(None, [ref, "decision", f'"{_short(t.status.note)}"',
+                                       age, base]))
     return None
+
+
+def _awaits_decision(t: state.TaskState) -> bool:
+    return t.status.kind is Kind.PARKED_HUMAN and t.status.reason is HumanReason.DECISION
+
+
+def _short(note: str) -> str:
+    """The note cut to 60 characters, an ellipsis marking the cut."""
+    return note[:59] + "…" if len(note) > 60 else note
 
 
 def _questions_row(tasks, now, url) -> str:
