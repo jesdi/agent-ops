@@ -385,35 +385,40 @@ def build_board_snapshot(tasks: list[TaskState], *, capacity: int,
                          ) -> BoardSnapshot:
     """Cards and capacity without any live-service dependencies; `ghosts`
     join the Queued column."""
-    mail = undelivered or {}
-    blocked = wake_blocked or set()
-    task_admissions = admissions or {}
-    claimed = claimed_at_index(events)
-    cards = _task_cards(tasks, models=models, claimed=claimed,
-                        scores=_score_index(queues), mail=mail,
-                        blocked=blocked, admissions=task_admissions,
+    cards = _task_cards(tasks, models=models, claimed=claimed_at_index(events),
+                        scores=_score_index(queues), mail=undelivered or {},
+                        blocked=wake_blocked or set(), admissions=admissions or {},
                         pinned=pinned_tracks or {},
                         projects=projects or {})
-    by_column = _cards_by_column(cards)
+    return BoardSnapshot(
+        columns=_columns(_cards_by_column(cards), ghosts or []),
+        capacity=_capacity_view(tasks, capacity, onboarding_running),
+        median_cycle_seconds=median_cycle_seconds(events))
+
+
+def _columns(by_column, ghosts: list[GhostCard]) -> list[Column]:
+    """The board's columns in order; the ghosts join the Queued one."""
+    return [Column(key=key, title=title, zone=zone, cards=by_column[key],
+                   ghosts=ghosts if key == "queued" else [])
+            for key, title, zone in COLUMNS]
+
+
+def _capacity_view(tasks: list[TaskState], capacity: int,
+                   onboarding_running: int) -> CapacityView:
     # Which numbers, not just how many: the console colours a card by its
     # slot, and the gauge must light the same segments. slots_used is the
     # LENGTH of that list, never a second count — counting `slot != NO_SLOT`
     # instead made old on-disk state (a parked task still recording a slot)
     # read "1/4" with zero segments lit.
     slots_held = _held_slots(tasks)
-    return BoardSnapshot(
-        columns=[Column(key=key, title=title, zone=zone, cards=by_column[key],
-                        ghosts=(ghosts or []) if key == "queued" else [])
-                 for key, title, zone in COLUMNS],
-        capacity=CapacityView(
-            # via dispatcher.status.occupies so the console never shows a
-            # different capacity than the one the dispatcher enforces
-            active=sum(occupies(t.status) for t in tasks) + onboarding_running,
-            capacity=capacity,
-            slots_used=len(slots_held),
-            max_slots=max_slots(capacity),
-            slots_held=slots_held),
-        median_cycle_seconds=median_cycle_seconds(events))
+    return CapacityView(
+        # via dispatcher.status.occupies so the console never shows a
+        # different capacity than the one the dispatcher enforces
+        active=sum(occupies(t.status) for t in tasks) + onboarding_running,
+        capacity=capacity,
+        slots_used=len(slots_held),
+        max_slots=max_slots(capacity),
+        slots_held=slots_held)
 
 
 def build_board(tasks: list[TaskState], *, capacity: int,
