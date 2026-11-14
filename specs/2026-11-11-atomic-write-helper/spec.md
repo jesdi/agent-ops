@@ -48,7 +48,11 @@ Source: issue #149 (design rewritten in the 2026-11-05 triage). Operator answer 
 - **Contradiction, resolved by the operator.** `tests/test_priority_file.py::test_a_failed_save_leaves_no_temp_file_and_the_old_mode[dump]`
   breaks a save by patching `json.dump`. Once `write_json_atomic` uses `json.dumps`, that patch no
   longer hits. The operator chose `retarget`: that one test's `"dump"` case patches `json.dumps`
-  instead. This is the only allowed edit to an existing test. Its assertions stay the same.
+  instead. Its assertions stay the same. The operator later allowed one more edit, at the integration
+  gate: `tests/test_inspection_commands.py::test_explicit_makefile_draft_bypasses_default_precedence`
+  deletes `MAKELEVEL`, `MAKEFLAGS` and `MFLAGS` from its environment, because under `make gate` the
+  inherited `MAKELEVEL` makes its child `make` print "Entering directory". No other edit to an
+  existing test is allowed.
 - Temp names change from `<name>.tmp` to `.<name>.<random>.tmp` (dotfiles). The directory readers
   were checked: `intents` globs `*.json`, `messages.undelivered_counts` globs `*.jsonl`, and
   `tests/test_messages.py` globs `*.tmp`. A finished write leaves no temp file, so all of them still
@@ -88,8 +92,10 @@ Source: issue #149 (design rewritten in the 2026-11-05 triage). Operator answer 
    on-disk text already equals the new text.
 9. `workspace.write_worktree_file`'s logic is unchanged. Its docstring names it the symlink-safe
    variant of `state.write_atomic`.
-10. The existing suite passes. The only edit to an existing test is the `json.dump` → `json.dumps`
-    patch target in `tests/test_priority_file.py`. Every other test change is an addition.
+10. The existing suite passes. The only edits to existing tests are the `json.dump` → `json.dumps`
+    patch target in `tests/test_priority_file.py` and the env clean-up in
+    `tests/test_inspection_commands.py::test_explicit_makefile_draft_bypasses_default_precedence`
+    (operator-allowed). Every other test change is an addition.
 
 ## Scenarios
 
@@ -191,7 +197,7 @@ Source: issue #149 (design rewritten in the 2026-11-05 triage). Operator answer 
 
 ### Scenario: suite green with one retargeted test (R10)
 - **When** `make gate` runs
-- **Then** it passes, and `git diff origin/main -- tests/` shows only additions apart from the `json.dump` → `json.dumps` change in `tests/test_priority_file.py`
+- **Then** it passes, and `git diff origin/main -- tests/` shows only additions apart from the `json.dump` → `json.dumps` change in `tests/test_priority_file.py` and the operator-allowed env clean-up in `tests/test_inspection_commands.py`
 
 ## Out of scope
 
