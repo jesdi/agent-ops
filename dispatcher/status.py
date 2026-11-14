@@ -155,15 +155,30 @@ def _loaded(kind: Kind, key: str, value: object) -> object:
 def problem(status: Status) -> str:
     """Why `status` breaks a constraint of its kind's detail; "" when it
     keeps them all."""
+    return (_reason_problem(status) or _page_problem(status)
+            or _run_problem(status)
+            or (_waking_problem(status) if status.kind is Kind.WAKING else ""))
+
+
+def _reason_problem(status: Status) -> str:
     kind = status.kind
     if kind in _REASONS and not isinstance(status.reason, _REASONS[kind]):
         return f"{kind.value} with reason {status.reason!r}"
+    return ""
+
+
+def _page_problem(status: Status) -> str:
+    kind = status.kind
     if kind in (Kind.HELD_PLAN_APPROVAL, Kind.PARKED_REVIEW, Kind.PARKED_ANSWERS) \
             and not status.path:
         return f"{kind.value} with no page"
-    if kind is Kind.PARKED_CI and status.run_id <= 0:
+    return ""
+
+
+def _run_problem(status: Status) -> str:
+    if status.kind is Kind.PARKED_CI and status.run_id <= 0:
         return f"parked-ci for run {status.run_id}"
-    return _waking_problem(status) if kind is Kind.WAKING else ""
+    return ""
 
 
 # A waking task's launch reads its origin; these it can never come from.
