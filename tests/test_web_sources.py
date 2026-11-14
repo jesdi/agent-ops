@@ -531,28 +531,34 @@ _GOOD = dict(task_issue=0, blocker_repo="r", blocker_issue=1,
              fingerprint="f", created_at="c")
 
 
-def test_quarantine_entries_skip_wrong_typed_blocker_issue(tmp_path, src):
+def _rows(src):
+    return [(e["task_issue"], e["readable"], e["blocker_issue"])
+            for e in src.quarantine_entries()]
+
+
+def test_quarantine_entries_list_wrong_typed_blocker_issue_as_unreadable(tmp_path, src):
     for n, bad in enumerate(["abc", "5", True, 1.5, None, [1]], start=80):
         _quarantine(tmp_path, f"alpha-{n}.json",
                     **{**_GOOD, "task_issue": n, "blocker_issue": bad})
     _quarantine(tmp_path, "alpha-86.json",
                 **{**_GOOD, "task_issue": 86, "blocker_issue": 7})
-    entry, = src.quarantine_entries()
-    assert (entry["task_issue"], entry["blocker_issue"]) == (86, 7)
+    assert _rows(src) == [(n, False, 0) for n in range(80, 86)] + [(86, True, 7)]
 
 
-def test_quarantine_entries_skip_wrong_typed_task_issue_despite_filename(tmp_path, src):
+def test_quarantine_entries_list_wrong_typed_task_issue_as_unreadable(tmp_path, src):
     _quarantine(tmp_path, "alpha-90.json", **{**_GOOD, "task_issue": "x"})
-    assert [e["task_issue"] for e in src.quarantine_entries()] == []
+    assert _rows(src) == [(90, False, 0)]
 
 
-def test_quarantine_entries_skip_wrong_typed_string_fields(tmp_path, src):
+def test_quarantine_entries_list_wrong_typed_string_fields_as_unreadable(tmp_path, src):
     for n, key, bad in [(91, "blocker_repo", 5), (92, "fingerprint", None),
                         (93, "created_at", {"at": 1})]:
         _quarantine(tmp_path, f"alpha-{n}.json",
                     **{**_GOOD, "task_issue": n, key: bad})
     _quarantine(tmp_path, "alpha-94.json", **{**_GOOD, "task_issue": 94})
-    assert [e["task_issue"] for e in src.quarantine_entries()] == [94]
+    assert _rows(src) == [(91, False, 0), (92, False, 0), (93, False, 0),
+                          (94, True, 1)]
+    assert {e["fingerprint"] for e in src.quarantine_entries()} == {"", "f"}
 
 
 def test_quarantine_entries_keep_missing_fields_and_extra_keys(tmp_path, src):
