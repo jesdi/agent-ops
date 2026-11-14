@@ -238,8 +238,10 @@ committed.
 **Malformed quarantine record**:
 A readable JSON object under `state_dir/quarantine/` with a wrong-typed
 `task_issue`, `blocker_issue`, `blocker_repo`, `fingerprint` or `created_at`.
-`Sources.quarantine_entries()` skips it as it skips an unreadable record;
-the field types are checked before the filename supplies the task key.
+A kind of unreadable quarantine record: `failures.read_quarantine` returns
+`UNREADABLE` for it (a missing field is fine; bool is not an int), so it
+still blocks its issue with no blocker lookup, is listed as unreadable and
+can be retried.
 
 **Implement progress**:
 The note of the implement session's last `working` report, for example
