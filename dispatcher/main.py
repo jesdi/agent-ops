@@ -38,7 +38,7 @@ from dispatcher.board import BoardError
 from dispatcher.github import Candidate, GitHubClient
 
 log = logging.getLogger(__name__)
-from dispatcher import implementation_grants, spec_publish, task_artifacts
+from dispatcher import implementation_grants, migrate, spec_publish, task_artifacts
 from dispatcher import base_line
 from dispatcher.artifacts import (REVIEW_PAGE, TICKETS_DIR, check_spec, check_tickets,
                                   count_open_questions, page_revision, plan_revision)
@@ -3403,6 +3403,14 @@ def _load(config_path: str) -> tuple[Config, Config]:
     return boot, cfg
 
 
+def _refuse_legacy_task_files(state_dir: str) -> None:
+    """Exit before the pass, changing nothing, while a task file is still
+    in the legacy shape: the pass would read it as unreadable."""
+    if legacy := migrate.pending(state_dir):
+        raise SystemExit(f"task file(s) in the legacy shape: "
+                         f"{', '.join(p.name for p in legacy)}; run `agent-ops migrate-tasks`")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(prog="agent-ops-dispatcher")
     ap.add_argument("--config", default="targets.yaml")
@@ -3443,6 +3451,7 @@ def main() -> None:
             print(line)
     else:
         with pass_lock(cfg.state_dir):
+            _refuse_legacy_task_files(cfg.state_dir)
             # The console stores model settings under this lock: read them
             # again inside it, so a pass never runs a block the console has
             # replaced (a removed track would park the tasks it claims).

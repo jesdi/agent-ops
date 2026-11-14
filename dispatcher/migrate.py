@@ -179,6 +179,25 @@ def migrate_state_dir(state_dir: str | Path) -> list[Path]:
     return [p for p, _ in plan]
 
 
+def pending(state_dir: str | Path) -> list[Path]:
+    """The task files still in the legacy shape, archived snapshots
+    included. A file that cannot be read is not counted: the pass's
+    unreadable-file guard holds the claims it could affect."""
+    return [p for p in _task_files(Path(state_dir)) if _is_legacy_file(p)]
+
+
+def _is_legacy_file(p: Path) -> bool:
+    try:
+        return _legacy(json.loads(p.read_text()))
+    except (OSError, ValueError):
+        return False
+
+
+def _legacy(d: object) -> bool:
+    """The one shape check: a task written before the status has none."""
+    return isinstance(d, dict) and "status" not in d
+
+
 def _task_files(root: Path) -> list[Path]:
     """The task files, a legacy `task-<issue>.json` twin among them, and
     the archived snapshots."""
@@ -190,7 +209,7 @@ def _planned(p: Path) -> state.TaskState | None:
     when it is in the new shape already."""
     try:
         d = json.loads(p.read_text())
-        if "status" in d:
+        if not _legacy(d):
             state.from_dict(d)   # read as the dispatcher reads it
             return None
         return state.validated(_converted(d))

@@ -7,12 +7,14 @@ pending draft. A later invocation offers detected commands as editable defaults.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import getpass
 import sys
 import time
 from datetime import datetime, timezone
 
-from dispatcher import config, onboard
+from dispatcher import config, migrate, onboard
+from dispatcher.convergence import pass_lock
 from dispatcher.infra_config import project_block
 
 USER = "agent"
@@ -39,6 +41,10 @@ def _parser() -> argparse.ArgumentParser:
     nouns = parser.add_subparsers(dest="noun", required=True)
     status = nouns.add_parser("status", help="read-only report of the box: what it is claiming and why not")
     status.add_argument("--config", default=config.default_config_path())
+    migrate = nouns.add_parser("migrate-tasks", help="rewrite every legacy task file to (stage, status)")
+    migrate.add_argument("--lock-held", action="store_true",
+                         help="the caller holds the pass lock (provision/update.sh): take none")
+    migrate.add_argument("--config", default=config.default_config_path())
     add = nouns.add_parser("project").add_subparsers(dest="verb", required=True).add_parser(
         "add", help="onboard a project: it ends merged, deployed, visible and paused")
     add.add_argument("name", type=_slug)
@@ -60,6 +66,8 @@ def main(argv: list[str] | None = None, sh: onboard.Sh = onboard.sh) -> int:
         return box_status.run(args.config, datetime.now(timezone.utc),
                               box_status.system_probes(), sys.stdout)
     state_dir = config.load_config(args.config).state_dir
+    if args.noun == "migrate-tasks":
+        return _migrate_tasks(state_dir, args.lock_held)
     existing = onboard.load_record(state_dir, args.name)
     if existing and existing.status == "complete":
         _show(existing, "already onboarded")  # informational: no prompts, no writes
@@ -71,6 +79,22 @@ def main(argv: list[str] | None = None, sh: onboard.Sh = onboard.sh) -> int:
     if rec.awaiting == "confirm" and onboard.can_confirm(rec) and _yes(rec):
         _write(state_dir, "confirm", args.name, {"revision": rec.revision})
         _kick(sh, state_dir, args.name)
+    return 0
+
+
+def _migrate_tasks(state_dir: str, lock_held: bool) -> int:
+    """Rewrite the legacy task files under the pass lock, taken without
+    waiting unless the caller already holds it."""
+    try:
+        with contextlib.nullcontext() if lock_held else pass_lock(state_dir, timeout=0):
+            rewritten = migrate.migrate_state_dir(state_dir)
+    except TimeoutError:
+        print("dispatcher is running: a pass holds the lock; nothing changed", file=sys.stderr)
+        return 1
+    except migrate.MigrationError as e:
+        print(f"cannot migrate {e.path}, nothing changed: {e}", file=sys.stderr)
+        return 1
+    print(f"rewrote {len(rewritten)} task file(s)")
     return 0
 
 
