@@ -142,7 +142,13 @@ def request_reason(task: TaskState | None, intent: intents.Intent,
     request = operator_request(task) if task is not None else None
     if request is None:
         return "no open request"
-    revision = request.fingerprint
+    return _revision_reason(task, intent, request.fingerprint, on_disk)
+
+
+def _revision_reason(task: TaskState, intent: intents.Intent, revision: str,
+                     on_disk: str | None) -> str | None:
+    """"stale revision" unless the intent was made on the request's
+    revision and the page on disk is still that revision; None when it is."""
     if not _valid(intent, revision):
         return "stale revision"
     # ponytail: a page that cannot be read now ("") is no evidence of a new
@@ -204,16 +210,27 @@ def _superseded(group: list[intents.Intent],
         task = task_for(group[0])
     except Exception:
         return []
-    on_disk = disk_revision(task)
-    competing = [i for i in group if request_reason(task, i, on_disk) is None]
+    competing = _answering(task, group)
     if not competing:
         return []
-    win = select(competing, operator_request(task).fingerprint)
-    for i in competing:
-        if i is not win:
-            print(f"[info] intent {i.path.name} superseded by {win.path.name}",
-                  file=sys.stderr)
-    return [i for i in competing if i is not win]
+    return _losers(competing, select(competing, operator_request(task).fingerprint))
+
+
+def _answering(task: TaskState | None, group: list[intents.Intent]
+               ) -> list[intents.Intent]:
+    """The intents of the group that answer the task's open request."""
+    on_disk = disk_revision(task)
+    return [i for i in group if request_reason(task, i, on_disk) is None]
+
+
+def _losers(competing: list[intents.Intent], win: intents.Intent
+            ) -> list[intents.Intent]:
+    """The competing intents other than `win`, each logged as superseded."""
+    losers = [i for i in competing if i is not win]
+    for i in losers:
+        print(f"[info] intent {i.path.name} superseded by {win.path.name}",
+              file=sys.stderr)
+    return losers
 
 
 def without_superseded(pending: list[intents.Intent],
