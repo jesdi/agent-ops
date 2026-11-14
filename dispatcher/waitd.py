@@ -25,13 +25,26 @@ def _load_session_task(state_dir, repository: str, issue: int):
         return None
 
 
+def _valid_session_id(session_id) -> bool:
+    return isinstance(session_id, str) and bool(session_id)
+
+
+def _session_task(state_dir, repository: str, issue: int, cwd: str | None):
+    """The task the session belongs to; None when it is unreadable or lives in
+    another worktree than `cwd`."""
+    task = _load_session_task(state_dir, repository, issue)
+    if task is None or (cwd is not None and task.worktree != cwd):
+        return None
+    return task
+
+
 def _record_session(rec: dict, state_dir, repository: str, issue: int,
                     cwd: str | None = None) -> None:
     session_id = rec.get("session_id")
-    if not repository or not isinstance(session_id, str) or not session_id:
+    if not repository or not _valid_session_id(session_id):
         return
-    task = _load_session_task(state_dir, repository, issue)
-    if task is None or (cwd is not None and task.worktree != cwd):
+    task = _session_task(state_dir, repository, issue, cwd)
+    if task is None:
         return
     try:
         write_session(state_dir, repository, issue,
