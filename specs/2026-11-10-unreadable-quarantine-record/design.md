@@ -39,9 +39,9 @@
   `beta-74.json`. Pre-existing, independent of readability (open question on the review page).
 - A directory named `alpha-7.json` is unreadable (blocks, listed), but Retry's unlink raises
   `IsADirectoryError`. No writer creates directories there.
-- A readable object with ill-typed fields (`{"blocker_issue": "x"}`) fails `QuarantineEntry`
-  validation and 500s `/api/failures`. Pre-existing; the spec's non-goals keep readable
-  records unchanged.
+- An object with a wrong-typed field (`{"blocker_issue": "x"}`) is unreadable:
+  `read_quarantine` checks the field types, so it blocks, is listed as unreadable and
+  can be retried.
 - `web/box_status.py: _quarantine` (`agent-ops status`) keeps its own readability check and
   reports a vanished file as unreadable for one run; the spec keeps `agent-ops status` out of
   scope, so it is left alone on purpose.
