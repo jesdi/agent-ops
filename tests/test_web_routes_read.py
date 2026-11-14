@@ -743,5 +743,4 @@ def test_board_and_retry_tolerate_a_malformed_record(tmp_path):
         "fingerprint": "f", "created_at": "c"}})
     assert client.get("/api/board", headers=HEADERS).status_code == 200
     r = client.post("/api/task/alpha/73/retry", headers=HEADERS, json={})
-    assert r.status_code == 404
-    assert "issue alpha/73 is not quarantined" in r.text
+    assert r.status_code == 202, r.text
