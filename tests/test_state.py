@@ -683,3 +683,20 @@ def test_scan_names_a_task_file_it_cannot_read(tmp_path):
     assert [t.issue for t in tasks] == [1]
     assert [p.name for p in unreadable] == ["task-portfolio_eval-2.json"]
     assert [t.issue for t in load_all(tmp_path)] == [1]
+
+
+def test_scan_skips_a_task_file_deleted_between_the_glob_and_the_read(tmp_path, monkeypatch):
+    from dispatcher import state
+    state.save(tmp_path, _ts(1, "agent_ops"))
+    state.save(tmp_path, _ts(2, "agent_ops"))
+    real_read = state._read
+
+    def read_after_delete(p):
+        if p.name == "task-agent_ops-1.json":
+            p.unlink()
+        return real_read(p)
+
+    monkeypatch.setattr(state, "_read", read_after_delete)
+    tasks, unreadable = state.scan(tmp_path)
+    assert [t.issue for t in tasks] == [2]
+    assert unreadable == []
