@@ -113,6 +113,13 @@ unfinished tasks (parked and pr-open ones hold no capacity but still hold a
 worktree).
 _Avoid_: slots per project (there are none; `max_active` is only a cap)
 
+**Box-wide admission**:
+The shared `_admissions` path for woken tasks and pending feedback. It snapshots
+candidates in oldest-first order, then checks launch, capacity, slots and the
+task token one candidate at a time. Each caller acts before admission advances;
+wakes run before feedback. A free recorded slot is retained, an occupied one
+is replaced, and the caller saves the admitted task. See ADRs 0014–0018.
+
 **Session**:
 One `podman run … claude` invocation in a herdr tab, working a single stage of
 one task. Sessions are disposable; state lives in artifacts and claude-home.
