@@ -16,6 +16,9 @@ since: the plan review gate (ADR 0001), one implement session (ADR 0003), one ta
    - `waking(from, cause)`
    - `failed(reason)`, `canceled`, `done`
 
+   The `fingerprint` of `plan-approval` and `review` may be empty for a plan whose revision was
+   never checked, so the console offers no approve.
+
    `reason` of `parked(human)` is one of `decision | stalled | loop-cap | bad-signal | config |
    operator` and carries the note shown to the operator. No transition into `failed`, `canceled`
    or `done` changes `stage`, with one exception: a launch that raises (`launch-failed`) fails
