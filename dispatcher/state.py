@@ -434,11 +434,6 @@ def _acquire(fd: int, timeout: float | None, name: str) -> None:
 
 
 def write_atomic(path: Path, data: str | bytes) -> None:
-    """Write `data` whole to `path`, atomically, as mode 0644."""
-    raise NotImplementedError
-
-
-def write_atomic(path: Path, data: str | bytes) -> None:
     """For a state file the web process and the dispatcher share (the usage
     cache, the priority mode): write a sibling temp file of its own and rename
     it over, so a reader never sees a torn one and two writers never share a
@@ -781,7 +776,6 @@ def mark_background(state_dir: str | Path, repository: str, issue: int,
     old = read_background(state_dir, repository, issue)
     since = old.since if old and set(ids) <= set(old.tasks) else now
     p = _background_path(state_dir, repository, issue)
-    p.parent.mkdir(parents=True, exist_ok=True)
     _waiting_path(state_dir, repository, issue).unlink(missing_ok=True)  # latest turn end wins; before the write so a pass never sees both
     write_json_atomic(p, {"tasks": list(ids), "since": since, "reported": now})
 

@@ -36,7 +36,6 @@ class Queue:
 
     def _write(self, directory: Path, action: str, key: tuple, payload: dict,
                actor: str, epoch_ms: int) -> Path:
-        directory.mkdir(parents=True, exist_ok=True)
         subject = "-".join(map(str, key))
         stamp = _next_stamp(directory, subject, epoch_ms)
         p = directory / f"{stamp}-{subject}-{action}.json"
