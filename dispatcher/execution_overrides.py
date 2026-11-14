@@ -5,6 +5,8 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from dispatcher.state import write_json_atomic
+
 
 DIR = "execution-overrides"
 
@@ -35,10 +37,7 @@ def _path(state_dir: str | Path, repository: str, issue: int) -> Path:
 def save(state_dir: str | Path, repository: str, issue: int,
          override: ExecutionOverride) -> None:
     path = _path(state_dir, repository, issue)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(asdict(override), indent=2))
-    tmp.replace(path)
+    write_json_atomic(path, asdict(override), indent=2)
 
 
 def load(state_dir: str | Path, repository: str,

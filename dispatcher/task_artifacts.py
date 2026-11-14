@@ -117,10 +117,7 @@ def _write(path: Path, value: dict) -> None:
     text = json.dumps(value, indent=2, sort_keys=True)
     if path.exists() and path.read_text() == text:
         return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(text)
-    tmp.replace(path)
+    state.write_atomic(path, text)
 
 
 def read(state_dir, repository: str, issue: int) -> ArtifactIndex:
@@ -233,10 +230,7 @@ class Collector:
 
 
 def _copy_content(dest: Path, content: bytes) -> None:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_suffix(".tmp")
-    tmp.write_bytes(content)
-    tmp.replace(dest)
+    state.write_atomic(dest, content)
 
 
 def _media_type(path: Path) -> str:

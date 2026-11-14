@@ -34,6 +34,7 @@ from dispatcher.usage_providers import ADAPTERS, fetch_all
 from dispatcher import (answers, claims, eventlog, execution_overrides, failures, github_app, host_auth, intents, labels, loops,
                         messages, pr_poll, priority, queue_ops, relogin, task_tokens, tmux_migration,
                         triage, onboarding_sessions)
+from dispatcher.state import write_json_atomic
 from dispatcher.board import BoardError
 from dispatcher.github import Candidate, GitHubClient
 
@@ -2666,12 +2667,9 @@ def _write_heartbeat(cfg: Config, started_at: str) -> None:
     pass (same contract as eventlog.append_event)."""
     try:
         p = Path(cfg.state_dir) / "pass.json"
-        p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_suffix(".tmp")
-        tmp.write_text(json.dumps({
+        write_json_atomic(p, {
             "started_at": started_at, "finished_at": _now(),
-            "interval_minutes": cfg.pass_interval_minutes}))
-        tmp.replace(p)
+            "interval_minutes": cfg.pass_interval_minutes})
     except OSError as exc:
         print(f"[warn] heartbeat write failed: {exc}", file=sys.stderr)
 
