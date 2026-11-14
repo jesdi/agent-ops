@@ -3418,9 +3418,14 @@ def _enqueue_triage(cfg: Config) -> None:
 
 
 def _refuse_legacy_task_files(state_dir: str) -> None:
-    """Exit before the pass, changing nothing, while a task file is still
-    in the legacy shape: the pass would read it as unreadable."""
-    if legacy := migrate.pending(state_dir):
+    """Exit before any mode reads task state, changing nothing, while a
+    task file is still in the legacy shape or cannot be read at all: the
+    mode would leave it out of its tasks unseen."""
+    try:
+        legacy = migrate.pending(state_dir)
+    except migrate.MigrationError as e:
+        raise SystemExit(f"cannot read task file {e}; fix or remove it") from e
+    if legacy:
         raise SystemExit(f"task file(s) in the legacy shape: "
                          f"{', '.join(p.name for p in legacy)}; run `agent-ops migrate-tasks`")
 
@@ -3457,6 +3462,20 @@ def main() -> None:
     boot, cfg = _load(args.config)
     _warn_unadapted(cfg)
     deps = _deps(cfg, args.dry_run)
+    if _reads_task_state(args):
+        _refuse_legacy_task_files(cfg.state_dir)
+    _run_mode(args, boot, cfg, deps)
+
+
+def _reads_task_state(args: argparse.Namespace) -> bool:
+    """Whether the mode must wait for every task file to be readable in
+    the new shape. --triage only enqueues a request and reads no task.
+    --migrate-tmux reads them, but the updater runs it before migrate-tasks,
+    so refusing it would fail the deploy. Every other mode reads them all."""
+    return not (args.triage or args.migrate_tmux)
+
+
+def _run_mode(args: argparse.Namespace, boot: Config, cfg: Config, deps: Deps) -> None:
     if args.digest:
         send_digest(cfg, deps)
     elif args.triage:
@@ -3467,7 +3486,6 @@ def main() -> None:
         _migrate_tmux(cfg)
     else:
         with pass_lock(cfg.state_dir):
-            _refuse_legacy_task_files(cfg.state_dir)
             # The console stores model settings under this lock: read them
             # again inside it, so a pass never runs a block the console has
             # replaced (a removed track would park the tasks it claims).

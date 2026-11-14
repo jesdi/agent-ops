@@ -172,8 +172,7 @@ def migrate_state_dir(state_dir: str | Path) -> list[Path]:
     classified raises MigrationError naming it and changes nothing. A file
     already in the new shape is left alone: a second run, or a run after
     one killed midway, writes only what is still legacy."""
-    plan = [(p, task) for p in _task_files(Path(state_dir))
-            if (task := _planned(p)) is not None]
+    plan = _plan(Path(state_dir))
     for p, task in plan:
         state.save_in_place(p, task)
     return [p for p, _ in plan]
@@ -181,16 +180,14 @@ def migrate_state_dir(state_dir: str | Path) -> list[Path]:
 
 def pending(state_dir: str | Path) -> list[Path]:
     """The task files still in the legacy shape, archived snapshots
-    included. A file that cannot be read is not counted: the pass's
-    unreadable-file guard holds the claims it could affect."""
-    return [p for p in _task_files(Path(state_dir)) if _is_legacy_file(p)]
+    included: the files migrate_state_dir would rewrite. A file that
+    cannot be read or classified raises MigrationError naming it, so a
+    guard on this fails closed."""
+    return [p for p, _ in _plan(Path(state_dir))]
 
 
-def _is_legacy_file(p: Path) -> bool:
-    try:
-        return _legacy(json.loads(p.read_text()))
-    except (OSError, ValueError):
-        return False
+def _plan(root: Path) -> list[tuple[Path, state.TaskState]]:
+    return [(p, task) for p in _task_files(root) if (task := _planned(p)) is not None]
 
 
 def _legacy(d: object) -> bool:
