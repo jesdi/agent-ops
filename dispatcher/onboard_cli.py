@@ -68,18 +68,32 @@ def main(argv: list[str] | None = None, sh: onboard.Sh = onboard.sh) -> int:
     state_dir = config.load_config(args.config).state_dir
     if args.noun == "migrate-tasks":
         return _migrate_tasks(state_dir, args.lock_held)
+    return _project_add(args, state_dir, sh)
+
+
+def _project_add(args: argparse.Namespace, state_dir: str, sh: onboard.Sh) -> int:
     existing = onboard.load_record(state_dir, args.name)
     if existing and existing.status == "complete":
         _show(existing, "already onboarded")  # informational: no prompts, no writes
         return 0
+    _start(args, state_dir, existing)
+    _confirm(sh, state_dir, args.name)
+    return 0
+
+
+def _start(args: argparse.Namespace, state_dir: str, existing: onboard.Record | None) -> None:
+    """Write the add intent; `--manual` first skips a pending draft."""
     if args.manual and existing and existing.request.get("inspect"):
         _write(state_dir, "skip-inspection", args.name, {"revision": existing.revision})
     _write(state_dir, "add", args.name, _request(args, existing))
-    rec = _kick(sh, state_dir, args.name)
+
+
+def _confirm(sh: onboard.Sh, state_dir: str, project: str) -> None:
+    """Kick the engine; a proposal the operator confirms is kicked again."""
+    rec = _kick(sh, state_dir, project)
     if rec.awaiting == "confirm" and onboard.can_confirm(rec) and _yes(rec):
-        _write(state_dir, "confirm", args.name, {"revision": rec.revision})
-        _kick(sh, state_dir, args.name)
-    return 0
+        _write(state_dir, "confirm", project, {"revision": rec.revision})
+        _kick(sh, state_dir, project)
 
 
 def _migrate_tasks(state_dir: str, lock_held: bool) -> int:

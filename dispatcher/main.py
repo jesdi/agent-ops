@@ -3403,6 +3403,20 @@ def _load(config_path: str) -> tuple[Config, Config]:
     return boot, cfg
 
 
+def _warn_unadapted(cfg: Config) -> None:
+    missing = referenced_providers(cfg) - set(ADAPTERS)
+    if missing:
+        print(f"[warn] models: provider(s) {sorted(missing)} have no usage adapter; "
+              f"their entries are never admitted", file=sys.stderr)
+
+
+def _enqueue_triage(cfg: Config) -> None:
+    if triage.enqueue(cfg.state_dir):
+        print("triage request enqueued")
+    else:
+        print("triage already pending or running; not enqueued")
+
+
 def _refuse_legacy_task_files(state_dir: str) -> None:
     """Exit before the pass, changing nothing, while a task file is still
     in the legacy shape: the pass would read it as unreadable."""
@@ -3421,10 +3435,7 @@ def main() -> None:
     ap.add_argument("--migrate-tmux", action="store_true")
     args = ap.parse_args()
     boot, cfg = _load(args.config)
-    missing = referenced_providers(cfg) - set(ADAPTERS)
-    if missing:
-        print(f"[warn] models: provider(s) {sorted(missing)} have no usage adapter; "
-              f"their entries are never admitted", file=sys.stderr)
+    _warn_unadapted(cfg)
     deps = Deps(github=GitHubClient(dry_run=args.dry_run), app=github_app.Client(),
                 sessions=Sessions(dry_run=args.dry_run, memory=cfg.session_memory,
                                   cpus=cfg.session_cpus, state_dir=cfg.state_dir,
@@ -3435,10 +3446,7 @@ def main() -> None:
     if args.digest:
         send_digest(cfg, deps)
     elif args.triage:
-        if triage.enqueue(cfg.state_dir):
-            print("triage request enqueued")
-        else:
-            print("triage already pending or running; not enqueued")
+        _enqueue_triage(cfg)
     elif args.triage_run:
         triage.guarded_sweep(cfg, deps)
     elif args.migrate_tmux:
