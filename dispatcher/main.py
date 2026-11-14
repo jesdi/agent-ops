@@ -3425,6 +3425,26 @@ def _refuse_legacy_task_files(state_dir: str) -> None:
                          f"{', '.join(p.name for p in legacy)}; run `agent-ops migrate-tasks`")
 
 
+def _deps(cfg: Config, dry_run: bool) -> Deps:
+    return Deps(github=GitHubClient(dry_run=dry_run), app=github_app.Client(),
+                sessions=Sessions(dry_run=dry_run, memory=cfg.session_memory,
+                                  cpus=cfg.session_cpus, state_dir=cfg.state_dir,
+                                  clones={t.name: t.clone_path for t in cfg.repositories}),
+                notifier=Notifier(dry_run=dry_run,
+                                  console_url=cfg.console_url,
+                                  multi_repository=len(cfg.repositories) > 1))
+
+
+def _migrate_tmux(cfg: Config) -> None:
+    """Called by agent-ops-infra/provision/update.sh, which already holds
+    convergence.lock (the same file pass_lock flocks — taking it here again
+    would block forever, flock being per open-file-description). Never run
+    by hand while the dispatcher timer is live."""
+    for line in tmux_migration.migrate(
+            cfg.state_dir, lambda task, text: _wake(cfg, task, text)):
+        print(line)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(prog="agent-ops-dispatcher")
     ap.add_argument("--config", default="targets.yaml")
@@ -3436,13 +3456,7 @@ def main() -> None:
     args = ap.parse_args()
     boot, cfg = _load(args.config)
     _warn_unadapted(cfg)
-    deps = Deps(github=GitHubClient(dry_run=args.dry_run), app=github_app.Client(),
-                sessions=Sessions(dry_run=args.dry_run, memory=cfg.session_memory,
-                                  cpus=cfg.session_cpus, state_dir=cfg.state_dir,
-                                  clones={t.name: t.clone_path for t in cfg.repositories}),
-                notifier=Notifier(dry_run=args.dry_run,
-                                  console_url=cfg.console_url,
-                                  multi_repository=len(cfg.repositories) > 1))
+    deps = _deps(cfg, args.dry_run)
     if args.digest:
         send_digest(cfg, deps)
     elif args.triage:
@@ -3450,13 +3464,7 @@ def main() -> None:
     elif args.triage_run:
         triage.guarded_sweep(cfg, deps)
     elif args.migrate_tmux:
-        # Called by agent-ops-infra/provision/update.sh, which already holds convergence.lock
-        # (the same file pass_lock flocks — taking it here again would block
-        # forever, flock being per open-file-description). Never run by hand
-        # while the dispatcher timer is live.
-        for line in tmux_migration.migrate(
-                cfg.state_dir, lambda task, text: _wake(cfg, task, text)):
-            print(line)
+        _migrate_tmux(cfg)
     else:
         with pass_lock(cfg.state_dir):
             _refuse_legacy_task_files(cfg.state_dir)
