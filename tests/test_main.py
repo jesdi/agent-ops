@@ -3007,6 +3007,40 @@ def test_a_login_hold_whose_ping_fails_stays_held(tmp_path, monkeypatch):
     assert d.notifier.sent == ["needs_relogin"]
 
 
+def _login_park(tmp_path, msg_id=77, **kw):
+    from dispatcher.relogin import LoginPrompt
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.SPEC, **kw)
+    d = deps(sess=FakeSessions(alive=[42], tail=LOGIN_TAIL),
+             notifier=FakeNotifier(msg_id=msg_id))
+    task = load(c.state_dir, "portfolio_eval", 42)
+    held_ = main._park_for_login(c, d, c.repositories[0], task, "stalled",
+                                 LOGIN_TAIL, LoginPrompt(url=""))
+    return c, d, held_
+
+
+def test_park_for_login_holds_the_slotted_task_at_its_prompt(tmp_path):
+    c, d, held_ = _login_park(tmp_path)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert held_ and (t.status.kind, t.park_msg_id) == (Kind.HELD_LOGIN, 77)
+    assert d.sessions.ended == []
+    _, ctx = d.notifier.calls[0]
+    assert ctx["login_url"] == "(attach to the session to see the URL)"
+    assert ctx["note"].startswith("stalled\n\n")
+
+
+def test_park_for_login_leaves_a_slotless_task_to_the_generic_park(tmp_path):
+    c, d, held_ = _login_park(tmp_path, slot=NO_SLOT, status=waking())
+    assert not held_ and d.notifier.sent == []
+    assert load(c.state_dir, "portfolio_eval", 42).status.kind is Kind.WAKING
+
+
+def test_park_for_login_leaves_an_undelivered_ping_to_the_generic_park(tmp_path):
+    c, d, held_ = _login_park(tmp_path, msg_id=0)
+    assert not held_ and d.notifier.sent == ["needs_relogin"]
+    assert load(c.state_dir, "portfolio_eval", 42).status.kind is Kind.RUNNING
+
+
 def test_login_park_holds_capacity_against_new_claims(tmp_path, monkeypatch):
     # A login park keeps its container running, so it must NOT free a slot
     # for a new claim — a box-wide auth expiry would otherwise spawn a fresh
