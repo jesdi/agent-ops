@@ -1492,11 +1492,16 @@ def _admission_candidates(cfg: Config, wants: Callable[[TaskState], bool]
 
 def _seat(cfg: Config, repository: Repository, task: TaskState) -> TaskState | None:
     """The task on a slot it may run in, under box capacity; None when it
-    must wait (marked wake-blocked)."""
-    if _box_free(cfg, load_all(cfg.state_dir)) <= 0:
+    must wait (marked wake-blocked). Gated on every task file being readable:
+    the task it cannot see may hold a capacity unit and a slot."""
+    tasks = _readable_tasks(cfg)
+    if tasks is None:
+        _mark_wake_blocked(cfg, repository, task, UNREADABLE_TASK_FILE)
+        return None
+    if _box_free(cfg, tasks) <= 0:
         _mark_wake_blocked(cfg, repository, task, "capacity full")
         return None
-    others = [t for t in load_all(cfg.state_dir)
+    others = [t for t in tasks
               if (t.repository, t.issue) != (task.repository, task.issue)]
     if not _slot_lost(task, others):
         return task
@@ -1990,7 +1995,9 @@ def _legacy_event(turn: _Turn, saved: TaskState, t: Transition) -> None:
 def _acquire_slot(turn: _Turn, task: TaskState, act: AcquireSlot) -> TaskState:
     if task.slot != NO_SLOT:
         return task
-    slot = allocate_slot(load_all(turn.cfg.state_dir), max_slots(turn.cfg.capacity))
+    # The launch was checked for room (_no_room); this is the last guard.
+    tasks = _readable_tasks(turn.cfg)
+    slot = None if tasks is None else allocate_slot(tasks, max_slots(turn.cfg.capacity))
     if slot is None:
         raise RuntimeError(f"#{task.issue}: no free slot for its launch")
     return replace(task, slot=slot)
@@ -2400,12 +2407,18 @@ def _wake_room(turn: _Turn, task: TaskState) -> Event | None:
 
 
 def _no_room(cfg: Config, task: TaskState) -> str:
-    """Why the wake has no room; its own file is left out. A free unit has a free
-    slot: a slot is held only by a task that holds a unit, and there are two
-    more slots than units (state.max_slots); AcquireSlot still refuses."""
-    tasks = [t for t in load_all(cfg.state_dir)
-             if (t.repository, t.issue) != (task.repository, task.issue)]
-    return "capacity full" if _box_free(cfg, tasks) <= 0 else ""
+    """Why the wake has no room; its own file is left out of the capacity
+    count (a waking task holds no slot, so the slot count may keep it)."""
+    all_tasks = _readable_tasks(cfg)
+    if all_tasks is None:
+        return UNREADABLE_TASK_FILE
+    others = [t for t in all_tasks
+              if (t.repository, t.issue) != (task.repository, task.issue)]
+    if _box_free(cfg, others) <= 0:
+        return "capacity full"
+    if allocate_slot(all_tasks, max_slots(cfg.capacity)) is None:
+        return "no free slot"
+    return ""
 
 
 def _observation(turn: _Turn, task: TaskState, policy: ModelPolicy) -> Observation:
@@ -2687,11 +2700,16 @@ def _claim_new(cfg: Config, deps: Deps, repositories: list[Repository],
             free -= 1  # checked before the next pull, so no candidate is vetted (or swept) that cannot be claimed
 
 
+UNREADABLE_TASK_FILE = "unreadable task file"
+
+
 def _readable_tasks(cfg: Config) -> list[TaskState] | None:
-    """Every task, or None (with a warning) when a task file cannot be read."""
+    """Every task, or None (with a warning) when a task file cannot be read.
+    The one gate of every claim, wake and launch: the task it cannot see may
+    hold an issue, a capacity unit and a slot no count can see."""
     all_tasks, unreadable = scan(cfg.state_dir)
     if unreadable:
-        print(f"[warn] no claims this pass: task file(s) cannot be read: "
+        print(f"[warn] no claims, wakes or launches: task file(s) cannot be read: "
               f"{', '.join(p.name for p in unreadable)}", file=sys.stderr)
         return None
     return all_tasks

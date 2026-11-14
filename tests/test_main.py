@@ -4818,6 +4818,59 @@ def test_slot_exhaustion_is_reported_as_such(tmp_path, monkeypatch):
     assert [e["detail"] for e in blocked] == ["no free slot"]
 
 
+def _blocked_details(c):
+    return [(e["issue"], e["detail"]) for e in main.eventlog.read_tail(c.state_dir)
+            if e["event"] == "wake-blocked"]
+
+
+def _one_live_task_and_an_unreadable_file(tmp_path):
+    c = dc_replace(cfg(tmp_path), capacity=1)
+    make_task(c, issue=41, slot=0, status=RUNNING)       # live: holds the only unit
+    (Path(c.state_dir) / "task-portfolio_eval-99.json").write_text("{not json")
+    return c
+
+
+def test_an_unreadable_task_file_blocks_a_wake(tmp_path):
+    """The unreadable task may hold a unit and a slot no count can see: the
+    wake waits, as a claim does, and says why once."""
+    c = _one_live_task_and_an_unreadable_file(tmp_path)
+    make_task(c, issue=42, slot=NO_SLOT, status=waking())
+    d = deps(sess=FakeSessions(alive={41}))
+    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
+    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert (t.status.kind, t.slot) == (Kind.WAKING, NO_SLOT)
+    assert d.sessions.spawned == [] and d.sessions.resumed == []
+    assert _blocked_details(c) == [(42, "unreadable task file")]
+
+
+def test_an_unreadable_task_file_blocks_the_launch_of_the_next_stage(tmp_path):
+    c = _one_live_task_and_an_unreadable_file(tmp_path)
+    make_task(c, issue=42, stage=Stage.REVIEW, slot=NO_SLOT,
+              status=waking(cause="next-stage"))
+    d = deps(sess=FakeSessions(alive={41}))
+    for _ in range(2):
+        main._drive_task(c, d, c.repositories[0],
+                         load(c.state_dir, "portfolio_eval", 42), ADMIT_ALL, tuple)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert (t.status.kind, t.slot) == (Kind.WAKING, NO_SLOT)
+    assert d.sessions.spawned == []
+    assert _blocked_details(c) == [(42, "unreadable task file")]
+
+
+def test_a_launch_with_no_free_slot_waits_instead_of_aborting(tmp_path, monkeypatch):
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.REVIEW, slot=NO_SLOT,
+              status=waking(cause="next-stage"))
+    monkeypatch.setattr(main, "allocate_slot", lambda *a, **kw: None)
+    d = deps()
+    main._drive_task(c, d, c.repositories[0],
+                     load(c.state_dir, "portfolio_eval", 42), ADMIT_ALL, tuple)
+    assert load(c.state_dir, "portfolio_eval", 42).status.kind is Kind.WAKING
+    assert d.sessions.spawned == []
+    assert _blocked_details(c) == [(42, "no free slot")]
+
+
 def test_marker_clears_once_the_wake_succeeds(tmp_path):
     c = dc_replace(cfg(tmp_path), capacity=1)
     make_task(c, issue=41, slot=0, status=RUNNING)
