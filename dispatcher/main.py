@@ -3236,12 +3236,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     _migrate_legacy_keys(cfg)
     _reconcile_wake_blocked(cfg)
     if not dry_run:
-        _sync_task_tokens(cfg, deps)
-        _apply_intents(cfg, deps)
-        _prune_snapshots(cfg)
-        onboarding_sessions.reconcile(cfg.state_dir)
-        reserved = onboarding_sessions.running(cfg.state_dir)
-        triage.tick(replace(cfg, capacity=max(0, cfg.capacity - reserved)), deps, config_path)
+        _housekeep(cfg, deps, config_path)
     # Evaluate each triage signal once — triage.running() is a real herdr
     # subprocess; calling it per repository would spawn (1 + len(repositories)) processes
     # each pass. The two signals are semantically distinct: eff is reduced when
@@ -3264,18 +3259,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     _auth_dark_edge(cfg, deps, usages)
     # Phase 1: work already in progress, on every repository, before any claim —
     # so one repository's new claims never starve another's approved spec.
-    for repository in eff.repositories:
-        for task in [t for t in load_all(cfg.state_dir)
-                     if t.repository == repository.name and _driven(t)]:
-            try:
-                _drive_task(eff, deps, repository, task, admit, order, dry_run)
-            except host_auth.HostWait as exc:   # the turn waits for the App, not a crash
-                print(f"[warn] #{task.issue}: {exc}; its turn waits for the next pass",
-                      file=sys.stderr)
-            except Exception:
-                _fail_task_crash(eff, deps, repository, task, dry_run)
-        _wake_ci(eff, deps, repository)
-        _poll_prs(eff, deps, repository, dry_run)
+    _drive_in_progress(eff, deps, admit, order, dry_run)
     _wake_reached(eff, deps)
     _resume_woken(eff, deps, admit, order, dry_run)
     _spawn_feedback(eff, deps, admit, order)
@@ -3284,7 +3268,6 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
             cfg, deps, admit, order, config_path,
             free=_box_free(eff, load_all(cfg.state_dir)))
         eff = replace(eff, capacity=max(0, eff.capacity - launched))
-    if not dry_run:
         _reconcile_boards(cfg, deps)
     # Phase 2: new claims, with whatever capacity phase 1 and inspection left.
     if not claims_paused:
@@ -3292,6 +3275,40 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     _sync_artifacts(cfg, dry_run=dry_run, auth=deps.github.auth)
     _flush_finished(cfg, dry_run)
     _write_heartbeat(cfg, pass_started)
+
+
+def _housekeep(cfg: Config, deps: Deps, config_path: str) -> None:
+    """A real pass's upkeep before any work: tokens, intents, snapshots,
+    onboarding sessions, and the triage sweep on what they leave."""
+    _sync_task_tokens(cfg, deps)
+    _apply_intents(cfg, deps)
+    _prune_snapshots(cfg)
+    onboarding_sessions.reconcile(cfg.state_dir)
+    reserved = onboarding_sessions.running(cfg.state_dir)
+    triage.tick(replace(cfg, capacity=max(0, cfg.capacity - reserved)), deps, config_path)
+
+
+def _drive_in_progress(cfg: Config, deps: Deps, admit: Admit, order: Order,
+                       dry_run: bool) -> None:
+    """Drive every repository's in-progress tasks, then its CI wakes and PRs."""
+    for repository in cfg.repositories:
+        for task in [t for t in load_all(cfg.state_dir)
+                     if t.repository == repository.name and _driven(t)]:
+            _drive_guarded(cfg, deps, repository, task, admit, order, dry_run)
+        _wake_ci(cfg, deps, repository)
+        _poll_prs(cfg, deps, repository, dry_run)
+
+
+def _drive_guarded(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
+                   admit: Admit, order: Order, dry_run: bool) -> None:
+    """Drive one task's turn; a crash fails that task, not the pass."""
+    try:
+        _drive_task(cfg, deps, repository, task, admit, order, dry_run)
+    except host_auth.HostWait as exc:   # the turn waits for the App, not a crash
+        print(f"[warn] #{task.issue}: {exc}; its turn waits for the next pass",
+              file=sys.stderr)
+    except Exception:
+        _fail_task_crash(cfg, deps, repository, task, dry_run)
 
 
 def guarded_pass(cfg: Config, deps: Deps, config_path: str,
