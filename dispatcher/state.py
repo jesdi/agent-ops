@@ -310,18 +310,32 @@ def _previous(state_dir: str | Path, ts: TaskState) -> TaskState | None:
 
 def save(state_dir: str | Path, ts: TaskState) -> None:
     """Write `ts`, refusing a status that breaks a constraint of design.md's
-    Data model (_check). The slot follows the status: one that does not
-    occupy holds none. terminal_at is stamped at the first ended status."""
-    _check(ts.stage, ts.status)
-    if not occupies(ts.status):
-        ts = replace(ts, slot=NO_SLOT)
-    elif ts.slot == NO_SLOT:
-        raise ValueError(f"task {ts.repository}#{ts.issue}: {ts.status.kind.value} "
-                         f"with no slot")
+    Data model (_check). The slot follows the status (validated).
+    terminal_at is stamped at the first ended status."""
+    ts = validated(ts)
     ts = replace(ts, terminal_at=_terminal_at(_previous(state_dir, ts), ts))
     _write_task(_path(state_dir, ts.repository, ts.issue), ts)
     # Lazy migration: the first save under the new key retires the legacy twin.
     _retire_legacy(state_dir, ts.repository, ts.issue)
+
+
+def save_in_place(p: Path, ts: TaskState) -> None:
+    """Write `ts` over the task file `p` itself, validated as save does: the
+    migration's writer, which must not move a legacy twin or an archived
+    snapshot to the task's own path."""
+    _write_task(p, validated(ts))
+
+
+def validated(ts: TaskState) -> TaskState:
+    """`ts` as a save writes it, or ValueError for a status that breaks a
+    constraint (_check). A status that does not occupy holds no slot."""
+    _check(ts.stage, ts.status)
+    if not occupies(ts.status):
+        return replace(ts, slot=NO_SLOT)
+    if ts.slot == NO_SLOT:
+        raise ValueError(f"task {ts.repository}#{ts.issue}: {ts.status.kind.value} "
+                         f"with no slot")
+    return ts
 
 
 def _terminal_at(previous: TaskState | None, ts: TaskState) -> str:
@@ -459,7 +473,11 @@ def _read(p: Path) -> TaskState | None:
     migration command, never here (ADR 0004)."""
     if not p.exists():
         return None
-    d = json.loads(p.read_text())
+    return from_dict(json.loads(p.read_text()))
+
+
+def from_dict(d: dict) -> TaskState:
+    """The task a stored task file holds (_read); raises as _read does."""
     if "target" in d:   # files written before the rename
         d["repository"] = d.pop("target")
     d["stage"] = Stage(d["stage"])
