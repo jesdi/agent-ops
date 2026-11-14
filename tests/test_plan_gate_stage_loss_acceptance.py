@@ -1,23 +1,23 @@
-"""Acceptance tests for ticket 01 of plan-gate-stage-loss: a plan launch of a
-gated task runs at the gate stage.
+"""Acceptance tests for ticket 01 of plan-gate-stage-loss: a plan launch
+from the gate stage runs at the gate stage (since #132 ticket 05 the gate
+stage decides, never `gated`).
 
 Spec: specs/plan-gate-stage-loss/spec.md, requirements 1-3 and their scenarios.
 Black-box, through dispatcher.main.run_pass over the fakes of tests/test_main.py,
 with a real worktree behind each task.
 """
-import json
 from dataclasses import replace as dc_replace
 
 import pytest
 
 import dispatcher.main as main
 from dispatcher import eventlog, intents as intents_mod
-from dispatcher.machine import PLAN_NO_APPROVAL
+from dispatcher.lifecycle import PLAN_NO_APPROVAL
 from dispatcher.models import parse_policy
-from dispatcher.state import NO_SLOT, PARK_HUMAN, PARK_REVIEW, PlanApprovalRequest, Stage, load
+from dispatcher.state import NO_SLOT, PARK_REVIEW, PlanApprovalRequest, Stage
 
-from tests.test_main import (FakeNotifier, FakeSessions, deps, make_task,
-                             patch_usage, patch_workspace)
+from tests.test_main import (FakeSessions, deps, make_task,
+                             patch_usage, patch_workspace, record_session)
 from tests.test_plan_review_gate_acceptance import (
     GATE, ISSUE, SPEC, SUMMARY, _arm, _done, _folder_files, _plan_task, _ready,
     _signal, _task)
@@ -89,7 +89,7 @@ def test_wake_at_the_gate_with_no_session_record_keeps_the_gate_stage(tmp_path, 
 def test_approval_after_a_fresh_launch_starts_implement(tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
     wt, sess = _fresh_launch_from_the_gate(c, tmp_path)
-    _done(wt)
+    _done(c, wt)
     d = deps(sess=sess)
 
     main.run_pass(c, d)
@@ -105,7 +105,7 @@ def test_approval_after_a_fresh_launch_starts_implement(tmp_path, monkeypatch):
 def test_approval_with_a_new_track_after_a_fresh_launch(tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
     wt, sess = _fresh_launch_from_the_gate(c, tmp_path)
-    _done(wt, track="research")
+    _done(c, wt, track="research")
 
     main.run_pass(c, deps(sess=sess))
 
@@ -156,12 +156,15 @@ def test_respawn_of_a_dead_session_at_the_gate_keeps_the_gate_stage(
     assert sess.resumed == []   # a ready report is not bounced back to the session
 
 
-def test_crash_resume_of_a_gated_task_runs_at_the_gate_stage(tmp_path, monkeypatch):
+@pytest.mark.parametrize("crashed", ["plan", GATE])
+def test_crash_resume_of_a_gated_task_runs_in_stage_plan_and_its_done_is_bounced(
+        tmp_path, monkeypatch, crashed):
+    """#132 ticket 05: `gated` moves no launch to the gate. A Resume after a
+    crash is no session at the gate, so its `done` is no approval, even one
+    the operator approved before the crash."""
     c = _setup(tmp_path, monkeypatch)
     wt = _plan_task(c, tmp_path, Stage.FAILED, git=False, tickets=1, gated=True,
-                    slot=NO_SLOT, crashed_stage="plan", unattended_rounds=1)
-    (wt / ".agent" / "review-answers.json").write_text(
-        json.dumps({"answers": [{"question": "approve the plan?", "answer": "approve"}]}))
+                    slot=NO_SLOT, crashed_stage=crashed, unattended_rounds=1)
     intents_mod.write_intent(c.state_dir, "resume", "portfolio_eval", ISSUE, {}, "op", 1)
     sess = FakeSessions()
 
@@ -169,15 +172,16 @@ def test_crash_resume_of_a_gated_task_runs_at_the_gate_stage(tmp_path, monkeypat
 
     assert [s[:2] for s in sess.spawned] == [(ISSUE, "plan")]
     t = _task(c)
-    assert t.stage.value == GATE and t.unattended_rounds == 0
+    assert t.stage is Stage.PLAN and t.unattended_rounds == 0
 
     sess.alive_set.add(ISSUE)
-    _done(wt)
+    record_session(c, "plan", ISSUE)
+    _done(c, wt)                            # an approval of the plan on disk is there
     main.run_pass(c, deps(sess=sess))
 
-    t = _task(c)
-    assert t.stage is Stage.IMPLEMENT and t.ticket_count == 1
-    assert len(_implement_spawns(sess)) == 1
+    (resume,) = sess.resumed
+    assert PLAN_NO_APPROVAL in resume[1] and _implement_spawns(sess) == []
+    assert _task(c).stage is Stage.PLAN
 
 
 def test_crash_resume_of_a_plan_that_never_reached_the_gate_runs_in_stage_plan(
@@ -208,30 +212,27 @@ def test_plan_launch_from_spec_still_sets_stage_plan(tmp_path, monkeypatch):
     assert _task(c).stage is Stage.PLAN
 
 
-def test_done_from_a_gated_task_in_stage_plan_parks_with_a_clear_note(tmp_path, monkeypatch):
+def test_done_from_a_gated_task_in_stage_plan_is_bounced(tmp_path, monkeypatch):
+    """#132 ticket 05: no "gate state was lost" park; a gated task's plan
+    `done` outside the gate is bounced like any unapproved one."""
     c = _setup(tmp_path, monkeypatch)
     wt = _plan_task(c, tmp_path, Stage.PLAN, git=False, tickets=1, gated=True)
-    _done(wt)
+    _done(c, wt)
     sess = FakeSessions(alive={ISSUE})
-    d = deps(sess=sess)
 
-    main.run_pass(c, d)
+    main.run_pass(c, deps(sess=sess))
 
-    assert sess.resumed == [] and _implement_spawns(sess) == []
-    assert "plan_retry" not in d.notifier.sent
+    (resume,) = sess.resumed
+    assert PLAN_NO_APPROVAL in resume[1] and _implement_spawns(sess) == []
     t = _task(c)
-    assert t.park == PARK_HUMAN and t.plan_retries == 0
-    note = " ".join(t.park_note.lower().split())
-    assert "gate state was lost" in note
-    assert "standard" in note
-    assert "by hand" in note and "implement" in note
+    assert (t.stage, t.park, t.plan_slips) == (Stage.PLAN, "", 1)
 
 
 def test_done_from_an_ungated_task_in_stage_plan_still_bounces(tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
     wt = _plan_task(c, tmp_path, Stage.PLAN, git=False, tickets=1, gated=False,
                     plan_retries=0)
-    _done(wt)
+    _done(c, wt)
     sess = FakeSessions(alive={ISSUE})
 
     main.run_pass(c, deps(sess=sess))

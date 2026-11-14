@@ -47,3 +47,19 @@ question blocks. The skip condition on `open_questions` now reads: the
 integer 0, equal to the number of `data-q` question blocks of
 `.agent/review.html` (`artifacts.count_open_questions`). A block whose id is
 not a question id makes the count unknown, so the gate applies.
+
+## Amendment (2026-11-13)
+
+The dispatcher now also enforces the approval itself. A plan `done` from the
+gate moves to implement only when the operator's `approve` intent, drained
+and recorded on the task as the revision it approved (`plan_approval`),
+equals the fingerprint of the plan revision on disk
+(`artifacts.plan_revision` over `.agent/review.html`), and the ticket check
+passes. Any other `done` is bounced to the session. The approval is the
+operator's recorded intent, never the worktree's answers file
+(`.agent/review-answers.json`), which the session can write and which only
+carries the answers to it. An approval made on an older revision, a change
+request and an answers file a session wrote approve nothing, and the record
+is cleared when a new review round starts, when the task leaves the gate
+and when it ends. The consequence "the dispatcher cannot prove that an
+operator approved" no longer holds for the console's approve.

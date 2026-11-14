@@ -5,7 +5,7 @@ import json
 import dispatcher.main as main
 from dispatcher import execution_overrides, state
 from dispatcher.state import Stage
-from tests.test_main import FakeSessions, deps, make_task, write_tickets
+from tests.test_main import FakeSessions, approve_plan, deps, make_task, write_tickets
 from tests.test_pinned_tracks_order import (OPUS, SOL, ahead, enter, make_cfg,
                                             run_pass)
 
@@ -27,6 +27,7 @@ def test_a_provider_is_recorded_once_through_review(tmp_path, monkeypatch):
     wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW,
                    track="standard")
     write_tickets(wt, 3)
+    approve_plan(c, wt)
     sess = FakeSessions(alive={42})
     for sig in [{"stage": "plan", "status": "done", "note": "3 tickets",
                  "artifact": ".agent/tickets"},

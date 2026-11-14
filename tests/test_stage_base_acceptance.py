@@ -15,7 +15,7 @@ from dispatcher.github import Candidate
 from dispatcher.state import Stage
 
 from tests.test_claim_base_acceptance import BodyGitHub
-from tests.test_main import (FakeSessions, cfg, deps, make_task, patch_usage,
+from tests.test_main import (FakeSessions, approve_plan, cfg, deps, make_task, patch_usage,
                              patch_workspace, payload, pr_open_task, write_tickets)
 
 NEW = "feat/new-cart"
@@ -46,6 +46,7 @@ def run_for(c, stage, gh=None, **task_fields):
     elif stage == "implement":
         wt = make_task(c, stage=Stage.AWAITING_PLAN_REVIEW, **task_fields)
         write_tickets(wt, 1)
+        approve_plan(c, wt, task_fields.get("spec_path", ""))
         signal(wt, stage="plan", status="done", note="approved",
                artifact=".agent/tickets")
     elif stage == "review":

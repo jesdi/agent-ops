@@ -30,7 +30,7 @@ def test_plan_gate_exposes_the_review_page_as_an_approval_request(tmp_path, park
         "updated_at": "2026-09-08T10:00:00+00:00",
         "park": park, "spec_path": "specs/2026-10-12-login/spec.md",
         "operator_request": {"kind": "plan-approval",
-                             "path": ".agent/review.html"},
+                             "path": ".agent/review.html", "fingerprint": "fp"},
     }))
     # This read requires neither a running session nor a GitHub request.
     sources = Sources(cfg.state_dir, sessions=None, github=None)
@@ -41,7 +41,7 @@ def test_plan_gate_exposes_the_review_page_as_an_approval_request(tmp_path, park
     # the review page, never the spec the task also records
     assert response.json() == {
         "kind": "plan-approval",
-        "revision": "",
+        "revision": "fp",
         "answers": {},
         "content": {
             "kind": "readable",
@@ -65,7 +65,8 @@ def test_answers_request_serves_readable_content(tmp_path):
         "updated_at": "2026-09-08T10:00:00+00:00",
         "park": "parked",
         "artifact": str(qa_file),
-        "operator_request": {"kind": "answers", "path": ".agent/questionnaire.md"},
+        "operator_request": {"kind": "answers", "path": ".agent/questionnaire.md",
+                             "fingerprint": "fp"},
     }))
     sources = Sources(cfg.state_dir, sessions=None, github=None)
     with TestClient(create_app(cfg, sources)) as client:
@@ -74,7 +75,7 @@ def test_answers_request_serves_readable_content(tmp_path):
     assert response.status_code == 200, response.text
     assert response.json() == {
         "kind": "answers",
-        "revision": "",
+        "revision": "fp",
         "answers": {},
         "content": {
             "kind": "readable",
@@ -122,7 +123,7 @@ def test_plan_approval_missing_file_returns_200_unavailable(tmp_path):
         "updated_at": "2026-09-08T10:00:00+00:00",
         "park": "awaiting-review",
         "operator_request": {"kind": "plan-approval",
-                             "path": ".agent/review.html"},
+                             "path": ".agent/review.html", "fingerprint": "fp"},
     }))
     sources = Sources(cfg.state_dir, sessions=None, github=None)
     with TestClient(create_app(cfg, sources)) as client:
@@ -146,7 +147,8 @@ def test_answers_missing_file_returns_200_unavailable(tmp_path):
         "branch": "agent/task-21", "title": "Missing answers task",
         "updated_at": "2026-09-08T10:00:00+00:00",
         "park": "parked",
-        "operator_request": {"kind": "answers", "path": ".agent/gone.md"},
+        "operator_request": {"kind": "answers", "path": ".agent/gone.md",
+                             "fingerprint": "fp"},
     }))
     # .agent/gone.md is never created — the file doesn't exist
     sources = Sources(cfg.state_dir, sessions=None, github=None)
@@ -174,7 +176,8 @@ def test_answers_non_utf8_file_returns_200_unavailable(tmp_path):
         "branch": "agent/task-22", "title": "Non-UTF8 answers task",
         "updated_at": "2026-09-08T10:00:00+00:00",
         "park": "parked",
-        "operator_request": {"kind": "answers", "path": ".agent/bad.md"},
+        "operator_request": {"kind": "answers", "path": ".agent/bad.md",
+                             "fingerprint": "fp"},
     }))
     sources = Sources(cfg.state_dir, sessions=None, github=None)
     with TestClient(create_app(cfg, sources)) as client:
@@ -202,7 +205,8 @@ def test_answers_out_of_worktree_path_returns_200_unavailable(tmp_path):
         "branch": "agent/task-23", "title": "Escaping path task",
         "updated_at": "2026-09-08T10:00:00+00:00",
         "park": "parked",
-        "operator_request": {"kind": "answers", "path": "../../outside.md"},
+        "operator_request": {"kind": "answers", "path": "../../outside.md",
+                             "fingerprint": "fp"},
     }))
     sources = Sources(cfg.state_dir, sessions=None, github=None)
     with TestClient(create_app(cfg, sources)) as client:

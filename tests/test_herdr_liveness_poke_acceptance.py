@@ -294,61 +294,65 @@ def test_replacing_stage_launch_clears_the_poke_clock(tmp_path, monkeypatch):
     assert (t.poked_since, t.pokes) == (0.0, 0)
 
 
-# --- the decision table (pass_actions) -------------------------------------------------
+# --- the decision table (classify, then decide) -----------------------------------------
 
 def _decide(*, waiting=True, idle=30.0, since=0.0, pokes=0, now=1_000_000.0,
             cap=10800, stall_after=600.0, signal="working"):
+    """The pass's event for a live review session, and the table's answer;
+    None when nothing happened."""
+    from dispatcher.classify import Observation, classify
+    from dispatcher.lifecycle import decide
+    from tests.test_lifecycle import LOOKED
     task = TaskState(issue=N, repository=T, stage=Stage.REVIEW, slot=0, worktree="/w",
-                     branch="b", title="t", updated_at="", track="standard")
-    extra = {}
-    if since:                                    # poke-clock inputs only where a row needs them
-        task = dc_replace(task, poked_since=since, pokes=pokes)
-        extra = dict(now=now, poke_cap=cap)
+                     branch="b", title="t", updated_at="", track="standard",
+                     poked_since=since, pokes=pokes)
     sig = StageSignal(stage="review", status=signal)
-    from dispatcher import machine
-    return machine.pass_actions(task, sig, True, waiting, None, idle_seconds=idle,
-                                stall_after=stall_after, **extra)
+    event = classify(Observation(task, sig, True, waiting, idle, stall_after, None, now, cap,
+                                 look=LOOKED))
+    return decide(task, event) if event else None
+
+
+def _park_note(got):
+    from dispatcher.lifecycle import Kind
+    assert got.status.kind is Kind.PARKED_HUMAN
+    return got.status.note
 
 
 def test_table_waiting_marker_stopped_is_a_poke():
-    from dispatcher import machine
-    [act] = _decide()
-    assert isinstance(act, machine.Poke) and act.text == POKE
+    from dispatcher.lifecycle import Poke
+    assert _decide().actions == (Poke(POKE),)
 
 
 def test_table_poke_repeats_inside_the_cap():
-    from dispatcher import machine
-    [act] = _decide(since=1_000_000.0 - 3 * HOUR, pokes=36)     # exactly the cap: not past it
-    assert isinstance(act, machine.Poke)
+    from dispatcher.lifecycle import Poke
+    got = _decide(since=1_000_000.0 - 3 * HOUR, pokes=36)     # exactly the cap: not past it
+    assert got.actions == (Poke(POKE),)
 
 
 def test_table_past_the_cap_parks_with_cap_note():
-    from dispatcher import machine
-    [act] = _decide(since=1_000_000.0 - 3 * HOUR - 1, pokes=36)
-    assert isinstance(act, machine.ParkForInput)
-    assert act.note == "(poked 36 times over 180m — stopped mid-stage without a stage signal)"
+    got = _decide(since=1_000_000.0 - 3 * HOUR - 1, pokes=36)
+    assert _park_note(got) == (
+        "(poked 36 times over 180m — stopped mid-stage without a stage signal)")
 
 
 def test_table_herdr_working_does_nothing_even_past_the_cap():
-    from dispatcher import machine
-    acts = _decide(idle=0.0, since=1_000_000.0 - 4 * HOUR, pokes=48)
-    assert all(isinstance(a, machine.NoOp) for a in acts)
+    """No poke and no park: only the stretch ends, its next poke a new clock."""
+    from dispatcher.lifecycle import EndPokeStretch
+    got = _decide(idle=0.0, since=1_000_000.0 - 4 * HOUR, pokes=48)
+    assert got.status.kind.value == "running" and got.actions == (EndPokeStretch(),)
 
 
 def test_table_no_marker_idle_past_stall_parks_with_stall_note():
-    from dispatcher import machine
-    [act] = _decide(waiting=False, idle=11 * MIN)
-    assert isinstance(act, machine.ParkForInput) and act.note == STALL_NOTE
+    assert _park_note(_decide(waiting=False, idle=11 * MIN)) == STALL_NOTE
 
 
 def test_table_no_marker_never_pokes_even_with_poke_state():
-    from dispatcher import machine
-    acts = _decide(waiting=False, idle=60.0, since=1_000_000.0 - HOUR, pokes=12)
-    assert all(isinstance(a, machine.NoOp) for a in acts)
+    from dispatcher.lifecycle import Ignore
+    got = _decide(waiting=False, idle=60.0, since=1_000_000.0 - HOUR, pokes=12)
+    assert isinstance(got, Ignore)
 
 
 @pytest.mark.parametrize("kw", [dict(idle=None), dict(stall_after=0)])
 def test_table_unknown_idle_or_stall_zero_does_nothing(kw):
-    from dispatcher import machine
-    acts = _decide(**kw)
-    assert all(isinstance(a, machine.NoOp) for a in acts)
+    from dispatcher.lifecycle import Ignore
+    assert isinstance(_decide(**kw), Ignore)

@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from enum import Enum
 
-from dispatcher.state import LoopCaps, Stage, TaskState
+from dispatcher.state import LoopCaps, Stage, TaskState, at_gate
 
 
 class Loop(Enum):
@@ -126,12 +126,12 @@ def reset(task: TaskState, cause: ResetCause) -> TaskState:
 def gate_fields(task: TaskState, *, respawn: bool = False) -> dict[str, object]:
     """What a step at the plan gate records on the task, for the executor to
     save. The task has waited there (`gated`, never cleared: also a task that
-    leaves the gate by a respawn has waited). A step taken from the gate, a
-    new review round or the respawn of a dead session, is one more unattended
-    round; gate entry from the plan stage is not a round. A respawn prepays
-    its first valid ready report, even if another respawn intervenes."""
-    if (task.stage is Stage.AWAITING_PLAN_REVIEW
-            and (respawn or not task.gate_respawn_pending)):
+    leaves the gate by a respawn has waited). A step taken at the gate, a
+    new review round or the respawn of a dead session, is one more
+    unattended round; gate entry from the plan stage is
+    not a round. A respawn prepays its first valid ready report, even if
+    another respawn intervenes."""
+    if at_gate(task) and (respawn or not task.gate_respawn_pending):
         rounds = task.unattended_rounds + 1
     else:
         rounds = max(task.unattended_rounds, 0)   # an operator's round is one at the gate
