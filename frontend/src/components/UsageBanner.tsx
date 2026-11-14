@@ -5,8 +5,8 @@ import { banner } from '../lib/tone'
 /** Alert banner above the Board header for unreadable or over-pace usage.
  *  Follows the shared usage query: no dismiss, timer or polling of its own. */
 export function UsageBanner() {
-  const { data } = useUsage()
-  if (!data) return null
+  const { data, isError } = useUsage()
+  if (!data || isError) return null
   if (data.auth_dark) {
     return (
       <div role="alert" data-testid="auth-dark-banner" className={banner.failed}>
