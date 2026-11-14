@@ -5,9 +5,13 @@ to every task file; like the command, it is deleted after the deploy
 (ADR 0004)."""
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
+from dispatcher import state
 from dispatcher.models import IMPLEMENT_PICK
 from dispatcher.state import Stage
-from dispatcher.status import Cause, FailReason, HumanReason, Kind, Status
+from dispatcher.status import Cause, FailReason, HumanReason, Kind, Status, to_json
 
 # The legacy park values (the `park` field).
 PARK_HUMAN = "parked"
@@ -149,3 +153,51 @@ def _at_gate(d: dict) -> Status:
 
 def _name(d: dict) -> str:
     return f"{d.get('repository', d.get('target', '?'))}#{d.get('issue', '?')}"
+
+
+# ---- The state dir rewritten -------------------------------------------------
+
+class MigrationError(ValueError):
+    """A task file the migration cannot rewrite; no file was changed."""
+
+    def __init__(self, path: Path, why: object):
+        super().__init__(f"{path}: {why}")
+        self.path = path
+
+
+def migrate_state_dir(state_dir: str | Path) -> list[Path]:
+    """Rewrite every legacy task file of `state_dir`, archived snapshots
+    included, to (stage, status); the files rewritten. Every file is
+    planned before any is written, so a file that cannot be read or
+    classified raises MigrationError naming it and changes nothing. A file
+    already in the new shape is left alone: a second run, or a run after
+    one killed midway, writes only what is still legacy."""
+    plan = [(p, task) for p in _task_files(Path(state_dir))
+            if (task := _planned(p)) is not None]
+    for p, task in plan:
+        state.save_in_place(p, task)
+    return [p for p, _ in plan]
+
+
+def _task_files(root: Path) -> list[Path]:
+    """The task files, a legacy `task-<issue>.json` twin among them, and
+    the archived snapshots."""
+    return sorted(root.glob("task-*.json")) + sorted(root.glob("artifacts/*/task.json"))
+
+
+def _planned(p: Path) -> state.TaskState | None:
+    """The task `p` is rewritten to, validated as a save validates it; None
+    when it is in the new shape already."""
+    try:
+        d = json.loads(p.read_text())
+        if "status" in d:
+            state.from_dict(d)   # read as the dispatcher reads it
+            return None
+        return state.validated(_converted(d))
+    except (ValueError, KeyError, TypeError) as e:   # JSONDecodeError is a ValueError
+        raise MigrationError(p, e) from e
+
+
+def _converted(d: dict) -> state.TaskState:
+    stage, status = legacy_status(d)
+    return state.from_dict({**d, "stage": stage.value, "status": to_json(status)})
