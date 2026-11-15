@@ -10,6 +10,7 @@ import pytest
 from dispatcher import base_line, execution_overrides, intents, main, state, triage
 from dispatcher.config import Config
 from dispatcher.state import Stage, TaskState
+from dispatcher.status import Kind, Status
 
 ISSUE = 149
 STAMP = "2026-11-12T10:00:00+00:00"
@@ -44,17 +45,17 @@ def task(**kw):
 TASK_JSON = """{
   "issue": 149,
   "repository": "portfolio_eval",
-  "stage": "@STAGE@",
+  "stage": "implement",
   "slot": 0,
   "worktree": "/w/task-149",
   "branch": "agent/task-149",
   "title": "Add widget",
   "updated_at": "2026-11-12T10:00:00+00:00",
-  "park": "",
-  "ci_run_id": 0,
+  "status": {
+    "kind": "@KIND@",
+    "detail": {}
+  },
   "park_msg_id": 0,
-  "park_note": "",
-  "park_reason": "",
   "hold_for_attach": false,
   "effort": null,
   "labels": [],
@@ -69,7 +70,6 @@ TASK_JSON = """{
   "gate_respawn_pending": false,
   "pr_number": 0,
   "feedback_cursor": "",
-  "feedback_pending": false,
   "terminal_at": "@TERMINAL@",
   "done_at": "",
   "spec_path": "",
@@ -86,18 +86,15 @@ TASK_JSON = """{
   "attention": "",
   "resume_model_override": "",
   "resume_bypass_usage": false,
-  "crashed_stage": "",
-  "unlaunched": false,
   "background_reported": 0.0,
   "background_seq": 0,
   "poked_since": 0.0,
-  "pokes": 0,
-  "operator_request": null
+  "pokes": 0
 }"""
 
 
-def task_bytes(stage, terminal_at=""):
-    return TASK_JSON.replace("@STAGE@", stage).replace("@TERMINAL@", terminal_at).encode()
+def task_bytes(kind, terminal_at=""):
+    return TASK_JSON.replace("@KIND@", kind).replace("@TERMINAL@", terminal_at).encode()
 
 
 def record_wait(sd):
@@ -137,11 +134,11 @@ def heartbeat(sd):
 def task_save(sd):
     ts = task()
     state.save(sd, ts)
-    return sd / "task-portfolio_eval-149.json", task_bytes("implement")
+    return sd / "task-portfolio_eval-149.json", task_bytes("running")
 
 
 def task_archive(sd):
-    ts = dataclasses.replace(task(), stage=Stage.DONE, terminal_at=STAMP)
+    ts = dataclasses.replace(task(), status=Status(Kind.DONE), terminal_at=STAMP)
     state.archive(sd, ts)
     return (state.archive_root(sd, ts.repository, ts.issue) / "task.json",
             task_bytes("done", STAMP))
