@@ -324,12 +324,12 @@ that the token is live (ADR 0008).
 After an Anthropic usage request answers HTTP 429, the period when that token
 is skipped while other candidate tokens may still be tried. The endpoint's
 usable `Retry-After` sets its length; otherwise it is 300 seconds, capped at
-3600 seconds (ADR 0014).
+3600 seconds.
 
 **Cooldown marker**:
 The shared `<state_dir>/usage/anthropic.cooldown.json` file. It maps a digest
 of each cooling token to the epoch second when that token may be tried again;
-it never stores a raw token (ADR 0014).
+it never stores a raw token.
 
 **Reading**:
 The `ProviderUsage` returned by a usage adapter.
