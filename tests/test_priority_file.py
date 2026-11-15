@@ -35,7 +35,7 @@ def test_a_failed_save_leaves_no_temp_file_and_the_old_mode(
 
     def boom(*a, **k):
         raise OSError("disk full")
-    monkeypatch.setattr(*{"dump": (json, "dump"), "replace": (os, "replace")}[broken],
+    monkeypatch.setattr(*{"dump": (json, "dumps"), "replace": (os, "replace")}[broken],
                         boom)
     with pytest.raises(OSError):
         priority.save(tmp_path, "openai", actor="op", now=NOW)

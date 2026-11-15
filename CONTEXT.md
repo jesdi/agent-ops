@@ -6,6 +6,13 @@ sessions to a finished PR.
 
 ## Language
 
+**Atomic state write**:
+Whole-file replacement for dispatcher state and settings files through
+`dispatcher.state.write_atomic`, or `write_json_atomic` for JSON. It uses a
+unique hidden temp file in the target directory, sets mode 0644, and renames
+over the target. `workspace.write_worktree_file` is the symlink-safe worktree
+variant and remains separate.
+
 **Dark usage**:
 A dispatcher pass whose usage fetch returns no providers or only providers
 whose source is `unavailable`. The box fails closed during this state; a
