@@ -250,6 +250,10 @@ def cache_path(state_dir: str | Path, provider: str) -> Path:
     return Path(state_dir) / "usage" / f"{provider}.json"
 
 
+# A failed refresh must not let this process reuse an older, undeletable file.
+_failed_cache_writes: set[Path] = set()
+
+
 def _cached(cp: Path, at: float) -> ProviderUsage | None:
     """The cached reading if it is fresh and usable; None is a miss. A file
     this unit cannot read, or cannot parse, is a miss, never a raise. So is
@@ -265,6 +269,20 @@ def _cached(cp: Path, at: float) -> ProviderUsage | None:
     return u if u.windows or u.source == "unavailable" else None
 
 
+def _read_provider(name: str, state_dir: str | Path, at: float,
+                   adapters: dict[str, UsageAdapter]) -> ProviderUsage:
+    adapter = adapters.get(name)
+    if adapter is None:
+        return unavailable(name, at)
+    try:
+        return adapter.fetch(Path(state_dir), now=lambda: at)
+    except Exception:
+        # One broken adapter (a payload shape nobody anticipated) must fail
+        # its own provider closed, never crash the pass or /api/board.
+        log.exception("usage adapter %r failed", name)
+        return unavailable(name, at)
+
+
 def fetch_provider(name: str, state_dir: str | Path, *,
                    now: Callable[[], float] = time.time,
                    adapters: dict[str, UsageAdapter] = ADAPTERS) -> ProviderUsage:
@@ -273,21 +291,23 @@ def fetch_provider(name: str, state_dir: str | Path, *,
     serves the whole fetch: the cache age, the reading and the cache stamp."""
     at = now()
     cp = cache_path(state_dir, name)
-    hit = _cached(cp, at)
+    hit = None if cp in _failed_cache_writes else _cached(cp, at)
     if hit is not None:
         return hit
-    adapter = adapters.get(name)
-    if adapter is None:
-        return unavailable(name, at)
-    try:
-        u = adapter.fetch(Path(state_dir), now=lambda: at)
-    except Exception:
-        # One broken adapter (a payload shape nobody anticipated) must fail
-        # its own provider closed, never crash the pass or /api/board.
-        log.exception("usage adapter %r failed", name)
-        return unavailable(name, at)
+    u = _read_provider(name, state_dir, at, adapters)
     if u.source != "unavailable":
-        write_json_atomic(cp, {"fetched_at": at, "usage": usage_to_json(u)})
+        try:
+            write_json_atomic(cp, {"fetched_at": at, "usage": usage_to_json(u)})
+            _failed_cache_writes.discard(cp)
+        except OSError:
+            # The cache is an optimisation: lose it, keep the reading.
+            log.warning("usage cache write failed for %r", name, exc_info=True)
+            _failed_cache_writes.add(cp)
+            try:
+                cp.unlink(missing_ok=True)
+            except OSError:
+                # The process-local mark still prevents this file being served.
+                pass
     return u
 
 

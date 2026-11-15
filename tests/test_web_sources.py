@@ -201,6 +201,35 @@ def test_console_hides_codex_without_a_readable_login(tmp_path, monkeypatch):
     assert set(_usage_route(tmp_path, monkeypatch, UsageFetchError("401"))) == {"anthropic"}
 
 
+def test_board_survives_an_unwritable_usage_cache(tmp_path, monkeypatch):
+    """#80: an OSError writing usage/<provider>.json costs the cache, not
+    the board or /api/usage. A plain file where the usage/ dir belongs makes
+    every cache write fail, even as root; the reading itself is still served."""
+    from fastapi.testclient import TestClient
+    from dispatcher import usage_providers
+    from tests.usagefakes import session_usage
+    from tests.webfakes import HEADERS
+    from web.app import create_app
+
+    class Anthropic:
+        def fetch(self, state_dir, *, now):
+            return session_usage(0.42)
+
+    monkeypatch.setitem(usage_providers.ADAPTERS, "anthropic", Anthropic())
+    (tmp_path / "usage").write_text("not a directory")
+    cfg, src = make_sources(tmp_path)
+    with TestClient(create_app(cfg, src), raise_server_exceptions=False) as client:
+        board = client.get("/api/board", headers=HEADERS)
+        resp = client.get("/api/usage", headers=HEADERS)
+        again = client.get("/api/usage", headers=HEADERS)
+    assert board.status_code == 200
+    assert resp.status_code == 200
+    assert again.status_code == 200
+    providers = {p["provider"]: p for p in resp.json()["providers"]}
+    assert providers["anthropic"]["source"] == "oauth"
+    assert (tmp_path / "usage").read_text() == "not a directory"
+
+
 def test_failure_and_quarantine_entries(tmp_path, src):
     (tmp_path / "failures").mkdir()
     (tmp_path / "failures" / "abc123def456").write_text(json.dumps(
