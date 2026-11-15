@@ -1736,7 +1736,7 @@ def _look(turn: _Turn, task: TaskState) -> Look:
     """What classify reads of the session only when its event needs it."""
     return Look(pane=lambda: Pane.UNKNOWN if turn.dry_run else _pane(turn.deps, task),
                 login=lambda: _login_prompt(turn, task),
-                launches=lambda stages: _admissions(turn, task, stages))
+                launches=lambda stages: _stage_admissions(turn, task, stages))
 
 
 def _pane(deps: Deps, task: TaskState) -> Pane:
@@ -1766,8 +1766,8 @@ def _login_prompt(turn: _Turn, task: TaskState) -> str:
     return login.url or "(attach to the session to see the URL)"
 
 
-def _admissions(turn: _Turn, task: TaskState,
-                stages: tuple[Stage, ...]) -> tuple[Admission, ...]:
+def _stage_admissions(turn: _Turn, task: TaskState,
+                      stages: tuple[Stage, ...]) -> tuple[Admission, ...]:
     """Each launch an event's rule may start, chosen as every launch is
     (_choose_launch), read before decide; the admitted ones are kept for the
     executor. A saved choice is dropped only when it may apply to none of
