@@ -76,6 +76,11 @@
 - **When** `_claim_new` runs
 - **Then** it returns without claiming and the file lists `["alpha", 73]`
 
+### Scenario: no project left to pick still writes what was collected
+- **Given** alpha's `max_active` is 1 with no active task, capacity 2, alpha#73 quarantined (blocker OPEN) and alpha#74 claimable
+- **When** `_claim_new` runs
+- **Then** #74 is claimed, `claims.pick_project` then returns None, and the file lists `["alpha", 73]`
+
 ### Scenario: claims paused leaves the file untouched
 - **Given** a verdict file from an earlier pass and a pending triage request (`claims_paused`)
 - **When** a pass runs
@@ -96,6 +101,11 @@
 - **When** `next_claim` runs
 - **Then** the verdict is `no-candidates`
 
+### Scenario: every candidate of every project quarantined (pure)
+- **Given** alpha's queue is only #73, beta's queue is only #12, and `quarantined={("alpha", 73), ("beta", 12)}`
+- **When** `next_claim` runs
+- **Then** the verdict is `no-candidates`
+
 ### Scenario: same number in another repository is not excluded (pure)
 - **Given** alpha's queue is #73 and `quarantined={("beta", 73)}`
 - **When** `next_claim` runs
@@ -107,7 +117,7 @@
 - **Then** it returns `frozenset({("alpha", 73), ("beta", 12)})`
 
 ### Scenario: reader degrades to an empty set
-- **Given** each of: no file; bytes `b"\xff\xfe torn"`; invalid JSON; JSON `null`; JSON `[]`; `skipped` not a list; a `pass_started` of `"2026-11-15T09:50:00+00:00"` against heartbeat `started_at` `"2026-11-15T10:00:00+00:00"`; heartbeat `None`
+- **Given** each of: no file; the verdict path is a directory (`OSError` on read); bytes `b"\xff\xfe torn"`; invalid JSON; JSON `null`; JSON `[]`; `skipped` not a list; a `pass_started` of `"2026-11-15T09:50:00+00:00"` against heartbeat `started_at` `"2026-11-15T10:00:00+00:00"`; heartbeat `None`; heartbeat `{}` (no `started_at`)
 - **When** `quarantine_verdict(heartbeat)` runs
 - **Then** it returns `frozenset()` without raising
 
