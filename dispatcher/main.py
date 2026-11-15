@@ -3269,6 +3269,11 @@ def _drive_repository(eff: Config, deps: Deps, repository: Repository,
     _poll_prs(eff, deps, repository, dry_run)
 
 
+def _claims_paused_for_round(cfg: Config, paused_at_start: bool) -> bool:
+    """Keep a pass-start triage pause, or catch a request that arrived mid-pass."""
+    return paused_at_start or triage.pending(cfg.state_dir)
+
+
 def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
               config_path: str = "targets.yaml") -> None:
     pass_started = _now()
@@ -3319,7 +3324,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     if not dry_run:
         _reconcile_boards(cfg, deps)
     # Phase 2: new claims, with whatever capacity phase 1 and inspection left.
-    if not claims_paused and not triage.pending(cfg.state_dir):
+    if not _claims_paused_for_round(cfg, claims_paused):
         _claim_new(eff, deps, eff.repositories, admit, order, dry_run, pass_started)
     _sync_artifacts(cfg, dry_run=dry_run, auth=deps.github.auth)
     _flush_finished(cfg, dry_run)
