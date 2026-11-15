@@ -266,6 +266,15 @@ A readable JSON object under `state_dir/quarantine/` with a wrong-typed
 `Sources.quarantine_entries()` skips it as it skips an unreadable record;
 the field types are checked before the filename supplies the task key.
 
+**Quarantine verdict**:
+`<state_dir>/quarantine-verdict.json`: the `[repository, issue]` pairs that
+`check_quarantine` skipped in the last pass that reached `_claim_new`, stamped
+with that pass's `pass_started`. The claim forecast trusts it only when the
+stamp equals `pass.json`'s `started_at`; otherwise it skips no quarantined
+candidate.
+_Avoid_: quarantine records (those are the per-issue files the verdict is
+computed from)
+
 **Implement progress**:
 The note of the implement session's last `working` report, for example
 "2/4 tickets merged". The console shows it on the task page while the task
