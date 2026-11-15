@@ -1527,7 +1527,8 @@ def test_quarantine_verdict_is_written_when_slot_allocation_exhausts(
 
 
 def test_quarantine_verdict_is_written_when_no_project_remains_to_pick(
-        tmp_path):
+        tmp_path, monkeypatch):
+    patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
     c = dc_replace(c, repositories=[with_project(
         c.repositories[0], max_active=1)], capacity=2)
