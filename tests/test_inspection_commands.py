@@ -1,5 +1,6 @@
 """Command drafts are validated through the operator-visible onboarding proposal."""
 import json
+import os
 
 import pytest
 
@@ -148,10 +149,14 @@ def test_implicit_make_draft_cannot_use_a_shadowed_makefile(tmp_path, box, monke
         {'gate_cmd': {'value': 'make gate', 'reason': 'Makefile target gate', 'evidence': 'Makefile'}})
     repository = rec.proposal['repositories'][0]
     actual = subprocess.run(['make', 'gate'], cwd=repository['clone_path'],
-                            capture_output=True, text=True, timeout=10)
+                            capture_output=True, text=True, timeout=10, env=NO_MAKE_PARENT)
     assert actual.returncode == 2
     assert 'No rule to make target' in actual.stderr
     assert repository['gate_cmd'] == ''
+
+
+# A parent `make test` leaks MAKEFLAGS/MAKELEVEL, which makes the child print directory banners.
+NO_MAKE_PARENT = {k: v for k, v in os.environ.items() if k not in ('MAKEFLAGS', 'MAKELEVEL', 'MFLAGS')}
 
 
 def test_explicit_makefile_draft_bypasses_default_precedence(tmp_path, box, monkeypatch):
@@ -162,7 +167,7 @@ def test_explicit_makefile_draft_bypasses_default_precedence(tmp_path, box, monk
         {'gate_cmd': {'value': command, 'reason': 'explicit Makefile target', 'evidence': 'Makefile'}})
     repository = rec.proposal['repositories'][0]
     actual = subprocess.run(['make', '-f', 'Makefile', 'gate'], cwd=repository['clone_path'],
-                            capture_output=True, text=True, timeout=10)
+                            capture_output=True, text=True, timeout=10, env=NO_MAKE_PARENT)
     assert actual.returncode == 0
     assert actual.stdout == 'verified\n'
     assert repository['gate_cmd'] == command
@@ -202,6 +207,6 @@ def test_make_target_evidence_must_be_a_rule_not_an_assignment(
         {'gate_cmd': {'value': 'make gate', 'reason': 'Makefile target gate', 'evidence': 'Makefile'}})
     repository = rec.proposal['repositories'][0]
     actual = subprocess.run(['make', 'gate'], cwd=repository['clone_path'],
-                            capture_output=True, text=True, timeout=10)
+                            capture_output=True, text=True, timeout=10, env=NO_MAKE_PARENT)
     assert (actual.returncode == 0) is runs
     assert repository['gate_cmd'] == ('make gate' if runs else '')
