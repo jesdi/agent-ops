@@ -136,7 +136,7 @@ _Avoid_: agent (that's the OS user), container (that's the isolation layer only)
 The one-shot provisioning container named `task-<repository>-<issue>-setup`.
 It runs the repository's setup command before the session starts. Its resource
 usage remains uncapped; its lifetime is bounded by podman and host-side timeout
-cleanup (ADRs 0017–0022).
+cleanup.
 
 **Provisioning timeout**:
 The fixed 1800-second `containers.SETUP_TIMEOUT` shared by the setup container's
