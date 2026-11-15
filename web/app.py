@@ -75,6 +75,16 @@ EVENTS_SCAN_LIMIT = 5000
 PASS_LOCK_WAIT_SECONDS = 30.0
 
 
+def _board_queues(sources, project_members):
+    """Collect cached ranked rows and whether any project reports them stale."""
+    queues, stale_any = [], False
+    for name, members in project_members.items():
+        rows, _as_of, stale = sources.rank_rows(members)
+        stale_any = stale_any or stale
+        queues.append((name, rows))
+    return queues, stale_any
+
+
 class BoostReq(BaseModel):
     issue: int
     amount: int
@@ -331,11 +341,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         order = _order(mode, usages, now)
         usage = _usage_view(live, usages, now, mode)
         claims_paused, triage_running = sources.triage_state()
-        queues, stale_any = [], False
-        for name, members in project_members.items():
-            rows, _as_of, stale = sources.rank_rows(members)
-            stale_any = stale_any or stale
-            queues.append((name, rows))
+        queues, stale_any = _board_queues(sources, project_members)
         mail = sources.undelivered_counts()
         heartbeat = sources.pass_heartbeat()
         quarantined = sources.quarantine_verdict(heartbeat)

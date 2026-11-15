@@ -30,6 +30,26 @@ DISPATCHER_KICK = ("systemctl", "--user", "start", "--no-block",
                    "agent-ops-dispatcher.service")
 
 
+def _matching_quarantine_skipped(verdict: object, started_at: str) -> list | None:
+    """Return skipped entries only from a well-shaped verdict for this pass."""
+    if not isinstance(verdict, dict):
+        return None
+    skipped = verdict.get("skipped")
+    if verdict.get("pass_started") != started_at or not isinstance(skipped, list):
+        return None
+    return skipped
+
+
+def _is_quarantine_pair(entry: object) -> bool:
+    return (isinstance(entry, list) and len(entry) == 2
+            and isinstance(entry[0], str) and type(entry[1]) is int)
+
+
+def _quarantine_pairs(skipped: list) -> frozenset[tuple[str, int]]:
+    return frozenset((entry[0], entry[1]) for entry in skipped
+                     if _is_quarantine_pair(entry))
+
+
 def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
@@ -261,19 +281,13 @@ class Sources:
         if not isinstance(started_at, str):
             return frozenset()
         try:
-            verdict = json.loads(
-                failures.quarantine_verdict_path(self.state_dir).read_text())
+            verdict = json.loads(failures.quarantine_verdict_path(self.state_dir).read_text())
         except (OSError, ValueError):
             return frozenset()
-        if (not isinstance(verdict, dict)
-                or verdict.get("pass_started") != started_at
-                or not isinstance(verdict.get("skipped"), list)):
+        skipped = _matching_quarantine_skipped(verdict, started_at)
+        if skipped is None:
             return frozenset()
-        return frozenset(
-            (entry[0], entry[1])
-            for entry in verdict["skipped"]
-            if (isinstance(entry, list) and len(entry) == 2
-                and isinstance(entry[0], str) and type(entry[1]) is int))
+        return _quarantine_pairs(skipped)
 
     def fingerprint_entries(self) -> list[dict]:
         root = self.state_dir / "failures"
