@@ -244,37 +244,50 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         assert reading.order is not None
         return launch_entries(t, _policy(reading, t.repository), reading.order)
 
-    def _model_for(reading: RequestReading, t):
+    def _preferred_task_model(t):
         override = _one_shot(t)
         if override and override.model:
             return parse_entry(override.model, "execution override").model_id
         pick = stage_pick(t.picks, next_stage(t))
         if pick:
             return parse_entry(pick, "pick").model_id
+        return ""
+
+    def _first_admitted(reading: RequestReading, choices):
+        if reading.usages is None:
+            return None
+        return next((e for e in choices
+                     if admits(reading.usages, e.model_id, reading.now,
+                               reading.config.pace).admitted), None)
+
+    def _model_for(reading: RequestReading, t):
+        preferred = _preferred_task_model(t)
+        if preferred:
+            return preferred
         choices = _choices(reading, t)
         if not choices:
             return ""
-        if reading.usages is not None:
-            admitted = next((e for e in choices
-                             if admits(reading.usages, e.model_id,
-                                       reading.now, reading.config.pace).admitted), None)
-            if admitted is not None:
-                return admitted.model_id
-        return choices[0].model_id
+        admitted = _first_admitted(reading, choices)
+        return admitted.model_id if admitted is not None else choices[0].model_id
+
+    def _skip_task_admission(reading: RequestReading, t, override) -> bool:
+        return (reading.usages is None or t.stage in TERMINAL_STAGES
+                or bool(override and override.bypass_usage))
+
+    def _task_admission_choices(reading: RequestReading, t, pinned, stage):
+        offered = (_policy(reading, t.repository).model_ids() if pinned
+                   else [e.model_id for e in _choices(reading, t)])
+        return [m for m in offered if override_allowed(t.picks, stage, m)]
 
     def _task_admission(reading: RequestReading, t):
         override = _one_shot(t)
-        if (reading.usages is None or t.stage in TERMINAL_STAGES
-                or (override and override.bypass_usage)):
+        if _skip_task_admission(reading, t, override):
             return None
         stage = next_stage(t)
         pinned = _pinned_track(reading, t)
-        # A pinned wait may be overridden with any model of the policy.
-        offered = (_policy(reading, t.repository).model_ids() if pinned
-                   else [e.model_id for e in _choices(reading, t)])
         return _admission_for_model(
             reading, _model_for(reading, t),
-            [m for m in offered if override_allowed(t.picks, stage, m)],
+            _task_admission_choices(reading, t, pinned, stage),
             pinned_track=pinned)
 
     def _pinned_track(reading: RequestReading, t):
@@ -308,19 +321,38 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
     def _candidate_model(reading: RequestReading, repository, row):
         return _candidate_choices(reading, repository, row)[0]
 
+    def _queue_candidates(queues):
+        return [(repositories_by_name[row["repository"]], row)
+                for _project, rows in queues for row in rows
+                if read_model._is_candidate(row)]
+
+    def _candidate_admission(reading: RequestReading, repository, row):
+        choices = _candidate_choices(reading, repository, row)
+        return _admission_for_model(reading, choices[0], choices)
+
     def _candidate_admissions(reading: RequestReading, queues):
-        if reading.usages is None:
-            return {}
-        candidates = [(repositories_by_name[row["repository"]], row)
-                      for _project, rows in queues for row in rows
-                      if read_model._is_candidate(row)]
-        return {(repository.name, row["number"]): admission
-                for repository, row in candidates
-                if sources.execution_override(repository.name, row["number"]) is None
-                and (admission := _admission_for_model(
-                    reading,
-                    _candidate_model(reading, repository, row),
-                    _candidate_choices(reading, repository, row)))}
+        admissions = {}
+        for repository, row in _queue_candidates(queues):
+            if sources.execution_override(repository.name, row["number"]) is not None:
+                continue
+            admission = _candidate_admission(reading, repository, row)
+            if admission:
+                admissions[(repository.name, row["number"])] = admission
+        return admissions
+
+    def _board_models(reading: RequestReading, tasks):
+        return {(t.repository, t.issue): _model_for(reading, t) for t in tasks}
+
+    def _board_pinned_tracks(reading: RequestReading, tasks):
+        return {(t.repository, t.issue): _pinned_track(reading, t) for t in tasks}
+
+    def _board_admissions(reading: RequestReading, tasks):
+        return {(t.repository, t.issue): admission for t in tasks
+                if (admission := _task_admission(reading, t))}
+
+    def _board_undelivered(tasks, mail):
+        return {(t.repository, t.issue): mail.get((t.repository, t.issue), 0)
+                for t in tasks}
 
     def _known_repository(repository: str, tasks: list) -> bool:
         """A repository is servable if it is still in the live config OR any
@@ -382,9 +414,8 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         return read_model.build_board(
             tasks, capacity=reading.config.capacity,
             onboarding_running=sources.onboarding_running(),
-            models={(t.repository, t.issue): _model_for(reading, t)
-                    for t in tasks},
-            pinned_tracks={(t.repository, t.issue): _pinned_track(reading, t) for t in tasks},
+            models=_board_models(reading, tasks),
+            pinned_tracks=_board_pinned_tracks(reading, tasks),
             events=sources.events_tail(EVENTS_SCAN_LIMIT),
             heartbeat=heartbeat,
             now=reading.now,
@@ -392,12 +423,9 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
             queues=queues, queue_stale=stale_any,
             # One session-layer probe for both signals (cf. dispatcher run_pass).
             claims_paused=claims_paused, triage_running=triage_running,
-            undelivered={(t.repository, t.issue): mail.get((t.repository, t.issue), 0)
-                        for t in tasks},
+            undelivered=_board_undelivered(tasks, mail),
             wake_blocked=sources.wake_blocked_issues(),
-            admissions={(t.repository, t.issue): admission
-                        for t in tasks
-                        if (admission := _task_admission(reading, t))},
+            admissions=_board_admissions(reading, tasks),
             candidate_admissions=_candidate_admissions(reading, queues),
             projects=repository_projects,
             last_claimed=sources.last_claims(),
@@ -842,24 +870,35 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
             raise HTTPException(422, f"task {repository}/{issue} is terminal")
         return task, None
 
-    def _run_model(configured_repository, repository: str, req: RunReq, task, row):
-        reading = _reading(
-            with_usage=not req.model and task is not None,
-            with_order=not bool(req.model))
+    def _run_reading(req: RunReq, task):
+        if req.model:
+            return _reading(with_order=False)
+        return _reading(with_usage=task is not None)
+
+    def _validate_run_model(reading: RequestReading, repository: str,
+                            configured_repository, req: RunReq):
+        if not req.model:
+            return
         policy = _policy(reading, configured_repository.name)
-        if (req.model and req.model not in policy.model_ids()
-                and req.model not in {str(e) for e in policy.entries()}):
+        configured = set(policy.model_ids()) | {str(e) for e in policy.entries()}
+        if req.model not in configured:
             raise HTTPException(422, f"model {req.model!r} is not configured "
                                 f"for repository {repository!r}")
+
+    def _run_task_model(reading: RequestReading, task):
+        return (stage_pick(task.picks, next_stage(task))
+                or _model_for(reading, task))
+
+    def _run_model(configured_repository, repository: str, req: RunReq, task, row):
+        reading = _run_reading(req, task)
+        _validate_run_model(reading, repository, configured_repository, req)
         if task is not None:
             _require_same_provider(task, req.model)
         if req.model:
             return req.model
-        if task is not None:
-            # No pick: the model the card names, the first admitted entry.
-            return (stage_pick(task.picks, next_stage(task))
-                    or _model_for(reading, task))
-        return _candidate_model(reading, configured_repository, row)
+        if task is None:
+            return _candidate_model(reading, configured_repository, row)
+        return _run_task_model(reading, task)
 
     def _arm_run(repository: str, issue: int, req: RunReq, task, model: str,
                  op: Operator):
