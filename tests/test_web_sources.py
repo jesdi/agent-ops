@@ -451,6 +451,82 @@ def test_pass_heartbeat_reads_and_degrades(src):
     assert src.pass_heartbeat() is None
 
 
+def test_quarantine_verdict_reads_pairs_from_a_matching_pass(src):
+    src.state_dir.mkdir(parents=True, exist_ok=True)
+    (src.state_dir / "quarantine-verdict.json").write_text(json.dumps({
+        "pass_started": "2026-11-15T10:00:00+00:00",
+        "skipped": [["alpha", 73], ["beta", 12]],
+    }))
+
+    assert src.quarantine_verdict({
+        "started_at": "2026-11-15T10:00:00+00:00"}) == frozenset({
+            ("alpha", 73), ("beta", 12)})
+
+
+def test_quarantine_verdict_is_empty_when_the_file_is_missing(src):
+    assert src.quarantine_verdict({
+        "started_at": "2026-11-15T10:00:00+00:00"}) == frozenset()
+
+
+def test_quarantine_verdict_is_empty_when_the_path_is_a_directory(src):
+    src.state_dir.mkdir(parents=True, exist_ok=True)
+    (src.state_dir / "quarantine-verdict.json").mkdir()
+
+    assert src.quarantine_verdict({
+        "started_at": "2026-11-15T10:00:00+00:00"}) == frozenset()
+
+
+@pytest.mark.parametrize(("payload", "case"), [
+    pytest.param(b"\xff\xfe torn", "invalid-utf8", id="invalid-utf8"),
+    pytest.param(b"{", "invalid-json", id="invalid-json"),
+    pytest.param(b"null", "non-object-null", id="non-object-null"),
+    pytest.param(b"[]", "non-object-array", id="non-object-array"),
+    pytest.param(b'{"pass_started":"2026-11-15T10:00:00+00:00",'
+                 b'"skipped":"alpha"}', "skipped-not-list",
+                 id="skipped-not-list"),
+])
+def test_quarantine_verdict_is_empty_for_invalid_payloads(src, payload, case):
+    src.state_dir.mkdir(parents=True, exist_ok=True)
+    (src.state_dir / "quarantine-verdict.json").write_bytes(payload)
+
+    assert src.quarantine_verdict({
+        "started_at": "2026-11-15T10:00:00+00:00"}) == frozenset(), case
+
+
+def test_quarantine_verdict_is_empty_for_a_stale_pass_stamp(src):
+    src.state_dir.mkdir(parents=True, exist_ok=True)
+    (src.state_dir / "quarantine-verdict.json").write_text(json.dumps({
+        "pass_started": "2026-11-15T09:50:00+00:00",
+        "skipped": [["alpha", 73]],
+    }))
+
+    assert src.quarantine_verdict({
+        "started_at": "2026-11-15T10:00:00+00:00"}) == frozenset()
+
+
+@pytest.mark.parametrize("heartbeat", [None, {}], ids=["none", "no-started-at"])
+def test_quarantine_verdict_is_empty_without_a_heartbeat_stamp(src, heartbeat):
+    src.state_dir.mkdir(parents=True, exist_ok=True)
+    (src.state_dir / "quarantine-verdict.json").write_text(json.dumps({
+        "pass_started": "2026-11-15T10:00:00+00:00",
+        "skipped": [["alpha", 73]],
+    }))
+
+    assert src.quarantine_verdict(heartbeat) == frozenset()
+
+
+def test_quarantine_verdict_drops_wrong_typed_entries_individually(src):
+    src.state_dir.mkdir(parents=True, exist_ok=True)
+    (src.state_dir / "quarantine-verdict.json").write_text(
+        '{"pass_started":"2026-11-15T10:00:00+00:00",'
+        '"skipped":[["alpha",73],["beta","12"],["gamma",true],'
+        '[1,2],["delta"],"x"]}')
+
+    assert src.quarantine_verdict({
+        "started_at": "2026-11-15T10:00:00+00:00"}) == frozenset({
+            ("alpha", 73)})
+
+
 def test_state_fingerprint_changes_when_pass_json_changes(tmp_path, src):
     f1 = json.loads(src.state_fingerprint())
     (tmp_path / "pass.json").write_text('{"interval_minutes": 10}')
