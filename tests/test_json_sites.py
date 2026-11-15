@@ -76,6 +76,7 @@ TASK_JSON = """{
   "ticket_count": 0,
   "gated": false,
   "asked": false,
+  "plan_approval": "",
   "review_rounds": 0,
   "gate_rounds": 0,
   "e2e_rounds": 0,
