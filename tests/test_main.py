@@ -1419,6 +1419,7 @@ def test_quarantine_verdict_clears_a_closed_blocker_same_pass(
     verdict = json.loads(verdict_path.read_text())
     assert verdict == {"pass_started": heartbeat["started_at"], "skipped": []}
     assert gh.claimed == [42]
+    assert not failures.quarantine_path(c.state_dir, "portfolio_eval", 42).exists()
 
 
 def test_quarantine_verdict_lists_a_record_without_a_blocker(
@@ -1578,6 +1579,9 @@ def test_claims_paused_keeps_the_verdict_file_stale_and_untrusted(
     verdict_path.write_bytes(prior)
     (Path(c.state_dir) / triage.REQUEST_FILE).write_text(
         '{"requested_at":"2026-11-15T09:50:00+00:00"}')
+    # The request is still waiting for capacity: tick neither launches nor
+    # expires it, so the pass sees claims paused.
+    monkeypatch.setattr(triage, "tick", lambda *_args: None)
 
     d = deps()
     main.run_pass(c, d)

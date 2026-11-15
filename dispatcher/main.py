@@ -3247,42 +3247,12 @@ def _begin_pass_auth(cfg: Config, deps: Deps) -> None:
     deps.github.auth = host_auth.begin(list(projects.values()), deps.access)
 
 
-def _in_flight_tasks(cfg: Config, repository: Repository) -> list[TaskState]:
-    """Return the active, unparked tasks belonging to one repository."""
-    return [t for t in load_all(cfg.state_dir)
-            if t.repository == repository.name and not t.park
-            and t.stage in IN_FLIGHT_STAGES]
-
-
-def _drive_repository(eff: Config, deps: Deps, repository: Repository,
-                      admit: Admit, order: Order, dry_run: bool) -> None:
-    """Drive this repository's active tasks, then inspect CI and pull requests."""
-    for task in _in_flight_tasks(eff, repository):
-        try:
-            _drive_task(eff, deps, repository, task, admit, order, dry_run)
-        except host_auth.HostWait as exc:
-            print(f"[warn] #{task.issue}: {exc}; its turn waits for the next pass",
-                  file=sys.stderr)
-        except Exception:
-            _fail_task_crash(eff, deps, repository, task, dry_run)
-    _wake_ci(eff, deps, repository)
-    _poll_prs(eff, deps, repository, dry_run)
-
-
-def _claims_paused_for_round(cfg: Config, paused_at_start: bool) -> bool:
-    """Keep a pass-start triage pause, or catch a request that arrived mid-pass."""
-    return paused_at_start or triage.pending(cfg.state_dir)
-
-
 def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
               config_path: str = "targets.yaml") -> None:
     pass_started = _now()
     _begin_pass_auth(cfg, deps)
     _migrate_legacy_keys(cfg)
     _reconcile_slots(cfg)
-    # Preserve the pass-start snapshot so a request consumed by triage.tick
-    # still pauses this claim round.
-    claims_paused = triage.pending(cfg.state_dir)
     if not dry_run:
         _sync_task_tokens(cfg, deps)
         _apply_intents(cfg, deps)
@@ -3298,6 +3268,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     sweep_running = triage.running()
     occupied = int(sweep_running) + onboarding_sessions.running(cfg.state_dir)
     eff = replace(cfg, capacity=max(0, cfg.capacity - occupied))
+    claims_paused = triage.pending(cfg.state_dir)
     _handle_telegram(cfg, deps, dry_run)
     usages = fetch_all(cfg)
     now = datetime.now(timezone.utc)
@@ -3312,7 +3283,18 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     # Phase 1: work already in progress, on every repository, before any claim —
     # so one repository's new claims never starve another's approved spec.
     for repository in eff.repositories:
-        _drive_repository(eff, deps, repository, admit, order, dry_run)
+        for task in [t for t in load_all(cfg.state_dir)
+                     if t.repository == repository.name and not t.park
+                     and t.stage in IN_FLIGHT_STAGES]:
+            try:
+                _drive_task(eff, deps, repository, task, admit, order, dry_run)
+            except host_auth.HostWait as exc:   # the turn waits for the App, not a crash
+                print(f"[warn] #{task.issue}: {exc}; its turn waits for the next pass",
+                      file=sys.stderr)
+            except Exception:
+                _fail_task_crash(eff, deps, repository, task, dry_run)
+        _wake_ci(eff, deps, repository)
+        _poll_prs(eff, deps, repository, dry_run)
     _wake_reached(eff, deps)
     _resume_woken(eff, deps, admit, order, dry_run)
     _spawn_feedback(eff, deps, admit, order)
@@ -3324,7 +3306,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     if not dry_run:
         _reconcile_boards(cfg, deps)
     # Phase 2: new claims, with whatever capacity phase 1 and inspection left.
-    if not _claims_paused_for_round(cfg, claims_paused):
+    if not claims_paused:
         _claim_new(eff, deps, eff.repositories, admit, order, dry_run, pass_started)
     _sync_artifacts(cfg, dry_run=dry_run, auth=deps.github.auth)
     _flush_finished(cfg, dry_run)
