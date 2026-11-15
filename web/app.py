@@ -8,9 +8,10 @@ import asyncio
 import json as _json
 import re
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Mapping
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -25,8 +26,8 @@ from dispatcher.config import (Config, apply_stored_models, by_project, policy_f
 from dispatcher.convergence import pass_lock
 from dispatcher.models import (ModelPolicy, candidates, override_allowed,
                                override_refusal, parse_entry,
-                               stage_pick, track_from_labels)
-from dispatcher.usage import admits
+                               Order, stage_pick, track_from_labels)
+from dispatcher.usage import ProviderUsage, admits
 from dispatcher import answers as answers_file, intents
 from dispatcher.state import (TERMINAL_STAGES, PARK_WAKE, TaskState,
                               launch_entries, launch_track, next_stage,
@@ -142,6 +143,17 @@ class ReadyReq(BaseModel):
     issue: int
 
 
+@dataclass(frozen=True)
+class RequestReading:
+    """Inputs shared by the console's calculations during one request."""
+
+    config: Config
+    now: datetime
+    mode: str | None
+    order: Order | None
+    usages: Mapping[str, ProviderUsage] | None
+
+
 def launch_pinned_track(t: TaskState, policy: ModelPolicy, *,
                         overridden: bool = False) -> str:
     """The pinned track t's next launch comes from, else "": the launch's
@@ -177,7 +189,15 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         """The config in force now: `boot` with the stored model settings
         read again, as each dispatcher pass does. No copy to keep in step."""
         # ponytail: one small file read per call; cache by revision if it shows in profiles.
+        loader = getattr(app.state, "config_loader", None)
+        if loader is not None:
+            return loader()
         return apply_stored_models(boot)
+
+    def _now() -> datetime:
+        clock = getattr(app.state, "clock_loader", None)
+        return clock() if clock is not None else datetime.now(timezone.utc)
+
     def _usages(live: Config):
         """Usage of every provider the config in force can launch on."""
         return sources.usage(referenced_providers(live))
@@ -185,17 +205,24 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
     def _mode(live: Config) -> str:
         return priority.load(live.state_dir, routed_providers(live))
 
-    def _order(mode, usages=None, now=None):
-        """The dispatcher's own ordering under `mode`. A route reads the mode
-        and builds this once, so one response never mixes two modes. Without
-        usage (the snapshot must not wait for it) a fixed mode still applies
-        and auto is the written order."""
-        return priority.order(mode, usages or {},
-                              now or datetime.now(timezone.utc), boot.pace)
+    def _reading(*, with_usage: bool = False,
+                 with_order: bool = True) -> RequestReading:
+        """Capture this request's calculation inputs once at the route edge."""
+        live = _cfg()
+        now = _now()
+        mode = _mode(live) if with_order or with_usage else None
+        usages = _usages(live) if with_usage else None
+        if with_order:
+            assert mode is not None
+            order = priority.order(mode, usages or {}, now, live.pace)
+        else:
+            order = None
+        return RequestReading(live, now, mode, order, usages)
 
-    def _policy(live: Config, repository_name):
-        repository = repositories_by_name.get(repository_name)
-        return policy_for(live, repository)
+    def _policy(reading: RequestReading, repository_name: str):
+        repository = next((r for r in reading.config.repositories
+                           if r.name == repository_name), None)
+        return policy_for(reading.config, repository)
 
     def _require_same_provider(t, model):
         """422 unless `model` may override t's next launch: once the stage
@@ -212,70 +239,78 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
             t.resume_model_override if t.park == PARK_WAKE else "",
             t.resume_bypass_usage)
 
-    def _choices(live: Config, t, order):
+    def _choices(reading: RequestReading, t):
         """The ordered entries the dispatcher would walk for t's next launch."""
-        return launch_entries(t, _policy(live, t.repository), order)
+        assert reading.order is not None
+        return launch_entries(t, _policy(reading, t.repository), reading.order)
 
-    def _model_for(live: Config, t, order, usages=None, now=None):
+    def _model_for(reading: RequestReading, t):
         override = _one_shot(t)
         if override and override.model:
-            return override.model
+            return parse_entry(override.model, "execution override").model_id
         pick = stage_pick(t.picks, next_stage(t))
         if pick:
             return parse_entry(pick, "pick").model_id
-        choices = _choices(live, t, order)
+        choices = _choices(reading, t)
         if not choices:
             return ""
-        if usages is not None:
+        if reading.usages is not None:
             admitted = next((e for e in choices
-                             if admits(usages, e.model_id, now, boot.pace).admitted), None)
+                             if admits(reading.usages, e.model_id,
+                                       reading.now, reading.config.pace).admitted), None)
             if admitted is not None:
                 return admitted.model_id
         return choices[0].model_id
 
-    def _task_admission(live: Config, t, order, usages, now):
+    def _task_admission(reading: RequestReading, t):
         override = _one_shot(t)
-        if t.stage in TERMINAL_STAGES or (override and override.bypass_usage):
+        if (reading.usages is None or t.stage in TERMINAL_STAGES
+                or (override and override.bypass_usage)):
             return None
         stage = next_stage(t)
-        pinned = _pinned_track(live, t)
+        pinned = _pinned_track(reading, t)
         # A pinned wait may be overridden with any model of the policy.
-        offered = (_policy(live, t.repository).model_ids() if pinned
-                   else [e.model_id for e in _choices(live, t, order)])
+        offered = (_policy(reading, t.repository).model_ids() if pinned
+                   else [e.model_id for e in _choices(reading, t)])
         return _admission_for_model(
-            _model_for(live, t, order, usages, now),
+            reading, _model_for(reading, t),
             [m for m in offered if override_allowed(t.picks, stage, m)],
-            usages, now, pinned_track=pinned)
+            pinned_track=pinned)
 
-    def _pinned_track(live: Config, t):
+    def _pinned_track(reading: RequestReading, t):
         override = _one_shot(t)
-        return launch_pinned_track(t, _policy(live, t.repository),
+        return launch_pinned_track(t, _policy(reading, t.repository),
                                    overridden=bool(override and override.model))
 
-    def _admission_for_model(model, choices, usages, now, pinned_track=""):
-        if not model:
+    def _admission_for_model(reading: RequestReading, model, choices,
+                             pinned_track=""):
+        if not model or reading.usages is None:
             return None
         requested = read_model.model_admission_view(
-            usages, now=now, pace=boot.pace, model=model)
+            reading.usages, now=reading.now, pace=reading.config.pace,
+            model=model)
         if requested.admitted:
             return None
         alternatives = [read_model.model_admission_view(
-            usages, now=now, pace=boot.pace, model=m)
+            reading.usages, now=reading.now, pace=reading.config.pace, model=m)
             for m in dict.fromkeys(choices) if m != requested.model]
         return read_model.TaskAdmissionView(
             requested=requested, alternatives=alternatives,
             pinned_track=pinned_track)
 
-    def _candidate_choices(live: Config, repository, row, order):
-        policy = policy_for(live, repository)
+    def _candidate_choices(reading: RequestReading, repository, row):
+        policy = _policy(reading, repository.name)
         track = track_from_labels(list(row.get("labels") or []), policy)
+        assert reading.order is not None
         return [e.model_id for e in candidates(
-            policy, track, "spec", order=order)]
+            policy, track, "spec", order=reading.order)]
 
-    def _candidate_model(live: Config, repository, row, order):
-        return _candidate_choices(live, repository, row, order)[0]
+    def _candidate_model(reading: RequestReading, repository, row):
+        return _candidate_choices(reading, repository, row)[0]
 
-    def _candidate_admissions(live: Config, queues, order, usages, now):
+    def _candidate_admissions(reading: RequestReading, queues):
+        if reading.usages is None:
+            return {}
         candidates = [(repositories_by_name[row["repository"]], row)
                       for _project, rows in queues for row in rows
                       if read_model._is_candidate(row)]
@@ -283,9 +318,9 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
                 for repository, row in candidates
                 if sources.execution_override(repository.name, row["number"]) is None
                 and (admission := _admission_for_model(
-                    _candidate_model(live, repository, row, order),
-                    _candidate_choices(live, repository, row, order),
-                    usages, now))}
+                    reading,
+                    _candidate_model(reading, repository, row),
+                    _candidate_choices(reading, repository, row)))}
 
     def _known_repository(repository: str, tasks: list) -> bool:
         """A repository is servable if it is still in the live config OR any
@@ -308,15 +343,14 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
     @app.get("/api/board/snapshot", response_model=read_model.BoardSnapshot)
     def board_snapshot(op: Operator = Depends(current_operator)):
         # Local state only: cards must not wait for GitHub, usage or sessions.
-        live = _cfg()
+        reading = _reading()
         tasks = sources.tasks()
         mail = sources.undelivered_counts()
-        order = _order(_mode(live))
         return read_model.build_board_snapshot(
-            tasks, capacity=boot.capacity,
+            tasks, capacity=reading.config.capacity,
             onboarding_running=sources.onboarding_running(),
-            models={(t.repository, t.issue): _model_for(live, t, order) for t in tasks},
-            pinned_tracks={(t.repository, t.issue): _pinned_track(live, t) for t in tasks},
+            models={(t.repository, t.issue): _model_for(reading, t) for t in tasks},
+            pinned_tracks={(t.repository, t.issue): _pinned_track(reading, t) for t in tasks},
             events=sources.events_tail(EVENTS_SCAN_LIMIT), queues=[],
             projects=repository_projects,
             undelivered={(t.repository, t.issue): mail.get((t.repository, t.issue), 0)
@@ -325,35 +359,35 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
     app.include_router(artifacts_router(sources, _find_task))
     app.include_router(onboarding_router(sources))
 
-    def _usage_view(live: Config, usages, now, mode) -> read_model.UsageView:
+    def _usage_view(reading: RequestReading) -> read_model.UsageView:
+        assert reading.usages is not None
+        assert reading.mode is not None
+        assert reading.order is not None
         return read_model.usage_view(
-            usages, now=now, pace=boot.pace,
-            default_model=live.models.gate_entry().model_id,
-            mode=mode, routed=routed_providers(live), pinned=live.models.pinned)
+            reading.usages, now=reading.now, pace=reading.config.pace,
+            default_model=reading.config.models.gate_entry().model_id,
+            mode=reading.mode, routed=routed_providers(reading.config),
+            pinned=reading.config.models.pinned, order=reading.order)
 
     @app.get("/api/board", response_model=read_model.BoardView)
     def board(op: Operator = Depends(current_operator)):
-        live = _cfg()
+        reading = _reading(with_usage=True)
         tasks = sources.tasks()
-        now = datetime.now(timezone.utc)
-        usages = _usages(live)
-        mode = _mode(live)
-        order = _order(mode, usages, now)
-        usage = _usage_view(live, usages, now, mode)
+        usage = _usage_view(reading)
         claims_paused, triage_running = sources.triage_state()
         queues, stale_any = _board_queues(sources, project_members)
         mail = sources.undelivered_counts()
         heartbeat = sources.pass_heartbeat()
         quarantined = sources.quarantine_verdict(heartbeat)
         return read_model.build_board(
-            tasks, capacity=boot.capacity,
+            tasks, capacity=reading.config.capacity,
             onboarding_running=sources.onboarding_running(),
-            models={(t.repository, t.issue): _model_for(live, t, order, usages, now)
+            models={(t.repository, t.issue): _model_for(reading, t)
                     for t in tasks},
-            pinned_tracks={(t.repository, t.issue): _pinned_track(live, t) for t in tasks},
+            pinned_tracks={(t.repository, t.issue): _pinned_track(reading, t) for t in tasks},
             events=sources.events_tail(EVENTS_SCAN_LIMIT),
             heartbeat=heartbeat,
-            now=now,
+            now=reading.now,
             gate=usage.gate,
             queues=queues, queue_stale=stale_any,
             # One session-layer probe for both signals (cf. dispatcher run_pass).
@@ -363,12 +397,11 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
             wake_blocked=sources.wake_blocked_issues(),
             admissions={(t.repository, t.issue): admission
                         for t in tasks
-                        if (admission := _task_admission(live, t, order, usages, now))},
-            candidate_admissions=_candidate_admissions(live, queues, order,
-                                                       usages, now),
+                        if (admission := _task_admission(reading, t))},
+            candidate_admissions=_candidate_admissions(reading, queues),
             projects=repository_projects,
             last_claimed=sources.last_claims(),
-            max_open=boot.max_open,
+            max_open=reading.config.max_open,
             quarantined=quarantined)
 
     @app.get("/api/task/{repository}/{issue}",
@@ -376,10 +409,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
     def task_detail(repository: str, issue: int,
                     op: Operator = Depends(current_operator)):
         t = _find_task(repository, issue)
-        live = _cfg()
-        now = datetime.now(timezone.utc)
-        usages = _usages(live)
-        order = _order(_mode(live), usages, now)
+        reading = _reading(with_usage=True)
         # Legacy intent files predate the repository field (Task 3); they carry
         # repository="" and still belong to whichever task's issue they name —
         # i.get("repository") in ("", repository) keeps them showing up here instead
@@ -388,19 +418,19 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
                    if i.get("issue") == issue
                    and i.get("repository", "") in ("", repository)
                    and i.get("action") in ("reply", "resume")]
-        policy = _policy(live, t.repository)
+        policy = _policy(reading, t.repository)
         return read_model.task_detail(
-            t, model=_model_for(live, t, order, usages, now),
-            pinned_track=_pinned_track(live, t),
+            t, model=_model_for(reading, t),
+            pinned_track=_pinned_track(reading, t),
             pane_tail=sources.pane_tail(repository, issue),
             session_alive=sources.session_alive(repository, issue),
             signal=sources.stage_signal(t.worktree),
             events=sources.events_tail(EVENTS_SCAN_LIMIT),
-            now=now,
+            now=reading.now,
             messages=sources.messages(repository, issue),
             pending_sends=pending,
             wake_blocked=(repository, issue) in sources.wake_blocked_issues(),
-            admission=_task_admission(live, t, order, usages, now),
+            admission=_task_admission(reading, t),
             track_when=(policy.tracks[t.track].when
                        if t.track in policy.tracks else ""),
             project=read_model.project_name(repository_projects, t.repository))
@@ -522,8 +552,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
             text=sources.pane_history(repository, issue, clamped))
 
     def _current_usage() -> read_model.UsageView:
-        live = _cfg()
-        return _usage_view(live, _usages(live), datetime.now(timezone.utc), _mode(live))
+        return _usage_view(_reading(with_usage=True))
 
     @app.get("/api/usage", response_model=read_model.UsageView)
     def usage_route(op: Operator = Depends(current_operator)):
@@ -814,8 +843,10 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         return task, None
 
     def _run_model(configured_repository, repository: str, req: RunReq, task, row):
-        live = _cfg()
-        policy = policy_for(live, configured_repository)
+        reading = _reading(
+            with_usage=not req.model and task is not None,
+            with_order=not bool(req.model))
+        policy = _policy(reading, configured_repository.name)
         if (req.model and req.model not in policy.model_ids()
                 and req.model not in {str(e) for e in policy.entries()}):
             raise HTTPException(422, f"model {req.model!r} is not configured "
@@ -826,10 +857,9 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
             return req.model
         if task is not None:
             # No pick: the model the card names, the first admitted entry.
-            now, usages = datetime.now(timezone.utc), _usages(live)
             return (stage_pick(task.picks, next_stage(task))
-                    or _model_for(live, task, _order(_mode(live), usages, now), usages, now))
-        return _candidate_model(live, configured_repository, row, _order(_mode(live)))
+                    or _model_for(reading, task))
+        return _candidate_model(reading, configured_repository, row)
 
     def _arm_run(repository: str, issue: int, req: RunReq, task, model: str,
                  op: Operator):
