@@ -2703,6 +2703,17 @@ def _claim_round_turn(cfg: Config, deps: Deps, state: ClaimRound,
     return True
 
 
+def _claim_generators(
+        cfg: Config, deps: Deps, in_round: dict[str, list[Repository]],
+        all_tasks: list[TaskState], admit: Admit, order: Order,
+        pass_started: str, skipped: set[tuple[str, int]],
+) -> dict[str, Iterator[ClaimCandidate]]:
+    """Lazy per-project candidate streams for the claim round."""
+    return {name: _claimable(cfg, deps, members, all_tasks, admit, order,
+                             pass_started, skipped)
+            for name, members in in_round.items()}
+
+
 def _claim_round_data(cfg: Config, deps: Deps,
                       repositories: list[Repository], admit: Admit,
                       order: Order, pass_started: str,
@@ -2719,9 +2730,8 @@ def _claim_round_data(cfg: Config, deps: Deps,
     last = claims.project_last_claims(claims.last_claims(cfg.state_dir), project_of)
     caps = {name: members[0].project.max_active for name, members in in_round.items()}
     # Generator bodies run on first next(), so a project's board is read only on its turn.
-    gens = {name: _claimable(cfg, deps, members, all_tasks, admit, order,
+    gens = _claim_generators(cfg, deps, in_round, all_tasks, admit, order,
                              pass_started, skipped)
-            for name, members in in_round.items()}
     return ClaimRound(free_slots=free, projects=in_round, counts=counts,
                       last_claimed=last, caps=caps, candidates=gens)
 
