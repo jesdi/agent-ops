@@ -385,7 +385,7 @@ def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
 
 
 def _status_lines(cfg: Config) -> list[str]:
-    repositories = _repositories_by_name(cfg)
+    repositories = {r.name: r for r in cfg.repositories}
     tasks = [t for t in load_all(cfg.state_dir) if _in_flight(t)]
     lines = ([_status_line(cfg, repositories.get(t.repository), t) for t in tasks]
              or ["(nothing in flight)"])
