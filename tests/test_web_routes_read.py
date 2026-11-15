@@ -921,3 +921,128 @@ def test_board_and_retry_tolerate_a_malformed_record(tmp_path):
     assert client.get("/api/board", headers=HEADERS).status_code == 200
     r = client.post("/api/task/alpha/73/retry", headers=HEADERS, json={})
     assert r.status_code == 202, r.text
+
+
+def _full_board_client(startup_config, fake, config_loader, clock_loader=None):
+    """Give the full-board route the same controlled read seams as snapshot."""
+    app = create_app(startup_config, fake)
+    app.state.config_loader = config_loader
+    if clock_loader is not None:
+        app.state.clock_loader = clock_loader
+    return TestClient(app)
+
+
+def _full_board_cards(body):
+    return {card["issue"]: card for column in body["columns"]
+            for card in column["cards"]}
+
+
+def _full_board_policy(implement, *, spec=None, pinned=()):
+    from dispatcher.models import parse_policy
+
+    raw = {
+        "triage": ["claude-opus-5"], "untracked": "standard",
+        "tracks": {
+            "standard": {
+                "when": "Everything.",
+                "spec": list(spec or implement), "plan": list(implement),
+                "implement": list(implement), "review": list(implement),
+            },
+        },
+    }
+    if pinned:
+        raw["tracks"]["pinned"] = {
+            "when": "Pinned work.", "spec": list(pinned), "plan": list(pinned),
+            "implement": list(pinned), "review": list(pinned),
+        }
+        raw["pinned"] = ["pinned"]
+    return parse_policy(raw)
+
+
+def _full_board_usage(now, *, anthropic_session=0.1,
+                      anthropic_reset_minutes=120, fable_week=0.0,
+                      openai_session=0.1, openai_reset_minutes=120):
+    from dispatcher.usage import ProviderUsage, Window, WindowKind
+
+    def provider(name, session_used, reset_minutes, week_used=0.0):
+        windows = [
+            Window(WindowKind.SESSION, None, session_used,
+                   now + timedelta(minutes=reset_minutes)),
+            Window(WindowKind.WEEKLY, None, week_used,
+                   now + timedelta(days=3.5)),
+        ]
+        if name == "anthropic":
+            windows.append(Window(WindowKind.WEEKLY, "Fable", fable_week,
+                                  now + timedelta(days=3.5)))
+        return ProviderUsage(name, "oauth", now.timestamp(), tuple(windows))
+
+    return {
+        "anthropic": provider("anthropic", anthropic_session,
+                              anthropic_reset_minutes),
+        "openai": provider("openai", openai_session, openai_reset_minutes),
+    }
+
+
+def test_full_board_observes_model_settings_on_the_next_request(
+        tmp_path):
+    from dispatcher import model_settings
+    from dispatcher.config import apply_stored_models
+
+    first_order = ("claude-opus-5", "claude-fable-5-1")
+    second_order = ("claude-fable-5-1", "claude-opus-5")
+    first = _full_board_policy(first_order)
+    startup = replace(make_config(tmp_path), models=first)
+
+    def stored(order):
+        return {
+            "triage": ["claude-opus-5"], "untracked": "standard",
+            "tracks": {"standard": {
+                "when": "Everything.", "spec": list(order),
+                "plan": list(order), "implement": list(order),
+                "review": list(order),
+            }},
+        }
+
+    model_settings.save(
+        tmp_path, stored(first_order), actor="test",
+        now=datetime(2026, 11, 15, tzinfo=timezone.utc))
+    fake = FakeSources()
+    fake.tasks_list = [make_task(issue=7, stage=Stage.PLAN),
+                       make_task(issue=8, stage=Stage.PLAN)]
+    fake.usages = _full_board_usage(datetime.now(timezone.utc),
+                                    fable_week=0.1)
+    changed_during_request = []
+
+    def update_settings(repository, issue):
+        if not changed_during_request:
+            changed_during_request.append(issue)
+            model_settings.save(
+                tmp_path, stored(second_order), actor="test",
+                now=datetime(2026, 11, 15, tzinfo=timezone.utc))
+        return None
+
+    fake.execution_override = update_settings
+    loads = []
+
+    def load_effective_config():
+        loads.append(1)
+        return apply_stored_models(startup)
+
+    client = _full_board_client(startup, fake, load_effective_config)
+    first_request = client.get("/api/board", headers=HEADERS)
+    assert first_request.status_code == 200
+    assert changed_during_request == [7]
+    assert {issue: card["model"] for issue, card in
+            _full_board_cards(first_request.json()).items()} == {
+                7: "anthropic/claude-opus-5",
+                8: "anthropic/claude-opus-5",
+            }
+
+    second_request = client.get("/api/board", headers=HEADERS)
+    assert second_request.status_code == 200
+    assert {issue: card["model"] for issue, card in
+            _full_board_cards(second_request.json()).items()} == {
+                7: "anthropic/claude-fable-5-1",
+                8: "anthropic/claude-fable-5-1",
+            }
+    assert len(loads) == 2
