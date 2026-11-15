@@ -16,7 +16,7 @@ from dispatcher import priority
 from dispatcher.claims import (claim_room, pick_project, project_counts,
                                project_last_claims)
 from dispatcher.config import Project, Repository
-from dispatcher.models import Entry
+from dispatcher.models import Entry, Order
 from dispatcher.usage import (PaceConfig, ProviderUsage, Reading, Source,
                               WindowKind, admits, minutes_to_reset, readings,
                               required_pace, verdict_note)
@@ -617,7 +617,8 @@ def model_admission_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
 def usage_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
                pace: PaceConfig, default_model: str, mode: str,
                routed: Collection[str],
-               pinned: Collection[str] = ()) -> UsageView:
+               pinned: Collection[str] = (),
+               order: Order | None = None) -> UsageView:
     """Every provider's windows, sorted by provider name, one gate (the
     verdict for the policy default model), and what the priority `mode` is
     doing over the `routed` providers, minus the `pinned` tracks it never
@@ -627,7 +628,8 @@ def usage_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
     differ from the entry a task gets when a model has its own weekly window.
     anthropic is written first, so it wins a tie and the no-pace case."""
     verdict = admits(usages, default_model, now, pace)
-    ranked = priority.order(mode, usages, now, pace)(tuple(
+    ordering = order or priority.order(mode, usages, now, pace)
+    ranked = ordering(tuple(
         Entry(p, "") for p in sorted(routed, key=lambda p: (p != "anthropic", p))))
     binding = _window_view(verdict.binding, now, pace) if verdict.binding else None
     return UsageView(
