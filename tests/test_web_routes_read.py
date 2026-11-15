@@ -951,11 +951,7 @@ def _full_board_policy(implement, *, spec=None, pinned=()):
         },
     }
     if pinned:
-        raw["tracks"]["pinned"] = {
-            "when": "Pinned work.", "spec": list(pinned), "plan": list(pinned),
-            "implement": list(pinned), "review": list(pinned),
-        }
-        raw["pinned"] = ["pinned"]
+        raw["pinned"] = list(pinned)
     return parse_policy(raw)
 
 
@@ -985,7 +981,7 @@ def _full_board_usage(now, *, anthropic_session=0.1,
 
 def test_full_board_observes_model_settings_on_the_next_request(
         tmp_path):
-    from dispatcher import model_settings
+    from dispatcher import model_settings, priority
     from dispatcher.config import apply_stored_models
 
     first_order = ("claude-opus-5", "claude-fable-5-1")
@@ -1006,6 +1002,8 @@ def test_full_board_observes_model_settings_on_the_next_request(
     model_settings.save(
         tmp_path, stored(first_order), actor="test",
         now=datetime(2026, 11, 15, tzinfo=timezone.utc))
+    priority.save(tmp_path, "anthropic", actor="test",
+                  now=datetime(2026, 11, 15, tzinfo=timezone.utc))
     fake = FakeSources()
     fake.tasks_list = [make_task(issue=7, stage=Stage.PLAN),
                        make_task(issue=8, stage=Stage.PLAN)]
