@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from dispatcher.config import Config
+from dispatcher.state import write_json_atomic
 
 
 @dataclass(frozen=True)
@@ -145,6 +146,22 @@ def setup_log_tail(worktree: str) -> str:
 def quarantine_path(state_dir: str | Path, repository_name: str,
                     issue: int) -> Path:
     return Path(state_dir) / "quarantine" / f"{repository_name}-{issue}.json"
+
+
+def quarantine_verdict_path(state_dir: str | Path) -> Path:
+    return Path(state_dir) / "quarantine-verdict.json"
+
+
+def write_quarantine_verdict(state_dir: str | Path, pass_started: str,
+                             skipped: set[tuple[str, int]]) -> None:
+    """Replace the last claim round's quarantine snapshot without failing a pass."""
+    try:
+        write_json_atomic(quarantine_verdict_path(state_dir), {
+            "pass_started": pass_started,
+            "skipped": [list(pair) for pair in sorted(skipped)],
+        })
+    except OSError as exc:
+        print(f"[warn] quarantine verdict write failed: {exc}", file=sys.stderr)
 
 
 def write_quarantine(state_dir: str | Path, repository_name: str, issue: int,

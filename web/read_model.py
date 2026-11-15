@@ -917,10 +917,13 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
     routes to another model can be claimed while this says budget-blocked,
     or denied while this says will-claim.
 
+    Quarantine is modelled from the dispatcher's verdict as of the last
+    completed pass. A record written or a blocker closed after that pass shows
+    up one pass later. Unreached candidates are absent: a project that got no
+    turn because capacity ran out first, or whose board read failed, is not in
+    the set, so the forecast treats its candidates as claimable, as before.
+
     Gates it does NOT model, so `will-claim` can still be wrong:
-      * failures.check_quarantine's live blocker check — `quarantined` skips
-        every local record, so a record whose blocker already closed hides
-        its candidate until the dispatcher's next pass clears it.
       * slot exhaustion (the round stops when allocate_slot returns None)
         and a create_workspace failure — only knowable at claim time.
       * queue movement since the rank rows were cached (rank_rows has a TTL,
