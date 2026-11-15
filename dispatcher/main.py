@@ -20,8 +20,9 @@ import traceback
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
+from enum import Enum, auto
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 
 from dispatcher.convergence import pass_lock
 from dispatcher.config import (Config, Repository, apply_stored_models,
@@ -140,6 +141,9 @@ class Launch:
     @property
     def model(self) -> str:
         return self.entry.model_id
+
+
+ClaimCandidate = tuple[Repository, Candidate, Launch]
 
 
 def _launch_for(cfg: Config, repository: Repository | None, task: TaskState,
@@ -2545,7 +2549,7 @@ def _claim_launch(cfg: Config, deps: Deps, repository: Repository,
 
 def _claimable(cfg: Config, deps: Deps, members: list[Repository], tasks: list[TaskState],
                admit: Admit, order: Order, pass_started: str,
-               skipped: set[tuple[str, int]]):
+               skipped: set[tuple[str, int]]) -> Iterator[ClaimCandidate]:
     """One project's ranked candidates this pass may claim, across its member
     repositories in rank order, each with its repository and the spec launch it
     would start. Skips issues that already have a task, quarantined issues,
@@ -2560,6 +2564,40 @@ def _claimable(cfg: Config, deps: Deps, members: list[Repository], tasks: list[T
         launch = _claim_launch(cfg, deps, repository, cand, admit, order, skipped)
         if launch is not None:
             yield repository, cand, launch
+
+
+class ClaimRoundOutcome(Enum):
+    """The closed set of ways one project turn affects the claim round."""
+
+    CONTINUE = auto()
+    STOP = auto()
+    PROJECT_FAILED = auto()
+    CLAIMED = auto()
+
+
+@dataclass(frozen=True)
+class ClaimBase:
+    branch: str
+
+
+@dataclass(frozen=True)
+class ClaimRoundUnavailable:
+    """There is no claim room, so no project streams need to be built."""
+
+
+@dataclass
+class ClaimRoundReady:
+    """Mutable state for a claim round with available capacity."""
+
+    free_slots: int
+    projects: dict[str, list[Repository]]
+    counts: dict[str, int]
+    last_claimed: dict[str, str]
+    caps: dict[str, int | None]
+    candidates: dict[str, Iterator[ClaimCandidate]]
+
+
+ClaimRoundState = ClaimRoundReady | ClaimRoundUnavailable
 
 
 def _commit_claim(cfg: Config, deps: Deps, repository: Repository, cand: Candidate,
@@ -2604,74 +2642,80 @@ def _wait_in_ready(cfg: Config, deps: Deps, repository: Repository, number: int,
 
 
 def _claim_picked(cfg: Config, deps: Deps, repository: Repository,
-                  cand: Candidate, launch: Launch, dry_run: bool) -> str:
+                  cand: Candidate, launch: Launch,
+                  dry_run: bool) -> ClaimRoundOutcome:
     """Provision and commit one ranked candidate; return its round outcome."""
-    has_base, base = _read_claim_base(cfg, deps, repository, cand)
-    if not has_base:
-        return "continue"
+    claim_base = _read_claim_base(cfg, deps, repository, cand)
+    if claim_base is None:
+        return ClaimRoundOutcome.CONTINUE
     slot = allocate_slot(load_all(cfg.state_dir), max_slots(cfg.capacity))
     if slot is None:
-        return "stop"
+        return ClaimRoundOutcome.STOP
     try:
-        wt = create_workspace(repository, cand.number, base, dry_run=dry_run,
+        wt = create_workspace(repository, cand.number, claim_base.branch, dry_run=dry_run,
                               auth=deps.github.auth)
     except MissingBaseError:
-        _wait_in_ready(cfg, deps, repository, cand.number, f"base:{base}",
-                       f"base branch {base} is not on origin")
-        return "continue"
+        _wait_in_ready(cfg, deps, repository, cand.number,
+                       f"base:{claim_base.branch}",
+                       f"base branch {claim_base.branch} is not on origin")
+        return ClaimRoundOutcome.CONTINUE
     except Exception:
         # A provisioning failure is capped at one per project per pass.
         _report_provisioning_failure(cfg, deps, repository, cand, dry_run)
-        return "project-failed"
+        return ClaimRoundOutcome.PROJECT_FAILED
     base_line.clear_wait(cfg.state_dir, repository.name, cand.number)
-    _commit_claim(cfg, deps, repository, cand, slot, wt, launch, base)
-    return "claimed"
+    _commit_claim(cfg, deps, repository, cand, slot, wt, launch,
+                  claim_base.branch)
+    return ClaimRoundOutcome.CLAIMED
 
 
 def _read_claim_base(cfg: Config, deps: Deps, repository: Repository,
-                     cand: Candidate) -> tuple[bool, str]:
+                     cand: Candidate) -> ClaimBase | None:
     """Read and validate a candidate's base line, recording invalid bases."""
     try:
         body = deps.github.issue_body(repository, cand.number)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
             OSError, ValueError) as exc:  # ValueError: gh printed malformed JSON
         print(f"[warn] body of #{cand.number} not read: {exc}", file=sys.stderr)
-        return False, ""
+        return None
     base = base_line.parse_base(body)
     if base is None:
         _wait_in_ready(cfg, deps, repository, cand.number, "invalid",
                        "its base line names no valid branch")
-        return False, ""
-    return True, base
+        return None
+    return ClaimBase(branch=base)
 
 
-def _claim_round_turn(cfg: Config, deps: Deps, in_round: dict,
-                      counts: dict, last: dict, caps: dict, gens: dict,
-                      free: int, dry_run: bool) -> int | None:
-    """Take one project turn; None means stop because no slot or project remains."""
-    name = claims.pick_project(list(in_round), counts, last, caps)
+def _claim_round_turn(cfg: Config, deps: Deps,
+                      state: ClaimRoundReady,
+                      dry_run: bool) -> ClaimRoundOutcome:
+    """Take one project turn and report whether the round can continue."""
+    name = claims.pick_project(list(state.projects), state.counts,
+                               state.last_claimed, state.caps)
     if name is None:
-        return None
-    picked = next(gens[name], None)
+        return ClaimRoundOutcome.STOP
+    picked = next(state.candidates[name], None)
     if picked is None:
-        del in_round[name]
-        return free
+        del state.projects[name]
+        return ClaimRoundOutcome.CONTINUE
     repository, cand, launch = picked
-    result = _claim_picked(cfg, deps, repository, cand, launch, dry_run)
-    if result == "stop":
-        return None
-    if result == "project-failed":
-        del in_round[name]
-    if result == "claimed":
-        counts[name] += 1
-        last[name] = _now()
-        return free - 1
-    return free
+    outcome = _claim_picked(cfg, deps, repository, cand, launch, dry_run)
+    if outcome is ClaimRoundOutcome.STOP:
+        return ClaimRoundOutcome.STOP
+    if outcome is ClaimRoundOutcome.PROJECT_FAILED:
+        del state.projects[name]
+    if outcome is ClaimRoundOutcome.CLAIMED:
+        state.counts[name] += 1
+        state.last_claimed[name] = _now()
+        state.free_slots -= 1
+    return ClaimRoundOutcome.CONTINUE
 
 
-def _claim_generators(cfg: Config, deps: Deps, in_round: dict,
-                      all_tasks: list[TaskState], admit: Admit, order: Order,
-                      pass_started: str, skipped: set[tuple[str, int]]) -> dict:
+def _claim_generators(
+        cfg: Config, deps: Deps, in_round: dict[str, list[Repository]],
+        all_tasks: list[TaskState], admit: Admit, order: Order,
+        pass_started: str, skipped: set[tuple[str, int]],
+) -> dict[str, Iterator[ClaimCandidate]]:
     """Build lazy per-project candidate streams for the claim round."""
     return {name: _claimable(cfg, deps, members, all_tasks, admit, order,
                              pass_started, skipped)
@@ -2681,13 +2725,13 @@ def _claim_generators(cfg: Config, deps: Deps, in_round: dict,
 def _claim_round_data(cfg: Config, deps: Deps,
                       repositories: list[Repository], admit: Admit,
                       order: Order, pass_started: str,
-                      skipped: set[tuple[str, int]]):
+                      skipped: set[tuple[str, int]]) -> ClaimRoundState:
     """Build the state and lazy candidate generators for one claim round."""
     all_tasks = load_all(cfg.state_dir)
     free = claims.claim_room(cfg.capacity, cfg.max_open, all_tasks,
                              triage_running=False)
     if free <= 0:
-        return None
+        return ClaimRoundUnavailable()
     in_round = by_project([r for r in repositories if not r.project.paused])
     project_of = {r.name: r.project.name for r in repositories}
     counts = claims.project_counts(list(in_round), all_tasks, project_of)
@@ -2696,24 +2740,22 @@ def _claim_round_data(cfg: Config, deps: Deps,
     # Generator bodies run on first next(), so a project's board is read only on its turn.
     gens = _claim_generators(cfg, deps, in_round, all_tasks, admit, order,
                              pass_started, skipped)
-    return free, in_round, counts, last, caps, gens
+    return ClaimRoundReady(free_slots=free, projects=in_round, counts=counts,
+                           last_claimed=last, caps=caps, candidates=gens)
 
 
 def _run_claim_round(cfg: Config, deps: Deps, repositories: list[Repository],
                      admit: Admit, order: Order, dry_run: bool,
                      pass_started: str, skipped: set[tuple[str, int]]) -> None:
     """Claim until capacity or candidates run out, writing through the caller."""
-    round_data = _claim_round_data(cfg, deps, repositories, admit, order,
-                                   pass_started, skipped)
-    if round_data is None:
+    state = _claim_round_data(cfg, deps, repositories, admit, order,
+                              pass_started, skipped)
+    if isinstance(state, ClaimRoundUnavailable):
         return
-    free, in_round, counts, last, caps, gens = round_data
-    while free > 0:
-        next_free = _claim_round_turn(cfg, deps, in_round, counts, last,
-                                      caps, gens, free, dry_run)
-        if next_free is None:
+    while state.free_slots > 0:
+        outcome = _claim_round_turn(cfg, deps, state, dry_run)
+        if outcome is ClaimRoundOutcome.STOP:
             return
-        free = next_free
 
 
 def _claim_new(cfg: Config, deps: Deps, repositories: list[Repository],
@@ -3233,8 +3275,8 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     _begin_pass_auth(cfg, deps)
     _migrate_legacy_keys(cfg)
     _reconcile_slots(cfg)
-    # A request pending at pass start pauses this claim round even if triage.tick
-    # consumes it while trying to launch the sweep below.
+    # Preserve the pass-start snapshot so a request consumed by triage.tick
+    # still pauses this claim round.
     claims_paused = triage.pending(cfg.state_dir)
     if not dry_run:
         _sync_task_tokens(cfg, deps)
@@ -3277,7 +3319,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     if not dry_run:
         _reconcile_boards(cfg, deps)
     # Phase 2: new claims, with whatever capacity phase 1 and inspection left.
-    if not claims_paused:
+    if not claims_paused and not triage.pending(cfg.state_dir):
         _claim_new(eff, deps, eff.repositories, admit, order, dry_run, pass_started)
     _sync_artifacts(cfg, dry_run=dry_run, auth=deps.github.auth)
     _flush_finished(cfg, dry_run)

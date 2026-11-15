@@ -32,3 +32,24 @@ def test_rank_runs_only_for_repositories_that_get_a_turn(tmp_path, monkeypatch):
     main.run_pass(c, deps(gh, FakeSessions(alive={1, 2})))
     assert gh.claimed == [10]
     assert "factorial" not in gh.candidates_calls
+
+
+def test_triage_request_arriving_during_tick_pauses_claim_round(tmp_path, monkeypatch):
+    """A request after the pass-start snapshot must still gate new claims."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = two_repository_cfg(tmp_path)
+    gh = FakeGitHub(cands_by_repository={
+        "portfolio_eval": [Candidate(10, "PE candidate", "u10")],
+    })
+
+    def request_triage(*_args, **_kwargs):
+        (tmp_path / "state" / main.triage.REQUEST_FILE).write_text(
+            '{"requested_at": "2026-11-15T10:00:00+00:00"}')
+
+    monkeypatch.setattr(main.triage, "tick", request_triage)
+    monkeypatch.setattr(main.triage, "running", lambda: False)
+
+    main.run_pass(c, deps(gh, FakeSessions()))
+
+    assert gh.claimed == []
