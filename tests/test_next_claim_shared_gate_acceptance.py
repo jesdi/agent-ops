@@ -73,6 +73,42 @@ def test_quarantined_queue_head_is_skipped_for_the_next_candidate():
         "will-claim", "alpha", 213)
 
 
+def test_only_candidate_in_a_matching_verdict_returns_no_candidates(tmp_path):
+    from web.sources import Sources
+
+    heartbeat = dict(FRESH, started_at="2026-11-06T11:59:00+00:00")
+    (tmp_path / "quarantine-verdict.json").write_text(
+        '{"pass_started":"2026-11-06T11:59:00+00:00",'
+        '"skipped":[["alpha",73]]}')
+    quarantined = Sources(tmp_path, object(), object()).quarantine_verdict(
+        heartbeat)
+
+    v = next_claim(heartbeat, now=NOW, tasks=[], capacity=3, gate=GATE_OK,
+                   queues=[rows("alpha", 73)], projects=PROJECTS,
+                   last_claimed={}, quarantined=quarantined)
+
+    assert v.verdict == "no-candidates"
+
+
+def test_every_project_candidate_in_a_matching_verdict_returns_no_candidates(
+        tmp_path):
+    from web.sources import Sources
+
+    heartbeat = dict(FRESH, started_at="2026-11-06T11:59:00+00:00")
+    (tmp_path / "quarantine-verdict.json").write_text(
+        '{"pass_started":"2026-11-06T11:59:00+00:00",'
+        '"skipped":[["alpha",73],["beta",12]]}')
+    quarantined = Sources(tmp_path, object(), object()).quarantine_verdict(
+        heartbeat)
+
+    v = next_claim(heartbeat, now=NOW, tasks=[], capacity=3, gate=GATE_OK,
+                   queues=[rows("alpha", 73), rows("beta", 12)],
+                   projects=PROJECTS, last_claimed={},
+                   quarantined=quarantined)
+
+    assert v.verdict == "no-candidates"
+
+
 def test_board_route_ignores_a_record_when_the_fresh_verdict_is_empty(tmp_path):
     fake = FakeSources()
     now = datetime.now(timezone.utc)
