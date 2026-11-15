@@ -516,10 +516,12 @@ class ReadableContent(BaseModel):
 
 
 class UnavailableContent(BaseModel):
-    """File exists as a request but cannot be read: missing, non-UTF-8, or containment violation."""
+    """File exists as a request but cannot be read: missing, non-UTF-8, or containment
+    violation; or the request is armed for no revision, so nothing on it can be submitted."""
     kind: Literal["unavailable"] = "unavailable"
     path: str        # stored path (wt-relative or raw)
-    reason: str      # "file-missing" | "not-utf8" | "path-escapes-worktree"
+    # "file-missing" | "not-utf8" | "path-escapes-worktree" | "no-revision"
+    reason: str
 
 
 # The selections of a review page: a question id (or "<id>.note", or

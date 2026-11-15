@@ -8,7 +8,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import re
 import shlex
 import shutil
@@ -21,7 +20,6 @@ import traceback
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
-from enum import Enum
 from pathlib import Path
 from typing import Callable
 
@@ -40,14 +38,19 @@ from dispatcher.github import Candidate, GitHubClient
 log = logging.getLogger(__name__)
 from dispatcher import implementation_grants, spec_publish, task_artifacts
 from dispatcher import base_line
-from dispatcher.artifacts import TICKETS_DIR, page_revision, plan_revision
+from dispatcher.artifacts import (REVIEW_PAGE, TICKETS_DIR, check_spec, check_tickets,
+                                  count_open_questions, page_revision, plan_revision)
+from dispatcher.classify import (BackgroundView, Look, Observation, Reads, artifact_path,
+                                 classify, config_note)
+from dispatcher.lifecycle import (AcquireSlot, Admission, ApplyRound, At, ClearTurnMarkers,
+                                  EndPokeStretch, EndSession, EnterGate, Event, EventType,
+                                  FailReason, Kind, LaunchFailure, LinkPR, MarkAsked, Notify,
+                                  Pane, Poke, PublishSpec, RecordBackgroundWait, ReleaseSlot,
+                                  ReportCrash, ReportTaskCrash, RespawnStage, RetryStage,
+                                  Status, Stranded, Transition, WakeBlocked, Woken, decide,
+                                  legacy_fields, login_at, occupies, operator_request)
 from dispatcher.loops import Decision, Outcome, ResetCause
-from dispatcher.machine import (ApplyDecision, BackgroundView, DisarmPlanApproval,
-                                HandleCrash, NoOp, Notify, ParkForCI,
-                                ParkForInput, ParkForReview, PublishSpec,
-                                RecordBackgroundWait, Poke, RetryStage, ReviewPark, SetTaskStage,
-                                SpawnStage, pass_actions)
-from dispatcher.models import (IMPLEMENT_PICK, Admitted, Entry, ModelPolicy,
+from dispatcher.models import (Admitted, Entry, ModelPolicy,
                                Order, override_refusal,
                                parse_entry, pick_key, second_model,
                                stage_pick, track_from_labels, track_gone,
@@ -58,16 +61,16 @@ from dispatcher.sessions import Sessions
 from dispatcher.state import (TERMINAL_STAGES, IN_FLIGHT_STAGES, NO_POKES, NO_SLOT, PARK_CI,
                               PARK_HUMAN,
                               PARK_LOGIN, PARK_REVIEW, PARK_WAKE, WAKE_BLOCKED_PREFIX,
-                              WHY_ACCESS, WHY_CONFIG, WHY_DECISION, WHY_LOOP_CAP, WHY_OPERATOR,
-                              RESPAWNABLE_STAGES, AnswersRequest, PlanApprovalRequest,
-                              Stage, StageSignal, TaskState, active, allocate_slot,
+                              WHY_ACCESS, WHY_DECISION, WHY_LOOP_CAP, WHY_OPERATOR,
+                              RESPAWNABLE_STAGES, Stage, StageSignal, TaskState, active, allocate_slot,
                               clear_session, clear_turn_markers, delete, has_waiting,
                               holds_slot, launch_entries, load,
                               load_all, max_slots,
                               next_stage, read_background, read_session,
-                              read_stage_signal,
+                              read_stage_doc, read_stage_signal, stage_signal,
                               implement_done, resumable_crash, shown_stage,
-                              end, park, save, task_key, unpark, wake)
+                              at_gate, end, gate_stage, park, save, task_key, unpark,
+                              wake)
 from dispatcher.workspace import (MissingBaseError, append_worktree_file, create_workspace,
                                   exclude_local_state, remove_workspace,
                                   write_task_identity, write_worktree_file)
@@ -171,17 +174,29 @@ def _execution_override_for(cfg: Config, task: TaskState,
     The web's task snapshot can precede a stage transition. Drop an obsolete
     cross-provider choice, including its bypass, before selecting a launch.
     """
+    override, refusal = _saved_override(cfg, task, stage)
+    if refusal:
+        _drop_override(cfg, task, stage, refusal)
+    return override
+
+
+def _saved_override(cfg: Config, task: TaskState, stage: Stage
+                    ) -> tuple[execution_overrides.ExecutionOverride | None, str]:
+    """The saved choice as it applies to `stage`, and why it may not (then
+    None): read only, nothing dropped."""
     override = execution_overrides.load(cfg.state_dir, task.repository, task.issue)
     if override is None or not override.model:
-        return override
+        return override, ""
     refusal = override_refusal(task.picks, stage.value, override.model)
-    if refusal:
-        execution_overrides.delete(cfg.state_dir, task.repository, task.issue)
-        eventlog.append_event(cfg.state_dir, "execution-override-dropped",
-                              repository=task.repository, issue=task.issue,
-                              stage=stage.value, model=override.model, detail=refusal)
-        return None
-    return override
+    return (None, refusal) if refusal else (override, "")
+
+
+def _drop_override(cfg: Config, task: TaskState, stage: Stage, refusal: str) -> None:
+    override = execution_overrides.load(cfg.state_dir, task.repository, task.issue)
+    execution_overrides.delete(cfg.state_dir, task.repository, task.issue)
+    eventlog.append_event(cfg.state_dir, "execution-override-dropped",
+                          repository=task.repository, issue=task.issue,
+                          stage=stage.value, model=override.model, detail=refusal)
 
 
 def _choose_launch(
@@ -621,20 +636,55 @@ def _heal_exclude(repository: Repository, task: TaskState) -> None:
 def _write_working(worktree: str, stage: Stage, entry) -> None:
     """Rewrite .agent/stage.json to `working` BEFORE a session is launched or
     resumed, or the next pass reads the old signal again (blocked, a rejected
-    report, the previous stage's `done`) and acts on it a second time. An
-    implement session's progress note is kept for the same stage: the
-    tickets it counts are still merged on the branch, and the console shows
-    them until the session reports again. Never across stages. Raises OSError
-    when .agent is not a usable directory: the launch then fails with that
-    reason, and nothing is written outside the worktree."""
+    report, the previous stage's `done`) and acts on it a second time, and
+    log the launch. Raises OSError when .agent is not a usable directory: the
+    launch then fails with that reason, and nothing is written outside the
+    worktree."""
+    _signal_working(worktree, stage, entry)
+    _log_model(worktree, stage, str(entry))
+
+
+def _signal_working(worktree: str, stage: Stage, entry, handover: dict | None = None) -> None:
+    """.agent/stage.json says `working` on `stage`. An implement session's
+    progress note is kept for the same stage: the tickets it counts are
+    still merged on the branch, and the console shows them until the session
+    reports again. Never across stages."""
     doc = {"stage": stage.value, "status": "working", "model": entry.model_id,
            "effort": entry.effort}
     old = read_stage_signal(worktree)
     if (stage is Stage.IMPLEMENT and old is not None and old.note
             and (old.stage, old.status) == (stage.value, "working")):
         doc["note"] = old.note
+    if handover is not None:
+        doc[HANDOVER] = handover
     write_worktree_file(worktree, ".agent", "stage.json", json.dumps(doc))
+
+
+# The report a launch replaced in stage.json, kept beside its `working`.
+HANDOVER = "handover"
+
+
+def _write_launching(worktree: str, stage: Stage, entry) -> None:
+    """_write_working for a launch of the table, before the session can
+    report: the report it replaces rides along as the hand-over, which the
+    pass after a dispatcher killed before the commit acts on again
+    (_handed_over), so the launch is repeated, never lost."""
+    old = read_stage_doc(worktree)
+    _signal_working(worktree, stage, entry, old.get(HANDOVER, old) if old else None)
     _log_model(worktree, stage, str(entry))
+
+
+def _handed_over(task: TaskState, doc: dict | None) -> StageSignal | None:
+    """The report a launch replaced, while that launch never committed:
+    stage.json names the launched stage, the task still the one before."""
+    handover = doc.get(HANDOVER) if doc else None
+    if not isinstance(handover, dict) or doc.get("stage") == task.continued_stage.value:
+        return None
+    return stage_signal(handover)
+
+
+def _signal_of(task: TaskState) -> StageSignal | None:
+    return _handed_over(task, read_stage_doc(task.worktree)) or read_stage_signal(task.worktree)
 
 
 def _with_implement_provider(task: TaskState, stage: Stage, entry) -> list[str]:
@@ -714,62 +764,87 @@ def _stage_prompt(cfg: Config, repository: Repository, task: TaskState,
     return prompt, drained
 
 
-def _launch_stage(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
-                  launch: Launch, spec_path: str = "",
-                  message: str = "", *, gh_config: str) -> TaskState:
+def _spawned(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
+             launch: Launch, spec_path: str = "", message: str = "", *,
+             gh_config: str) -> TaskState:
+    """Spawn `launch.stage`'s session: the task as it now runs, unsaved and
+    unstamped. Writes no stage.json, which the caller does."""
     stage, entry = launch.stage, launch.entry
-    model = entry.model_id
     prompt, drained = _stage_prompt(cfg, repository, task, stage, spec_path, message)
     _heal_exclude(repository, task)
     _heal_identity(task)
-    _write_working(task.worktree, stage, entry)
     prompt = implementation_grants.prepare(task.worktree, stage.value, entry, launch.second, prompt)
     deps.sessions.spawn_stage(task.repository, task.issue, task.worktree, prompt,
-                              stage.value, model, entry.effort,
+                              stage.value, entry.model_id, entry.effort,
                               second=launch.second, gh_config=gh_config)
     messages.mark_delivered(cfg.state_dir, task.repository, task.issue, drained)
-    # A gated task's plan session runs at the gate, so its `done` is the approval.
-    kept = Stage.AWAITING_PLAN_REVIEW if stage is Stage.PLAN and task.gated else stage
-    task = replace(unpark(task), stage=kept, spec_path=spec_path or task.spec_path,
+    kept = gate_stage(task, stage)
+    return replace(unpark(task), stage=kept, spec_path=spec_path or task.spec_path,
                    unlaunched=False,
                    gate_respawn_pending=(task.gate_respawn_pending
                                          and kept is Stage.AWAITING_PLAN_REVIEW),
                    **NO_POKES,
-                   updated_at=_now(),
                    picks={**task.picks, pick_key(stage.value): str(entry)},
                    implement_providers=_with_implement_provider(task, stage, entry))
+
+
+def _stage_started(cfg: Config, task: TaskState, launch: Launch) -> None:
+    eventlog.append_event(cfg.state_dir, "stage-started", repository=task.repository,
+                          issue=task.issue, stage=launch.stage.value, model=str(launch.entry))
+
+
+def _launch_stage(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
+                  launch: Launch, spec_path: str = "",
+                  message: str = "", *, gh_config: str) -> TaskState:
+    _write_working(task.worktree, launch.stage, launch.entry)
+    task = replace(_spawned(cfg, deps, repository, task, launch, spec_path, message,
+                            gh_config=gh_config), updated_at=_now())
     save(cfg.state_dir, task)
-    eventlog.append_event(cfg.state_dir, "stage-started", repository=repository.name,
-                          issue=task.issue, stage=stage.value, model=str(entry))
+    _stage_started(cfg, task, launch)
     return task
+
+
+def _continued(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
+               launch: Launch, message: str = "", *, gh_config: str) -> tuple[TaskState, str]:
+    """Continue the stage's recorded conversation, else launch the stage
+    afresh, saying why. Unsaved, with no stage.json and no event."""
+    stage = task.continued_stage
+    record = read_session(cfg.state_dir, task.repository, task.issue)
+    if record is None or record.stage != stage.value:
+        detail = (f"new conversation: session recorded for {record.stage}" if record
+                  else "new conversation: no session recorded")
+        return _spawned(cfg, deps, repository, task, replace(launch, stage=stage),
+                        message=message or "Continue.", gh_config=gh_config), detail
+    _heal_identity(task)
+    block, drained = _drain(cfg, task.repository, task.issue)
+    text = "\n\n".join(filter(None, (message, block))) or "Continue."
+    text = implementation_grants.prepare(task.worktree, stage.value, launch.entry, launch.second, text)
+    deps.sessions.resume(task.repository, task.issue, task.worktree, text,
+                         launch.model, launch.entry.effort,
+                         second=launch.second, session_id=record.session_id,
+                         gh_config=gh_config)
+    messages.mark_delivered(cfg.state_dir, task.repository, task.issue, drained)
+    return replace(task, **NO_POKES), ""
+
+
+def _resumed(cfg: Config, task: TaskState, launch: Launch, detail: str) -> None:
+    eventlog.append_event(cfg.state_dir, "resumed", repository=task.repository,
+                          issue=task.issue, stage=task.stage.value,
+                          model=str(launch.entry), detail=detail)
 
 
 def _continue_or_restart(cfg: Config, deps: Deps, repository: Repository,
                          task: TaskState, launch: Launch,
                          message: str = "", *, gh_config: str) -> tuple[TaskState, str]:
     """Every continuation names its recorded conversation or launches afresh."""
-    stage = task.continued_stage
-    record = read_session(cfg.state_dir, task.repository, task.issue)
-    detail = ""
-    if record is not None and record.stage == stage.value:
-        _heal_identity(task)
-        block, drained = _drain(cfg, task.repository, task.issue)
-        text = "\n\n".join(filter(None, (message, block))) or "Continue."
-        text = implementation_grants.prepare(task.worktree, stage.value, launch.entry, launch.second, text)
-        deps.sessions.resume(task.repository, task.issue, task.worktree, text,
-                             launch.model, launch.entry.effort,
-                             second=launch.second, session_id=record.session_id,
-                             gh_config=gh_config)
-        messages.mark_delivered(cfg.state_dir, task.repository, task.issue, drained)
-        task = replace(task, **NO_POKES)
-    else:
-        detail = (f"new conversation: session recorded for {record.stage}" if record
-                  else "new conversation: no session recorded")
-        task = _launch_stage(cfg, deps, repository, task, replace(launch, stage=stage),
-                             message=message or "Continue.", gh_config=gh_config)
-    eventlog.append_event(cfg.state_dir, "resumed", repository=repository.name,
-                          issue=task.issue, stage=task.stage.value,
-                          model=str(launch.entry), detail=detail)
+    task, detail = _continued(cfg, deps, repository, task, launch, message,
+                              gh_config=gh_config)
+    if detail:
+        _write_working(task.worktree, task.continued_stage, launch.entry)
+        task = replace(task, updated_at=_now())
+        save(cfg.state_dir, task)
+        _stage_started(cfg, task, replace(launch, stage=task.continued_stage))
+    _resumed(cfg, task, launch, detail)
     return task, detail
 
 
@@ -854,10 +929,10 @@ def _end_session(cfg: Config, deps: Deps, repository: str, issue: int) -> None:
     clear_turn_markers(cfg.state_dir, repository, issue)
 
 
-def _answers_request(task: TaskState, artifact: str) -> AnswersRequest | None:
-    """The request for the answers page a park names, bound to the page's
-    revision on disk; None without a page, or for one outside the worktree
-    (an unusable reference). Answers of an earlier revision are dropped."""
+def _answers_page(task: TaskState, artifact: str) -> tuple[str, str] | None:
+    """The answers page a park names, worktree-relative, with its revision on
+    disk; None without a page, or for one outside the worktree (an unusable
+    reference)."""
     if not artifact:
         return None
     p = Path(artifact)
@@ -870,9 +945,7 @@ def _answers_request(task: TaskState, artifact: str) -> AnswersRequest | None:
     if problem:
         print(f"[warn] #{task.issue} answers page {wt_rel}: {problem}",
               file=sys.stderr)
-    request = AnswersRequest(path=wt_rel, fingerprint=fingerprint)
-    answers.discard_stale(task.worktree, request.kind, request.fingerprint)
-    return request
+    return wt_rel, fingerprint
 
 
 def _with_tail(note: str, tail: str) -> str:
@@ -880,23 +953,16 @@ def _with_tail(note: str, tail: str) -> str:
     return (note + ("\n\n" + tail if tail else "")).strip() or "(no detail)"
 
 
-def _asked(task: TaskState, is_answers: bool) -> bool:
-    """TaskState.asked after this park: once a spec or plan session asked."""
-    return task.asked or (is_answers and task.stage in (Stage.SPEC, Stage.PLAN))
-
-
 def _park_for_input(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
-                    note: str, artifact: str = "",
-                    is_answers: bool = False,
-                    reason: str = WHY_DECISION) -> None:
+                    note: str, reason: str = WHY_DECISION) -> None:
+    """The park of the events the table does not take yet: an unreached
+    repository (access) and the operator's park intent (ticket 08). A
+    session's own parks, answers included, are the table's."""
     tail = deps.sessions.capture_tail(task.repository, task.issue)
     login = relogin.classify_login(tail)
     if login is not None and _park_for_login(cfg, deps, repository, task, note,
                                              tail, login):
         return
-    answers_request = _answers_request(task, artifact)
-    if is_answers and answers_request is None:
-        note = (note + "\n\n[malformed awaiting-answers: no usable artifact path]").strip()
     msg_id = deps.notifier.send(
         "parked_question", issue=task.issue, title=task.title,
         url=_url(repository, task.issue), repository=repository.name,
@@ -904,12 +970,10 @@ def _park_for_input(cfg: Config, deps: Deps, repository: Repository, task: TaskS
     _end_session(cfg, deps, task.repository, task.issue)
     # A wake that ends here is over: the wake that follows this park says
     # for itself whether it is an attach, and on which model.
-    parked = park(task, PARK_HUMAN, note=note, msg_id=msg_id, reason=reason,
-                  request=answers_request)
+    parked = park(task, PARK_HUMAN, note=note, msg_id=msg_id, reason=reason)
     save(cfg.state_dir, replace(parked, slot=NO_SLOT,
                                 resume_model_override="",
                                 resume_bypass_usage=False,
-                                asked=_asked(task, is_answers),
                                 updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "parked", repository=repository.name,
                           issue=task.issue, stage=task.stage.value, detail=note)
@@ -1005,52 +1069,12 @@ _RETRY_HINT = {
 }
 
 
-def _retry_stage(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
-                 launch: Launch, act: RetryStage) -> None:
-    """Resume the spec or plan session with why its signal was rejected (a
-    track that is not configured, a review the stage does not have, the
-    ticket format check, a `done` nobody approved), in place, rather than
-    failing the task. The resume reads the transcript from the runtime's
-    mounted home, so context survives ending the (zombie) session first —
-    which we must do, or _launch would type the resume command INTO the
-    stopped session's input box (same failure mode as spawning over a live
-    session)."""
-    entry = launch.entry
-    # The token first, before anything changes: an App error leaves the
-    # rejected signal in place, so the next pass retries.
-    gh_config = _task_token(cfg, deps, repository, task)
-    if gh_config is None:
-        return
-    # Before resuming: the next pass must not re-read the rejected signal,
-    # re-check the still-unfixed work, and burn the retry immediately.
-    _write_working(task.worktree, act.stage, entry)
-    _end_session(cfg, deps, task.repository, task.issue)
-    text = (f"Your .agent/stage.json was rejected: {act.reason}. "
-            f"{_RETRY_HINT[act.stage]}")
-    task, _ = _continue_or_restart(cfg, deps, repository, task, launch, text,
-                                   gh_config=gh_config)
-    # A rejected plan is no longer on offer: the session's next ready report
-    # is checked and armed again.
-    save(cfg.state_dir, replace(unpark(loops.spend_retry(task, act.retry)),
-                                updated_at=_now()))
-    if act.stage is Stage.PLAN:
-        _notify(deps, repository, task, "plan_retry", act.reason)
-
-
-def _park_for_ci(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
-                 run_id: int) -> None:
-    _end_session(cfg, deps, task.repository, task.issue)
-    save(cfg.state_dir, replace(park(task, PARK_CI, ci_run_id=run_id),
-                                slot=NO_SLOT, updated_at=_now()))
-    eventlog.append_event(cfg.state_dir, "parked", repository=repository.name,
-                          issue=task.issue, stage=task.stage.value,
-                          detail=f"awaiting CI run {run_id}")
-
-
 def _grace_elapsed(cfg: Config, task: TaskState) -> bool:
     """Has the plan-review gate gone unanswered past the grace period?
-    `updated_at` was stamped when the stage flipped to AWAITING_PLAN_REVIEW,
-    so no extra timer field is needed and the pass stays stateless. An
+    `updated_at` was stamped when the task became held(plan-approval) for
+    this revision, and only a change of stage or status stamps it again
+    (_commit; an armed ready report read again changes neither), so no
+    extra timer field is needed and the pass stays stateless. An
     unparseable timestamp never expires — failing closed keeps a corrupt state
     file from parking the whole queue."""
     if cfg.spec_review_grace_minutes is None:
@@ -1076,43 +1100,6 @@ def _spec_note(pub: "spec_publish.PublishResult") -> str:
     if pub.error:
         return f"⚠️ spec is local only: {_redact_git_error(pub.error)}"
     return f"spec: {pub.url}"
-
-
-def _park_for_review(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
-                     reason: ReviewPark, request: PlanApprovalRequest | None,
-                     dry_run: bool = False) -> None:
-    """Park a task at the plan gate for a human to read whenever they wake
-    up. The only park that also releases the SLOT: the plan stage never used
-    the slot's ports and worktrees are per-issue, so resume can take any free
-    slot — and freeing it is the whole point, since a held slot would cap the
-    overnight run at max_slots(capacity) plans. A session that died with the
-    unattended rounds used up may have left no plan: the operator is told
-    that, not "plan ready"."""
-    died = reason is ReviewPark.SESSION_DIED
-    tail = deps.sessions.capture_tail(task.repository, task.issue)
-    note = tail.strip() or "(no detail)"
-    if task.spec_path:
-        pub = spec_publish.ensure_published(
-            worktree=task.worktree, branch=task.branch,
-            repo=repository.repo, issue=task.issue,
-            artifact=task.spec_path, dry_run=dry_run, auth=deps.github.auth)
-        note += f"\n{_spec_note(pub)}"
-    # No msg_id == 0 guard here (unlike _park_for_login): if the ping fails,
-    # the task is not stranded — the session is ended and the operator can still
-    # reach it via /attach, the console `resume` intent, or plain-text wakes.
-    # This matches the same reasoning in _park_for_input.
-    msg_id = deps.notifier.send(
-        "plan_session_stopped" if died else "plan_parked",
-        issue=task.issue, title=task.title, url=_url(repository, task.issue),
-        note=note, repository=repository.name, rounds=task.unattended_rounds)
-    _end_session(cfg, deps, task.repository, task.issue)
-    note = ("plan session stopped at the review gate" if died
-            else "plan ready for review")
-    parked = park(task, PARK_REVIEW, note=note, msg_id=msg_id, request=request)
-    save(cfg.state_dir, replace(parked, slot=NO_SLOT, updated_at=_now()))
-    eventlog.append_event(cfg.state_dir, "parked", repository=repository.name,
-                          issue=task.issue, stage=task.stage.value,
-                          detail=reason.value)
 
 
 def _wake_ci(cfg: Config, deps: Deps, repository: Repository) -> None:
@@ -1591,40 +1578,22 @@ def _fail_task_crash(cfg: Config, deps: Deps, repository: Repository,
     the whole box, every firing, until a human looked. A card in Failed is
     the far cheaper outcome, and the report carries the traceback.
 
-    The failure is written from the saved state: the turn may have persisted
-    a step (a done ticket, a started one) before it failed, and the caller's
-    `task` predates that write. From the caller's task when the state file
-    cannot be read: this function must not raise."""
-    error = traceback.format_exc()
+    The failure is decided (task-crashed) on the saved state: the turn may
+    have persisted a step before it failed, and the caller's `task` predates
+    that write. From the caller's task when the state file cannot be read,
+    and written directly when the table cannot read the task: this function
+    must not raise."""
+    turn = _Turn(cfg, deps, repository, None, None, dry_run, error=traceback.format_exc())
     try:
         task = load(cfg.state_dir, task.repository, task.issue) or task
     except Exception as exc:
         print(f"[warn] state of #{task.issue} unreadable after its crash: "
               f"{exc}", file=sys.stderr)
-    # Best-effort teardown: the point of this function is that nothing in it
-    # may raise, or we are back to killing the pass.
     try:
-        deps.github.release(repository, task.issue, "task crashed mid-pass")
+        _apply(turn, task, Event(EventType.TASK_CRASHED))
     except Exception as exc:
-        print(f"[warn] release failed for #{task.issue}: {exc}", file=sys.stderr)
-    try:
-        log_tail = deps.sessions.capture_tail(task.repository, task.issue, lines=30)
-    except Exception:
-        log_tail = ""
-    save(cfg.state_dir, _crash_failed(task))
-    eventlog.append_event(cfg.state_dir, "failed", repository=repository.name,
-                          issue=task.issue, stage=task.stage.value,
-                          detail="task crashed mid-pass")
-    # klass is not "session-crash": nothing is wrong inside the container,
-    # so this routes to infra_repo rather than the repository's repo.
-    rep = failures.FailureReport(
-        klass="task-crash", repository=repository.name, issue=task.issue,
-        title=f"task #{task.issue} crashed mid-pass: {task.title}",
-        error=error, log_tail=log_tail,
-        repro=f"agent-ops-dispatcher  # with task-{task.issue} at "
-              f"stage {task.stage.value}",
-        worktree=task.worktree)
-    failures.report_failure(cfg, deps, rep, dry_run=dry_run)
+        print(f"[warn] #{task.issue} failed outside the table: {exc}", file=sys.stderr)
+        save(cfg.state_dir, _crash_failed(task))
 
 
 def _awaiting_feedback_round(task: TaskState) -> bool:
@@ -1684,326 +1653,526 @@ def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit,
 
 @dataclass
 class _Turn:
-    """One task's drive turn: what every action handler reads, plus the
-    spec-publish line a later Notify in the same turn appends."""
+    """One task's turn: what the executor and its action handlers read, and
+    what an action leaves for after the commit."""
     cfg: Config
     deps: Deps
     repository: Repository
-    signal: object          # the stage signal read at the start of the turn
+    admit: Admit | None
+    order: Order | None
     dry_run: bool
-    spec_line: str = ""
-    launch_failed: bool = False   # a launch raised: the operator's choice is not used up
+    signal: StageSignal | None = None   # the stage signal read at the start of the turn
+    error: str = ""                     # the traceback of a crashed turn
+    tail: str | None = None             # the pane, read once before the session ends
+    spec_line: str = ""                 # the spec-publish line a later notice appends
+    launches: dict[Stage, Launch] = field(default_factory=dict)  # admitted, by stage
+    gh_config: str = ""
+    launched: bool = False              # a launch went through: the choice is used up
+    event: Event | None = None
+    msg_id: int = 0                     # the park question's message
+    after: list[Callable[[TaskState], None]] = field(default_factory=list)
 
 
-def _action_stage(act: object) -> Stage | None:
-    """The stage an action launches a session for; None when it launches none."""
-    if isinstance(act, RetryStage):
-        return act.stage  # _retry_stage resumes the session in place
-    return act.stage if isinstance(act, SpawnStage) else None
+class _LaunchFailed(Exception):
+    """A launch raised: what the hand-over accepted, and the stage that
+    could not start."""
+
+    def __init__(self, stage: Stage, accepted: TaskState):
+        super().__init__(stage.value)
+        self.stage, self.accepted = stage, accepted
 
 
-def _step_done(turn: _Turn, task: TaskState, act: object) -> TaskState:
-    """The task with the step `act` says is complete persisted, in a write of
-    its own, BEFORE the next launch is chosen and admitted: every reader of
-    the state (state.next_launch) then names the launch that waits. The
-    implement session done: its pick is dropped as review is chosen, so the
-    first PR feedback session chooses from its own list (models.FEEDBACK_PICK)
-    and never inherits the implement provider."""
-    if (task.stage is not Stage.IMPLEMENT or _action_stage(act) is not Stage.REVIEW
-            or IMPLEMENT_PICK not in task.picks):
-        return task
-    done = replace(task, picks={k: v for k, v in task.picks.items()
-                                if k != IMPLEMENT_PICK})
-    save(turn.cfg.state_dir, done)
-    return done
+def _apply(turn: _Turn, task: TaskState, event: Event) -> None:
+    """Decide `event` for `task` and execute what the table answers: the
+    actions that end or start a session, then one commit and its
+    `transition` event, then the notices (ADR 0015)."""
+    outcome = decide(task, event)
+    if not isinstance(outcome, Transition):
+        log.debug("#%s %s: %s", task.issue, event.type.value, outcome.reason)
+        return
+    turn.event = event
+    if _launches(outcome) and not _token(turn, task):
+        return
+    _execute(turn, task, outcome)
+    if turn.launched:
+        _consume_execution_choice(turn.cfg, task.repository, task.issue)
 
 
-# Handlers return the task to keep driving, or None to end the task's turn.
-
-def _on_noop(turn: _Turn, task: TaskState, act: NoOp,
-             launch: Launch | None) -> TaskState:
-    return task
-
-
-def _on_apply_decision(turn: _Turn, task: TaskState, act: ApplyDecision,
-                       launch: Launch | None) -> TaskState | None:
-    cfg, deps, repository = turn.cfg, turn.deps, turn.repository
-    task, parked = _apply_loop_decision(
-        cfg, deps, repository, task, act.decision,
-        park_exhausted=lambda t, note: _park_for_input(cfg, deps, repository, t, note,
-                                                       reason=WHY_LOOP_CAP))
-    return None if parked else task
-
-
-def _on_park_for_input(turn: _Turn, task: TaskState, act: ParkForInput,
-                       launch: Launch | None) -> None:
-    _park_for_input(turn.cfg, turn.deps, turn.repository, task, act.note,
-                    artifact=act.artifact, is_answers=act.is_answers,
-                    reason=act.reason)
-
-
-def _plan_approval(task: TaskState, artifact: str) -> PlanApprovalRequest:
-    """Arm the gate's request: the plan session's review page, bound to the
-    plan revision that is on disk now. The answers of an earlier round go
-    (answers.discard_stale)."""
-    revision = plan_revision(task.worktree, artifact, task.spec_path)
-    answers.discard_stale(task.worktree, "plan-approval", revision.fingerprint)
-    return PlanApprovalRequest(path=revision.path, fingerprint=revision.fingerprint)
-
-
-def _on_disarm_plan_approval(turn: _Turn, task: TaskState,
-                             act: DisarmPlanApproval,
-                             launch: Launch | None) -> TaskState:
-    task = unpark(task)
-    save(turn.cfg.state_dir, task)
-    return task
-
-
-def _on_park_for_review(turn: _Turn, task: TaskState, act: ParkForReview,
-                        launch: Launch | None) -> None:
-    request = (task.operator_request if act.artifact is None
-               else _plan_approval(task, act.artifact))
-    _park_for_review(turn.cfg, turn.deps, turn.repository, task, act.reason,
-                     request, dry_run=turn.dry_run)
-
-
-def _on_park_for_ci(turn: _Turn, task: TaskState, act: ParkForCI,
-                    launch: Launch | None) -> None:
-    _park_for_ci(turn.cfg, turn.deps, turn.repository, task, act.run_id)
-
-
-def _on_retry_stage(turn: _Turn, task: TaskState, act: RetryStage,
-                    launch: Launch) -> None:
-    _retry_stage(turn.cfg, turn.deps, turn.repository, task, launch, act)
-
-
-def _enter_stage(task: TaskState, act: SetTaskStage, signal) -> TaskState:
-    """task moved to act.stage with what that move sets: a terminal stage
-    ends it; a finished plan enters the gate; pr-open links its PR; any
-    other stage runs on, with no request left to approve (a task that left
-    the gate)."""
-    if act.stage in TERMINAL_STAGES:
-        return end(task, act.stage)
-    if act.stage is Stage.AWAITING_PLAN_REVIEW:
-        return _enter_gate(task, act)
-    if act.stage is Stage.PR_OPEN:
-        return _enter_pr_open(task, signal)
-    return replace(unpark(task), stage=act.stage)
-
-
-def _enter_gate(task: TaskState, act: SetTaskStage) -> TaskState:
-    """A finished plan at the gate: held on its plan-approval request, with
-    the gate's round fields."""
-    return replace(unpark(task, request=_plan_approval(task, act.artifact)),
-                   stage=Stage.AWAITING_PLAN_REVIEW, **_gate_round_fields(task))
-
-
-def _gate_round_fields(task: TaskState) -> dict:
-    """The gate's round fields; a plan entering the gate starts the gate
-    phase's own retries."""
-    extra = dict(loops.gate_fields(task))
-    if task.stage is Stage.PLAN:
-        extra.update(plan_retries=0, plan_slips=0)
-    return extra
-
-
-def _enter_pr_open(task: TaskState, signal) -> TaskState:
-    """pr-open, with the PR number its signal links (kept when none)."""
-    m = re.search(r"/pull/(\d+)", _signal_text(signal))
-    return replace(unpark(task), stage=Stage.PR_OPEN,
-                   pr_number=int(m.group(1)) if m else task.pr_number)
-
-
-def _signal_text(signal) -> str:
-    """Where a stage signal may carry a link: its artifact, else its note."""
-    return (signal.artifact or signal.note or "") if signal is not None else ""
-
-
-def _on_set_task_stage(turn: _Turn, task: TaskState, act: SetTaskStage,
-                       launch: Launch | None) -> TaskState:
-    cfg = turn.cfg
-    clear_turn_markers(cfg.state_dir, task.repository, task.issue)
-    task = replace(_enter_stage(task, act, turn.signal), updated_at=_now())
-    save(cfg.state_dir, task)
-    if act.stage is Stage.PR_OPEN:
-        eventlog.append_event(cfg.state_dir, "pr-opened",
-                              repository=turn.repository.name, issue=task.issue,
-                              stage=act.stage.value)
-    return task
-
-
-def _on_publish_spec(turn: _Turn, task: TaskState, act: PublishSpec,
-                     launch: Launch | None) -> TaskState:
-    pub = spec_publish.ensure_published(
-        worktree=task.worktree, branch=task.branch,
-        repo=turn.repository.repo, issue=task.issue,
-        artifact=task.spec_path, dry_run=turn.dry_run, auth=turn.deps.github.auth)
-    turn.spec_line = _spec_note(pub)
-    if act.review and not pub.error:
-        try:
-            turn.deps.github.comment(
-                turn.repository, task.issue, f"📝 Plan ready for review: {pub.url}")
-        except Exception as exc:
-            print(f"[warn] spec link comment failed for "
-                  f"#{task.issue}: {exc}", file=sys.stderr)
-    return task
-
-
-def _on_notify(turn: _Turn, task: TaskState, act: Notify,
-               launch: Launch | None) -> TaskState:
-    note = act.note + (f"\n{turn.spec_line}" if turn.spec_line else "")
-    _notify(turn.deps, turn.repository, task, act.template, note)
-    return task
-
-
-def _on_spawn_stage(turn: _Turn, task: TaskState, act: SpawnStage,
-                    launch: Launch) -> TaskState | None:
-    # The token before anything changes: an App error leaves the hand-over
-    # (its signal) for the next pass; an unreached repository parks the task.
-    gh_config = _task_token(turn.cfg, turn.deps, turn.repository, task)
-    if gh_config is None:
-        return None
-    # The previous stage's session is usually still alive here — an
-    # interactive session cannot exit itself. _launch would type
-    # the next stage's podman command INTO it (and the container
-    # name would collide). End it first; no-op when already dead.
-    _end_session(turn.cfg, turn.deps, task.repository, task.issue)
-    # The spec session's `done` hands spec.md and the track over to plan; a
-    # plan session respawned from the gate keeps both.
-    spec_path = ""
-    if task.stage is Stage.SPEC and act.stage is Stage.PLAN:
-        spec_path = turn.signal.artifact
-        task = replace(task, track=turn.signal.track)
-    elif task.stage is Stage.AWAITING_PLAN_REVIEW:
-        task = replace(task, **loops.gate_fields(task, respawn=act.stage is Stage.PLAN))
-    if act.tickets:
-        task = replace(task, ticket_count=act.tickets)
+def _execute(turn: _Turn, task: TaskState, t: Transition) -> None:
+    before = task.at
+    if turn.tail is None and any(isinstance(a, Notify) and a.template in _TAIL_NOTICES
+                                 for a in t.actions):
+        turn.tail = turn.deps.sessions.capture_tail(task.repository, task.issue)
     try:
-        return _spawn_stage(turn.cfg, turn.deps, turn.repository, task, launch, spec_path,
-                            gh_config=gh_config)
-    except Exception:
-        # What the previous stage handed over is accepted (a checked spec, an
-        # approved or gate-free plan); only this launch failed. So the task
-        # fails as crashed in the stage it could not start, and Resume starts
-        # that stage: an implement task asks for no second approval, and no
-        # earlier stage runs again. The hand-over is saved first: the failure
-        # is written from the saved state (_fail_task_crash).
-        turn.launch_failed = True
-        accepted = replace(task, stage=act.stage,
-                           spec_path=spec_path or task.spec_path)
-        try:
-            save(turn.cfg.state_dir, accepted)
-        except Exception as exc:
-            print(f"[warn] hand-over of #{task.issue} not saved: {exc}",
-                  file=sys.stderr)
-        _fail_task_crash(turn.cfg, turn.deps, turn.repository, accepted,
-                         turn.dry_run)
-        return None
+        after = _act(turn, task, t)
+    except _LaunchFailed as failed:
+        turn.error, turn.after = traceback.format_exc(), []
+        turn.event = Event(EventType.LAUNCH_FAILED, LaunchFailure(failed.stage))
+        t = decide(task, turn.event)
+        after = _act(turn, failed.accepted, t)
+    _settle(turn, _commit(turn, before, after, t), t)
 
 
-def _on_handle_crash(turn: _Turn, task: TaskState, act: HandleCrash,
-                     launch: Launch | None) -> TaskState:
-    cfg, deps, repository = turn.cfg, turn.deps, turn.repository
-    _notify(deps, repository, task, "session_crashed")
-    deps.github.release(repository, task.issue, "session crashed mid-stage")
-    save(cfg.state_dir, _crash_failed(task))
-    eventlog.append_event(cfg.state_dir, "failed", repository=repository.name,
-                          issue=task.issue, stage=task.stage.value,
-                          detail="session crashed mid-stage")
-    _report_session_crash(cfg, deps, repository, task, turn.dry_run)
-    # End last: _report_session_crash reads the pane first. end()
-    # snapshots the crash output for the console and closes the
-    # dead tab — the one session-ending transition that otherwise
-    # left both behind.
-    _end_session(cfg, deps, task.repository, task.issue)
-    return task
+def _look(turn: _Turn, task: TaskState) -> Look:
+    """What classify reads of the session only when its event needs it."""
+    return Look(pane=lambda: Pane.UNKNOWN if turn.dry_run else _pane(turn.deps, task),
+                login=lambda: _login_prompt(turn, task),
+                launches=lambda stages: _admissions(turn, task, stages))
 
 
-def _on_record_background_wait(turn: _Turn, task: TaskState,
-                               act: RecordBackgroundWait,
-                               launch: Launch | None) -> TaskState:
-    task = replace(task, background_reported=act.reported,
-                   background_seq=act.seq, **NO_POKES)
-    save(turn.cfg.state_dir, task)
-    return task
-
-
-STOPPED_NOTE = "(session stopped mid-stage waiting for input)"
-
-
-class _PokeGuard(Enum):
-    """What herdr and the pane say right before a poke is typed."""
-    UNKNOWN = "herdr or the pane cannot be read"
-    WORKING = "the session started a turn after the idle read"
-    AT_PROMPT = "a permission, trust or login prompt"
-    CLEAR = "a stopped session at its composer"
-
-
-def _poke_guard(deps: Deps, task: TaskState) -> _PokeGuard:
+def _pane(deps: Deps, task: TaskState) -> Pane:
     """One read of herdr and one of the pane. Text plus Enter in a prompt
     can approve an action without the operator, so a read that failed is
     never taken as "no prompt"."""
     state = deps.sessions.agent_state(task.repository, task.issue)
     tail = deps.sessions.capture_tail(task.repository, task.issue)
     if state is None or not tail.strip():
-        return _PokeGuard.UNKNOWN
+        return Pane.UNKNOWN
     if state[0] == "working":
-        return _PokeGuard.WORKING
+        return Pane.WORKING
     if state[0] == "blocked" or relogin.classify_login(tail) is not None:
-        return _PokeGuard.AT_PROMPT
-    return _PokeGuard.CLEAR
+        return Pane.PROMPT
+    return Pane.CLEAR
 
 
-def _send_poke(turn: _Turn, task: TaskState, act: Poke) -> TaskState:
+def _login_prompt(turn: _Turn, task: TaskState) -> str:
+    """The login prompt in the pane of a session that holds a slot, where a
+    park holds instead; the pane is kept for the notice."""
+    if not occupies(task.at.status):
+        return ""
+    turn.tail = turn.deps.sessions.capture_tail(task.repository, task.issue)
+    login = relogin.classify_login(turn.tail)
+    if login is None:
+        return ""
+    return login.url or "(attach to the session to see the URL)"
+
+
+def _admissions(turn: _Turn, task: TaskState,
+                stages: tuple[Stage, ...]) -> tuple[Admission, ...]:
+    """Each launch an event's rule may start, chosen as every launch is
+    (_choose_launch), read before decide; the admitted ones are kept for the
+    executor. A saved choice is dropped only when it may apply to none of
+    them: it may be meant for the one the rule does not pick."""
+    saved = {stage: _saved_override(turn.cfg, task, stage) for stage in stages}
+    _drop_if_refused_by_all(turn.cfg, task, saved)
+    return tuple(_admission(turn, task, stage, saved[stage][0]) for stage in stages)
+
+
+def _drop_if_refused_by_all(cfg: Config, task: TaskState, saved: dict) -> None:
+    refusals = [(stage, why) for stage, (_, why) in saved.items() if why]
+    if saved and len(refusals) == len(saved):
+        _drop_override(cfg, task, *refusals[0])
+
+
+def _admission(turn: _Turn, task: TaskState, stage: Stage,
+               override: execution_overrides.ExecutionOverride | None) -> Admission:
+    launch, _bypass, why = _choose_launch(turn.cfg, turn.repository, task, stage,
+                                          turn.admit, turn.order, override)
+    if launch is not None:
+        turn.launches[stage] = launch
+    return Admission(stage, admitted=launch is not None,
+                     stranded=config_note(why) if why else "")
+
+
+def _launch_action(t: Transition) -> RespawnStage | RetryStage | None:
+    return next((a for a in t.actions if isinstance(a, (RespawnStage, RetryStage))), None)
+
+
+def _launches(t: Transition) -> bool:
+    return _launch_action(t) is not None
+
+
+def _token(turn: _Turn, task: TaskState) -> bool:
+    """The launch's token before anything changes: an App error leaves the
+    turn for the next pass; an unreached repository parks the task."""
+    gh_config = _task_token(turn.cfg, turn.deps, turn.repository, task)
+    turn.gh_config = gh_config or ""
+    return gh_config is not None
+
+
+def _act(turn: _Turn, task: TaskState, t: Transition) -> TaskState:
+    for act in t.actions:
+        task = _ACT[type(act)](turn, task, act)
+    return task
+
+
+def _commit(turn: _Turn, before: At, after: TaskState, t: Transition) -> TaskState:
+    """The one save of a transition, and its `transition` event. updated_at
+    moves only with the stage or the status: the grace clock and the wake
+    order read it."""
+    changed = (before.stage, before.status) != (t.stage, t.status)
+    stored = replace(legacy_fields(after, t.stage, t.status),
+                     slot=after.slot if occupies(t.status) else NO_SLOT,
+                     updated_at=_now() if changed else after.updated_at,
+                     **_parked_choice(t.status))
+    _discard_stale_answers(before, t, stored)
+    save(turn.cfg.state_dir, stored)
+    eventlog.append_event(turn.cfg.state_dir, "transition", repository=stored.repository,
+                          issue=stored.issue, stage=t.stage.value,
+                          transition={"from": before.status.kind.value,
+                                      "event": turn.event.type.value,
+                                      "to": t.status.kind.value, "stage": t.stage.value})
+    return stored
+
+
+def _parked_choice(status: Status) -> dict:
+    """A park for the operator ends a wake: the wake that follows it says
+    for itself on which model."""
+    if status.kind in (Kind.PARKED_HUMAN, Kind.PARKED_ANSWERS):
+        return {"resume_model_override": "", "resume_bypass_usage": False}
+    return {}
+
+
+def _discard_stale_answers(before: At, t: Transition, task: TaskState) -> None:
+    """A newly armed request drops the answers of an earlier revision."""
+    request = operator_request(At(t.stage, t.status))
+    if request is None:
+        return
+    old = operator_request(before)
+    if old is None or (old.kind, old.path, old.fingerprint) != (
+            request.kind, request.path, request.fingerprint):
+        answers.discard_stale(task.worktree, request.kind, request.fingerprint)
+
+
+def _settle(turn: _Turn, saved: TaskState, t: Transition) -> None:
+    """After the commit: the history events, then the notices in the order
+    the actions named them; a park keeps the message that asked."""
+    _legacy_event(turn, saved, t)
+    for effect in turn.after:
+        effect(saved)
+    _remember_question(turn, saved)
+
+
+def _remember_question(turn: _Turn, saved: TaskState) -> None:
+    """The one write after the commit: the id of the message a park's notice
+    got, which only the send returns, and the notice goes out only after the
+    commit (ADR 0015). An operator's reply to it is matched by that id; a
+    crash before this write leaves 0, which the console shows as a question
+    not yet sent. A fact, never the stage or the status."""
+    if turn.msg_id and saved.park:
+        save(turn.cfg.state_dir, replace(saved, park_msg_id=turn.msg_id))
+
+
+_REVIEW_PARKED = {EventType.GRACE_EXPIRED: "plan review grace expired",
+                  EventType.SESSION_SIGNAL: "unattended review rounds used up",
+                  EventType.SESSION_DIED: ("plan session died at the gate; "
+                                           "unattended rounds used up")}
+_FAILED = {FailReason.SESSION_CRASH: "session crashed mid-stage",
+           FailReason.TASK_CRASH: "task crashed mid-pass"}
+
+
+# The event the console's history reads for a park or a crash, by status.
+_HISTORY: dict[Kind, Callable[[Event, Status], str]] = {
+    Kind.PARKED_HUMAN: lambda e, s: s.note,
+    Kind.PARKED_ANSWERS: lambda e, s: s.note,
+    Kind.HELD_LOGIN: lambda e, s: "needs re-login: " + s.note,
+    Kind.PARKED_CI: lambda e, s: f"awaiting CI run {s.run_id}",
+    Kind.PARKED_REVIEW: lambda e, s: _REVIEW_PARKED[e.type],
+}
+
+
+def _history(event: Event, status: Status) -> tuple[str, str] | None:
+    if status.kind in _HISTORY:
+        return "parked", _HISTORY[status.kind](event, status)
+    if status.kind is Kind.FAILED and status.reason in _FAILED:
+        return "failed", _FAILED[status.reason]
+    return None
+
+
+def _legacy_event(turn: _Turn, saved: TaskState, t: Transition) -> None:
+    entry = _history(turn.event, t.status)
+    if entry is not None:
+        stage = t.stage if saved.stage is Stage.FAILED else saved.stage
+        eventlog.append_event(turn.cfg.state_dir, entry[0], repository=saved.repository,
+                              issue=saved.issue, stage=stage.value, detail=entry[1])
+
+
+# ---- action handlers: (turn, task, action) -> the task they leave ----------
+
+def _acquire_slot(turn: _Turn, task: TaskState, act: AcquireSlot) -> TaskState:
+    if task.slot != NO_SLOT:
+        return task
+    slot = allocate_slot(load_all(turn.cfg.state_dir), max_slots(turn.cfg.capacity))
+    if slot is None:
+        raise RuntimeError(f"#{task.issue}: no free slot for its launch")
+    return replace(task, slot=slot)
+
+
+def _release_slot(turn: _Turn, task: TaskState, act: ReleaseSlot) -> TaskState:
+    return replace(task, slot=NO_SLOT)
+
+
+def _ended(turn: _Turn, task: TaskState, act: EndSession) -> TaskState:
+    _end_session(turn.cfg, turn.deps, task.repository, task.issue)
+    return task
+
+
+def _handover(turn: _Turn, task: TaskState, act: RespawnStage) -> tuple[TaskState, str]:
+    """What the previous stage hands the launch: the spec session's `done`
+    hands spec.md and the track to plan; a step from the gate is a round
+    there; an implement start records its ticket set."""
+    spec_path = ""
+    if task.stage is Stage.SPEC and act.stage is Stage.PLAN:
+        spec_path = turn.signal.artifact
+        task = replace(task, track=turn.signal.track)
+    elif at_gate(task):
+        task = replace(task, **loops.gate_fields(task, respawn=act.stage is Stage.PLAN))
+    if act.tickets:
+        task = replace(task, ticket_count=act.tickets)
+    return task, spec_path
+
+
+def _respawned(turn: _Turn, task: TaskState, act: RespawnStage) -> TaskState:
+    """The previous stage's session is usually still alive: an interactive
+    session cannot exit itself, and the launch would type the next stage's
+    command INTO it. End it first. stage.json says `working` before the
+    launch (which refuses an .agent that is not a real directory), so the
+    new session's own report is never overwritten and the old one is never
+    read again; it keeps the hand-over, so a dispatcher killed before the
+    commit repeats the launch."""
+    task, spec_path = _handover(turn, task, act)
+    launch = turn.launches[act.stage]
+    _end_session(turn.cfg, turn.deps, task.repository, task.issue)
+    task = loops.reset(task, ResetCause.STAGE_STARTED)
+    try:
+        _write_launching(task.worktree, act.stage, launch.entry)
+        task = _spawned(turn.cfg, turn.deps, turn.repository, task, launch, spec_path,
+                        gh_config=turn.gh_config)
+    except Exception as exc:
+        raise _LaunchFailed(act.stage, replace(task, stage=act.stage,
+                                               spec_path=spec_path or task.spec_path)) from exc
+    turn.launched = True
+    turn.after.append(lambda saved: _working_launched(turn, saved, launch))
+    return task
+
+
+def _working_launched(turn: _Turn, saved: TaskState, launch: Launch) -> None:
+    _stage_started(turn.cfg, saved, launch)
+
+
+# What a resumed session is told to do about its rejected signal.
+_RETRY_HINT = {
+    Stage.SPEC: ("Re-write the signal to fix that (the track list, with each "
+                 "track's meaning, is in your stage prompt)."),
+    Stage.PLAN: ("Fix that in place, then re-write the signal (the signals, "
+                 "and the track list with each track's meaning, are in your "
+                 "stage prompt). The ticket set under .agent/tickets/ must be "
+                 "files named NN-slug.md numbered contiguously from 01 with no "
+                 "gaps or duplicates, each with a 'What to build' section, a "
+                 "'Blocked by' line and at least one unchecked '- [ ]' "
+                 "criterion. Do not re-plan from scratch."),
+}
+
+
+def _retried(turn: _Turn, task: TaskState, act: RetryStage) -> TaskState:
+    """Resume the spec or plan session with why its signal was rejected, in
+    place, rather than failing the task. The resume reads the transcript
+    from the runtime's mounted home, so the (zombie) session is ended first,
+    or the resume command would be typed INTO its input box."""
+    _end_session(turn.cfg, turn.deps, task.repository, task.issue)
+    text = f"Your .agent/stage.json was rejected: {act.reason}. {_RETRY_HINT[act.stage]}"
+    launch = turn.launches[act.stage]
+    try:
+        _write_working(task.worktree, act.stage, launch.entry)
+        task, detail = _continued(turn.cfg, turn.deps, turn.repository, task, launch,
+                                  text, gh_config=turn.gh_config)
+    except Exception as exc:
+        raise _LaunchFailed(act.stage, task) from exc
+    turn.launched = True
+    turn.after.append(lambda saved: _working_resumed(turn, saved, launch, detail))
+    return loops.spend_retry(task, act.retry)
+
+
+def _working_resumed(turn: _Turn, saved: TaskState, launch: Launch, detail: str) -> None:
+    if detail:
+        _stage_started(turn.cfg, saved, launch)
+    _resumed(turn.cfg, saved, launch, detail)
+
+
+def _published(turn: _Turn, task: TaskState, act: PublishSpec) -> TaskState:
+    """The spec folder committed and pushed before anyone is told; the link
+    (or a local-only warning) rides in the next notice, and the issue's
+    comment is posted after the commit, like every notice."""
+    if not task.spec_path:
+        return task
+    pub = spec_publish.ensure_published(
+        worktree=task.worktree, branch=task.branch,
+        repo=turn.repository.repo, issue=task.issue,
+        artifact=task.spec_path, dry_run=turn.dry_run, auth=turn.deps.github.auth)
+    turn.spec_line = _spec_note(pub)
+    if act.review and not pub.error:
+        turn.after.append(lambda saved: _comment_spec(turn, saved, pub.url))
+    return task
+
+
+def _comment_spec(turn: _Turn, task: TaskState, url: str) -> None:
+    try:
+        turn.deps.github.comment(turn.repository, task.issue,
+                                 f"📝 Plan ready for review: {url}")
+    except Exception as exc:
+        print(f"[warn] spec link comment failed for #{task.issue}: {exc}", file=sys.stderr)
+
+
+def _counted(turn: _Turn, task: TaskState, act: ApplyRound) -> TaskState:
+    turn.after.append(lambda saved: _round_told(turn, saved, act.decision))
+    return act.decision.apply_to(task)
+
+
+def _round_told(turn: _Turn, saved: TaskState, d: Decision) -> None:
+    eventlog.append_event(turn.cfg.state_dir, "round", repository=saved.repository,
+                          issue=saved.issue, stage=saved.stage.value, detail=d.description)
+    if d.outcome is Outcome.LAST_ROUND:
+        _notify(turn.deps, turn.repository, saved, "last_round",
+                f"{d.loop.value} round {d.round}/{d.cap}")
+
+
+def _poked(turn: _Turn, task: TaskState, act: Poke) -> TaskState:
     """The first attempt starts the cap clock, delivered or not: a pane that
     refuses text every pass is then still parked at the cap. Only a
     delivered poke is counted and logged."""
     task = replace(task, poked_since=task.poked_since or time.time())
     if not turn.deps.sessions.send_text(task.repository, task.issue, act.text):
-        save(turn.cfg.state_dir, task)
         print(f"[warn] poke of #{task.issue} not delivered", file=sys.stderr)
         return task
-    task = replace(task, pokes=task.pokes + 1)
-    save(turn.cfg.state_dir, task)
-    eventlog.append_event(turn.cfg.state_dir, "poked", repository=turn.repository.name,
-                          issue=task.issue, stage=task.stage.value,
-                          detail=f"poke {task.pokes}")
+    turn.after.append(lambda saved: eventlog.append_event(
+        turn.cfg.state_dir, "poked", repository=saved.repository, issue=saved.issue,
+        stage=saved.stage.value, detail=f"poke {saved.pokes}"))
+    return replace(task, pokes=task.pokes + 1)
+
+
+def _stretch_ended(turn: _Turn, task: TaskState, act: EndPokeStretch) -> TaskState:
+    return replace(task, **NO_POKES)
+
+
+def _wait_recorded(turn: _Turn, task: TaskState, act: RecordBackgroundWait) -> TaskState:
+    return replace(task, background_reported=act.reported, background_seq=act.seq,
+                   **NO_POKES)
+
+
+def _crash_reported(turn: _Turn, task: TaskState, act: ReportCrash) -> TaskState:
+    """The card goes back; the pane is read for the report before the
+    session is ended, and the report is filed after the commit."""
+    turn.deps.github.release(turn.repository, task.issue, "session crashed mid-stage")
+    log_tail = turn.deps.sessions.capture_tail(task.repository, task.issue, lines=30)
+    turn.after.append(lambda saved: _report_session_crash(
+        turn.cfg, turn.deps, turn.repository, task, turn.dry_run, log_tail))
     return task
 
 
-def _on_poke(turn: _Turn, task: TaskState, act: Poke,
-             launch: Launch | None) -> TaskState | None:
-    """Type the poke into the stopped session, unless the look at herdr and
-    the pane right before it says otherwise: unknown holds (nothing typed,
-    nothing changed, the next pass tries again), a new turn ends the poke
-    stretch, and a prompt parks the task with nothing typed."""
-    if turn.dry_run:
-        return task
-    guard = _poke_guard(turn.deps, task)
-    if guard is _PokeGuard.UNKNOWN:
-        return task
-    if guard is _PokeGuard.WORKING:
-        return _end_poke_stretch(turn.cfg, task, 0.0, False)
-    if guard is _PokeGuard.AT_PROMPT:
-        return _on_park_for_input(turn, task, ParkForInput(STOPPED_NOTE), launch)
-    return _send_poke(turn, task, act)
+def _task_crash_reported(turn: _Turn, task: TaskState, act: ReportTaskCrash) -> TaskState:
+    """Best-effort teardown: nothing here may raise, or the pass dies with
+    the task."""
+    try:
+        turn.deps.github.release(turn.repository, task.issue, "task crashed mid-pass")
+    except Exception as exc:
+        print(f"[warn] release failed for #{task.issue}: {exc}", file=sys.stderr)
+    try:
+        log_tail = turn.deps.sessions.capture_tail(task.repository, task.issue, lines=30)
+    except Exception:
+        log_tail = ""
+    turn.after.append(lambda saved: _report_task_crash(turn, task, log_tail))
+    return task
 
 
-_DRIVE: dict[type, Callable[..., TaskState | None]] = {
-    NoOp: _on_noop,
-    RecordBackgroundWait: _on_record_background_wait,
-    Poke: _on_poke,
-    ApplyDecision: _on_apply_decision,
-    ParkForInput: _on_park_for_input,
-    DisarmPlanApproval: _on_disarm_plan_approval,
-    ParkForReview: _on_park_for_review,
-    ParkForCI: _on_park_for_ci,
-    RetryStage: _on_retry_stage,
-    SetTaskStage: _on_set_task_stage,
-    PublishSpec: _on_publish_spec,
-    Notify: _on_notify,
-    SpawnStage: _on_spawn_stage,
-    HandleCrash: _on_handle_crash,
+def _report_task_crash(turn: _Turn, task: TaskState, log_tail: str) -> None:
+    # klass is not "session-crash": nothing is wrong inside the container,
+    # so this routes to infra_repo rather than the repository's repo.
+    rep = failures.FailureReport(
+        klass="task-crash", repository=turn.repository.name, issue=task.issue,
+        title=f"task #{task.issue} crashed mid-pass: {task.title}",
+        error=turn.error, log_tail=log_tail,
+        repro=f"agent-ops-dispatcher  # with task-{task.issue} at stage {task.stage.value}",
+        worktree=task.worktree)
+    failures.report_failure(turn.cfg, turn.deps, rep, dry_run=turn.dry_run)
+
+
+def _marked_asked(turn: _Turn, task: TaskState, act: MarkAsked) -> TaskState:
+    return replace(task, asked=True)
+
+
+def _gate_entered(turn: _Turn, task: TaskState, act: EnterGate) -> TaskState:
+    return replace(task, **_gate_round_fields(task))
+
+
+def _gate_round_fields(task: TaskState) -> dict:
+    """The gate's round fields; a plan entering the gate starts the gate
+    phase's own retries."""
+    extra = dict(loops.gate_fields(task))
+    if not at_gate(task):
+        extra.update(plan_retries=0, plan_slips=0)
+    return extra
+
+
+def _pr_linked(turn: _Turn, task: TaskState, act: LinkPR) -> TaskState:
+    """pr-open, with the PR number its signal links (kept when none): the
+    artifact, else the note."""
+    clear_turn_markers(turn.cfg.state_dir, task.repository, task.issue)
+    text = (turn.signal.artifact or turn.signal.note or "") if turn.signal else ""
+    m = re.search(r"/pull/(\d+)", text)
+    turn.after.append(lambda saved: eventlog.append_event(
+        turn.cfg.state_dir, "pr-opened", repository=saved.repository, issue=saved.issue,
+        stage=Stage.PR_OPEN.value))
+    return replace(task, pr_number=int(m.group(1)) if m else task.pr_number)
+
+
+def _wake_blocked(turn: _Turn, task: TaskState, act: WakeBlocked) -> TaskState:
+    _mark_wake_blocked(turn.cfg, turn.repository, task, act.reason)
+    return task
+
+
+def _markers_cleared(turn: _Turn, task: TaskState, act: ClearTurnMarkers) -> TaskState:
+    clear_turn_markers(turn.cfg.state_dir, task.repository, task.issue)
+    return replace(task, **NO_POKES)
+
+
+def _noticed(turn: _Turn, task: TaskState, act: Notify) -> TaskState:
+    turn.after.append(lambda saved: _send_notice(turn, saved, act))
+    return task
+
+
+def _question(turn: _Turn, saved: TaskState, act: Notify) -> dict:
+    return {"note": _with_tail(act.note, turn.tail or "")}
+
+
+def _relogin(turn: _Turn, saved: TaskState, act: Notify) -> dict:
+    return {"note": _with_tail(act.note, turn.tail or ""), "login_url": login_at(turn.event)}
+
+
+def _plan_parked(turn: _Turn, saved: TaskState, act: Notify) -> dict:
+    note = (turn.tail or "").strip() or "(no detail)"
+    return {"note": note + (f"\n{turn.spec_line}" if turn.spec_line else ""),
+            "rounds": saved.unattended_rounds}
+
+
+def _plain(turn: _Turn, saved: TaskState, act: Notify) -> dict:
+    return {"note": act.note + (f"\n{turn.spec_line}" if turn.spec_line else "")}
+
+
+# The notices that carry the pane, and how each is worded.
+_NOTICES = {"parked_question": _question, "needs_relogin": _relogin,
+            "plan_parked": _plan_parked, "plan_session_stopped": _plan_parked}
+_TAIL_NOTICES = frozenset(_NOTICES)
+
+
+def _send_notice(turn: _Turn, saved: TaskState, act: Notify) -> None:
+    ctx = _NOTICES.get(act.template, _plain)(turn, saved, act)
+    msg_id = turn.deps.notifier.send(act.template, issue=saved.issue, title=saved.title,
+                                     url=_url(turn.repository, saved.issue),
+                                     repository=turn.repository.name, **ctx)
+    if act.template in _TAIL_NOTICES:
+        turn.msg_id = msg_id
+
+
+# The actions a session event emits; the other event families wire theirs
+# with their own tickets (#132).
+_ACT: dict[type, Callable[..., TaskState]] = {
+    AcquireSlot: _acquire_slot, ReleaseSlot: _release_slot, EndSession: _ended,
+    RespawnStage: _respawned, RetryStage: _retried, PublishSpec: _published,
+    ApplyRound: _counted, Poke: _poked, EndPokeStretch: _stretch_ended,
+    RecordBackgroundWait: _wait_recorded, ReportCrash: _crash_reported,
+    ReportTaskCrash: _task_crash_reported, MarkAsked: _marked_asked, EnterGate: _gate_entered,
+    LinkPR: _pr_linked, ClearTurnMarkers: _markers_cleared, Notify: _noticed,
+    WakeBlocked: _wake_blocked,
 }
 
 
@@ -2036,12 +2205,17 @@ def _adopt_track(cfg: Config, policy: ModelPolicy, task: TaskState,
     # track is adopted here: an unknown/misspelled one must reach
     # next_actions' bounce-then-park ladder (_bad_track) instead of being
     # written onto the task and mis-parked as "no longer configured".
-    if (signal is not None and signal.status == "done"
-            and task.stage in (Stage.SPEC, Stage.AWAITING_PLAN_REVIEW)
-            and signal.track and signal.track != task.track
+    if (_sets_track(task, signal) and signal.track != task.track
             and signal.track in policy.tracks):
         task = replace(task, track=signal.track)
     return task, signal
+
+
+def _sets_track(task: TaskState, signal: StageSignal | None) -> bool:
+    """Is `signal` one that sets the track: the spec session's `done`, or the
+    approval (a `done` at the plan gate)?"""
+    return (signal is not None and signal.status == "done"
+            and (task.stage is Stage.SPEC or at_gate(task)))
 
 
 def _background_view(cfg: Config, deps: Deps, task: TaskState,
@@ -2055,75 +2229,165 @@ def _background_view(cfg: Config, deps: Deps, task: TaskState,
                           time.time(), cfg.background_wait_seconds)
 
 
-def _end_poke_stretch(cfg: Config, task: TaskState, idle: float | None,
-                      dry_run: bool) -> TaskState:
-    """herdr sees the session working (idle 0): whatever woke it, the poke
-    stretch is over and the next poke starts a new clock."""
-    if idle != 0 or not task.poked_since or dry_run:
-        return task
-    task = replace(task, **NO_POKES)
-    save(cfg.state_dir, task)
-    return task
-
-
 def _park_stranded(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
                    why: str) -> None:
-    """Park a task the config strands for `why` (models.stranded)."""
-    _park_for_input(cfg, deps, repository, task,
-                    f"{why}; restore it in the console's model settings or "
-                    f"targets.yaml, or run the task with a model override",
-                    reason=WHY_CONFIG)
+    """Park a waiting task the config strands for `why` (models.stranded):
+    the table's track-unconfigured. A live session at a login prompt is
+    held there instead; the task holds no slot (a wake, a PR feedback
+    round), which held(login) needs, so that hold stays outside the table
+    until the scheduler events move (ticket 09)."""
+    note = config_note(why)
+    tail = deps.sessions.capture_tail(task.repository, task.issue)
+    login = relogin.classify_login(tail)
+    if login is not None and _park_for_login(cfg, deps, repository, task, note, tail, login):
+        return
+    _apply(_Turn(cfg, deps, repository, None, None, False, tail=tail), task,
+           Event(EventType.TRACK_UNCONFIGURED, Stranded(note, login="")))
 
 
 def _drive_task(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
                 admit: Admit, order: Order, dry_run: bool = False) -> None:
-    signal = read_stage_signal(task.worktree)
-    policy = policy_for(cfg, repository)
-    task, signal = _adopt_track(cfg, policy, task, signal, dry_run)
-    alive = deps.sessions.is_alive(task.repository, task.issue)
-    waiting = has_waiting(cfg.state_dir, task.repository, task.issue)
+    """One driven task's turn: observe, classify into one event, decide,
+    execute."""
+    turn = _Turn(cfg, deps, repository, admit, order, dry_run)
+    task, event = _observed(turn, task)
+    if event is not None:
+        _apply(turn, task, event)
+
+
+def _observed(turn: _Turn, task: TaskState) -> tuple[TaskState, Event | None]:
+    signal = _signal_of(task)
+    policy = policy_for(turn.cfg, turn.repository)
+    task, turn.signal = _adopt_track(turn.cfg, policy, task, signal, turn.dry_run)
+    if task.at.status.kind is Kind.WAKING:
+        return task, _launch_due(turn, task, policy)
+    return task, classify(_observation(turn, task, policy))
+
+
+def _launch_due(turn: _Turn, task: TaskState, policy: ModelPolicy) -> Event | None:
+    """A driven task that waits to launch (a claim the App held back, review
+    after implement): resume-admitted once its launch is, nothing while it
+    is denied, parked when the config strands it."""
     why = track_gone(policy, task.track)
+    stage = Stage.SPEC if task.at.stage is Stage.QUEUED else task.at.stage
+    launch = None
+    if not why:
+        launch, _bypass, why = _action_launch(turn.cfg, turn.repository, task, stage,
+                                              turn.admit, turn.order)
     if why:
-        _park_stranded(cfg, deps, repository, task, why)
-        return
+        return Event(EventType.TRACK_UNCONFIGURED, Stranded(config_note(why), login=""))
+    if launch is None:
+        return None
+    turn.launches[stage] = launch
+    return _wake_room(turn, task)
+
+
+def _wake_room(turn: _Turn, task: TaskState) -> Event | None:
+    """An admitted wake with no capacity or slot stays waking and says so
+    once (WakeBlocked): no event while its marker stands."""
+    blocked = _no_room(turn.cfg, task)
+    if not blocked:
+        _clear_wake_blocked(turn.cfg, task.repository, task.issue)
+    elif _wake_blocked_path(turn.cfg, task.repository, task.issue).exists():
+        return None
+    return Event(EventType.RESUME_ADMITTED, Woken(blocked=blocked))
+
+
+def _no_room(cfg: Config, task: TaskState) -> str:
+    """Why the wake has no room; its own file is left out (the legacy
+    `active` counts a waking review as running). A free unit has a free
+    slot: a slot is held only by a task that holds a unit, and there are two
+    more slots than units (state.max_slots); AcquireSlot still refuses."""
+    tasks = [t for t in load_all(cfg.state_dir)
+             if (t.repository, t.issue) != (task.repository, task.issue)]
+    return "capacity full" if _box_free(cfg, tasks) <= 0 else ""
+
+
+def _observation(turn: _Turn, task: TaskState, policy: ModelPolicy) -> Observation:
+    cfg, sessions = turn.cfg, turn.deps.sessions
+    alive = sessions.is_alive(task.repository, task.issue)
     # herdr's view of a background wait BEFORE the idle reading: a session
     # waking between the two reads must look still-waiting (held), never
     # woken-with-a-stale-idle (stall-parked mid-turn).
-    view = _background_view(cfg, deps, task, alive)
-    # Query idle only when it can matter: detection enabled and the
-    # session alive (the crash path owns dead sessions).
+    view = _background_view(cfg, turn.deps, task, alive)
+    # Idle only when it can matter: detection on and the session alive.
     stall_after = cfg.stall_after_seconds if alive else 0
-    idle = (deps.sessions.idle_seconds(task.repository, task.issue)
-            if alive and stall_after > 0 else None)
-    task = _end_poke_stretch(cfg, task, idle, dry_run)
-    turn = _Turn(cfg, deps, repository, signal, dry_run)
-    for act in pass_actions(task, signal, alive, waiting, view,
-                            caps=cfg.loop_caps,
-                            idle_seconds=idle,
-                            stall_after=stall_after,
-                            grace_elapsed=_grace_elapsed(cfg, task),
-                            tracks=frozenset(policy.tracks),
-                            gate_free=frozenset(
-                                n for n, t in policy.tracks.items()
-                                if not t.plan_review),
-                            now=time.time(), poke_cap=cfg.background_wait_seconds):
-        task = _step_done(turn, task, act)
-        stage = _action_stage(act)
-        launch, bypass_usage, why = _action_launch(cfg, repository, task, stage, admit, order)
-        if why:
-            _park_stranded(cfg, deps, repository, task, why)
-        if stage is not None and launch is None:
-            return  # no launch: the signal persists; retried once headroom returns
-        choice_key = (task.repository, task.issue)
-        task = _DRIVE[type(act)](turn, task, act, launch)
-        if launch is not None and not turn.launch_failed:
-            _consume_execution_choice(cfg, *choice_key)
-        if task is None:
-            return
+    idle = sessions.idle_seconds(task.repository, task.issue) if stall_after > 0 else None
+    return Observation(
+        task=task, signal=turn.signal, alive=alive,
+        waiting=has_waiting(cfg.state_dir, task.repository, task.issue),
+        idle=idle, stall_after=stall_after, background=view, now=time.time(),
+        poke_cap=cfg.background_wait_seconds, gone=track_gone(policy, task.track),
+        grace_elapsed=_grace_elapsed(cfg, task), caps=cfg.loop_caps,
+        tracks=frozenset(policy.tracks),
+        gate_free=frozenset(n for n, t in policy.tracks.items() if not t.plan_review),
+        reads=_reads(task, turn.signal), look=_look(turn, task))
+
+
+def _reads(task: TaskState, signal: StageSignal | None) -> Reads:
+    """What the worktree says about the report: a ready plan's tickets,
+    revision and page; an approval's tickets; a spec; an answers page."""
+    reader = _READS.get(signal.status) if signal is not None else None
+    return reader(task, signal) if reader else Reads()
+
+
+def _ready_reads(task: TaskState, signal: StageSignal) -> Reads:
+    return Reads(tickets=check_tickets(Path(task.worktree) / TICKETS_DIR),
+                 revision=plan_revision(task.worktree, signal.artifact, task.spec_path),
+                 page_questions=_page_questions(task, signal))
+
+
+def _page_questions(task: TaskState, signal: StageSignal) -> int | None:
+    """The question blocks on the prescribed review page, when the report
+    names that page: it is what the gate would show."""
+    page = Path(task.worktree) / REVIEW_PAGE
+    try:
+        if artifact_path(task, signal).resolve() != page.resolve():
+            return None
+        return count_open_questions(page)
+    except (OSError, ValueError, RuntimeError):
+        return None   # a path that cannot be resolved (a NUL character, a loop)
+
+
+def _done_reads(task: TaskState, signal: StageSignal) -> Reads:
+    if task.stage is Stage.SPEC:
+        return Reads(spec=check_spec(artifact_path(task, signal)))
+    tickets = check_tickets(Path(task.worktree) / TICKETS_DIR)
+    if not at_gate(task):
+        return Reads(tickets=tickets)
+    # The approval: the revision the dispatcher recorded when it drained the
+    # operator's approve (never the worktree's answers file, which the
+    # session writes), and the plan on disk now. The prescribed page, since
+    # the request that named it is gone by now.
+    return Reads(tickets=tickets,
+                 revision=plan_revision(task.worktree, REVIEW_PAGE, task.spec_path),
+                 approval=task.plan_approval)
+
+
+def _answers_reads(task: TaskState, signal: StageSignal) -> Reads:
+    return Reads(answers=_answers_page(task, signal.artifact))
+
+
+_READS = {"awaiting-review": _ready_reads, "done": _done_reads,
+          "awaiting-answers": _answers_reads}
 
 
 def _report_session_crash(cfg: Config, deps: Deps, repository: Repository,
-                          task: TaskState, dry_run: bool) -> None:
+                          task: TaskState, dry_run: bool, log_tail: str) -> None:
+    rep = failures.FailureReport(
+        klass="session-crash", repository=repository.name, issue=task.issue,
+        title=f"session crashed during {task.stage.value}: {task.title}",
+        error=(f"session task-{task.repository}-{task.issue} died during stage "
+               f"{task.stage.value}"),
+        log_tail=log_tail,
+        repro=_crash_repro(cfg, task),
+        worktree=task.worktree)
+    blocker = failures.report_failure(cfg, deps, rep, dry_run=dry_run)
+    if blocker:
+        _blocked_by(deps, repository, task, blocker)
+
+
+def _crash_repro(cfg: Config, task: TaskState) -> str:
     # The stage's pick names its runtime. With no pick the session that
     # died is the worktree's last launch: a ticket is done and the next one
     # waits, so the implement pick is gone, and the done ticket's session,
@@ -2134,25 +2398,18 @@ def _report_session_crash(cfg: Config, deps: Deps, repository: Repository,
             or _last_launched(task.worktree))
     runtime = runtime_for(parse_entry(pick, "pick").model_id if pick else "")
     record = read_session(cfg.state_dir, task.repository, task.issue)
-    repro = "Restart the stage from the dispatcher: no session recorded"
-    if record is not None and record.stage == task.continued_stage.value:
-        repro = (f"cd {shlex.quote(task.worktree)} && "
-                 f"{runtime.resume_cmd(record.session_id)}  # inside session image")
-    rep = failures.FailureReport(
-        klass="session-crash", repository=repository.name, issue=task.issue,
-        title=f"session crashed during {task.stage.value}: {task.title}",
-        error=(f"session task-{task.repository}-{task.issue} died during stage "
-               f"{task.stage.value}"),
-        log_tail=deps.sessions.capture_tail(task.repository, task.issue, lines=30),
-        repro=repro,
-        worktree=task.worktree)
-    blocker = failures.report_failure(cfg, deps, rep, dry_run=dry_run)
-    if blocker:
-        try:
-            deps.github.append_blocked_by(repository, task.issue, blocker)
-        except Exception as exc:
-            print(f"[warn] append_blocked_by failed for #{task.issue}: {exc}",
-                  file=sys.stderr)
+    if record is None or record.stage != task.continued_stage.value:
+        return "Restart the stage from the dispatcher: no session recorded"
+    return (f"cd {shlex.quote(task.worktree)} && "
+            f"{runtime.resume_cmd(record.session_id)}  # inside session image")
+
+
+def _blocked_by(deps: Deps, repository: Repository, task: TaskState, blocker: int) -> None:
+    try:
+        deps.github.append_blocked_by(repository, task.issue, blocker)
+    except Exception as exc:
+        print(f"[warn] append_blocked_by failed for #{task.issue}: {exc}",
+              file=sys.stderr)
 
 
 def _report_provisioning_failure(cfg: Config, deps: Deps, repository: Repository,
@@ -2408,7 +2665,7 @@ def _apply_reply_intent(cfg: Config, deps: Deps, task: TaskState | None,
 def _wake_for_queued_message(cfg: Config, deps: Deps, task: TaskState) -> None:
     """Wake a task that waits for the operator, so its session reads the
     message just queued. Any other task reads it on its next resume."""
-    if not task.park and task.stage is Stage.AWAITING_PLAN_REVIEW:
+    if at_gate(task):
         # A gate task that has not parked yet waits for exactly this message,
         # and only a resume hands the queue to its session: without the wake
         # the grace park would end the session with the message undelivered.
@@ -2432,6 +2689,7 @@ def _apply_answers_intent(cfg: Config, deps: Deps, task: TaskState | None,
     assert task is not None
     wake = answers.record(task, intent)
     if wake:
+        task = replace(task, plan_approval=answers.approval(task, intent))
         _queue_message(cfg, task.repository, task.issue, wake, intent.actor or "operator")
         _wake_for_queued_message(cfg, deps, task)
 
@@ -2569,19 +2827,29 @@ def _is_parked(task: TaskState | None) -> bool:
     return task is not None and bool(task.park)
 
 
-def _apply_resume_intent(cfg: Config, by_name: dict,
-                         task: TaskState | None, intent: intents.Intent) -> None:
-    issue = intent.issue
+def _to_resume(task: TaskState | None, issue: int) -> TaskState | None:
+    """The task a resume wakes; None (skipped) unless it is parked or a
+    resumable crash."""
     if task is not None and resumable_crash(task):
         # Back to the stage it crashed in, queued like any wake so capacity,
         # slots and admission still decide when; crashed_stage stays set so
         # _resume_one respawns the stage instead of continuing a transcript.
-        task = replace(task, stage=Stage(task.crashed_stage), terminal_at="")
-    elif not _is_parked(task):
+        # A crash at the gate (an older file) resumes plan: no session runs
+        # at the gate before it reports a plan ready again.
+        crashed = replace(task, stage=Stage(task.crashed_stage))
+        return replace(task, stage=crashed.continued_stage, terminal_at="")
+    if not _is_parked(task):
         print(f"[warn] resume intent for #{issue}: task not parked — skipped",
               file=sys.stderr)
+        return None
+    return task
+
+
+def _apply_resume_intent(cfg: Config, by_name: dict,
+                         task: TaskState | None, intent: intents.Intent) -> None:
+    task = _to_resume(task, intent.issue)
+    if task is None:
         return
-    assert task is not None
     requested_model = str(intent.payload.get("model") or "")
     _require_resume_model(cfg, by_name, task, requested_model)
     bypass_usage = intent.payload.get("bypass_usage") is True
@@ -2738,8 +3006,15 @@ def _starving(task: TaskState) -> bool:
     """Is this task legitimately still waiting for the capacity/slot it was
     denied? Exactly the two queues that mark the marker: _resume_woken's
     (park == PARK_WAKE) and _spawn_feedback's (_awaiting_feedback_round).
-    Anything else is not waiting for anything."""
-    return task.park == PARK_WAKE or _awaiting_feedback_round(task)
+    Anything else is not waiting for anything, but the driven waits whose
+    wake the table blocks (_wake_room): a claim the App held back, review
+    after implement."""
+    return task.park == PARK_WAKE or _awaiting_feedback_round(task) or _waits_to_launch(task)
+
+
+def _waits_to_launch(task: TaskState) -> bool:
+    return not task.park and (task.unlaunched or (task.stage is Stage.IMPLEMENT
+                                                  and implement_done(task)))
 
 
 def _migrate_legacy_keys(cfg: Config) -> None:

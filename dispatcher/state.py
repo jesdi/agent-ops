@@ -14,11 +14,14 @@ from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 from dispatcher.models import (FEEDBACK_PICK, IMPLEMENT_PICK, Entry,
                                ModelPolicy, Order, candidates, pick_provider,
                                review_avoid)
+
+if TYPE_CHECKING:
+    from dispatcher.lifecycle import At
 
 
 class Stage(str, Enum):
@@ -220,6 +223,12 @@ class TaskState:
     # _park_for_input in dispatcher/main.py, never cleared: it outlives the
     # session that asked.
     asked: bool = False
+    # The plan revision the operator approved: the revision of a drained
+    # `approve` intent (main._apply_answers_intent), the only proof a gate
+    # `done` reads. A session writes its worktree, never this task file.
+    # Cleared by end() and the gate transitions that stop it applying (a new
+    # review round, the move to implement); "" = nothing approved.
+    plan_approval: str = ""
     # Round counters, one per bounded loop. Owned by the dispatcher: a
     # session reports rounds but can never lower these.
     review_rounds: int = 0
@@ -261,9 +270,40 @@ class TaskState:
     operator_request: "OperatorRequest | None" = None
 
     @property
+    def at(self) -> "At":
+        """The lifecycle (stage, status) read from the park fields (#132): the
+        ticket's `TaskState.status` view, as `at.status`. The view can rewrite
+        the stage (implement done is review, waking), so the status comes only
+        with its stage: `self.stage` beside it can name an impossible pair. A
+        view until the status is stored, then the stored fields replace it."""
+        from dispatcher.lifecycle import legacy_view  # lifecycle imports this module
+        return legacy_view(self)
+
+    @property
     def continued_stage(self) -> Stage:
         """The stage whose conversation a continuation belongs to."""
         return Stage.PLAN if self.stage is Stage.AWAITING_PLAN_REVIEW else self.stage
+
+
+def at_gate(t: TaskState) -> bool:
+    """Does the plan session run at the review gate? Held there, or running
+    there: reworking the plan with the request disarmed, or woken or
+    respawned at the gate. Only a status says so, never `gated`. The legacy
+    file stores both statuses as the gate stage with no park
+    (lifecycle._encode_held, _encode_running); a running gate session has no
+    status of its own apart from `running` at `plan`, so until the status is
+    stored (ticket 06) that stage is what tells it from a session that never
+    waited there."""
+    return t.stage is Stage.AWAITING_PLAN_REVIEW and not t.park
+
+
+def gate_stage(t: TaskState, stage: Stage) -> Stage:
+    """The legacy stage `stage` runs as for `t`: a plan task stays at the gate
+    in whatever status it takes there. `gated` alone moves no task to the
+    gate: a plan session's `done` outside it is bounced, whatever it once
+    waited for, so a Resume after a crash runs in stage plan."""
+    at = stage is Stage.PLAN and t.stage is Stage.AWAITING_PLAN_REVIEW
+    return Stage.AWAITING_PLAN_REVIEW if at else stage
 
 
 # The doors: park, wake, unpark and end are the only writers of the park fields
@@ -303,7 +343,7 @@ def end(t: TaskState, stage: Stage, crashed_stage: str = "") -> TaskState:
     """t ended at the terminal `stage`: a terminal task is never parked and
     keeps no park field, except the stage a crash failed it out of."""
     return replace(t, **{**_NOT_PARKED, "crashed_stage": crashed_stage},
-                   stage=stage)
+                   stage=stage, plan_approval="")
 
 
 def launch_track(t: TaskState, policy: ModelPolicy) -> str:
@@ -647,11 +687,25 @@ def read_stage_signal(worktree: str | Path) -> StageSignal | None:
     """The session-written .agent/stage.json, read defensively for the
     dispatcher and the console alike: whatever a model put at that path, the
     answer is a signal or None, never a hang or an exception."""
+    d = read_stage_doc(worktree)
+    return stage_signal(d) if d is not None else None
+
+
+def read_stage_doc(worktree: str | Path) -> dict | None:
+    """.agent/stage.json as a JSON object, None for anything else."""
     raw = read_regular(Path(worktree) / ".agent" / "stage.json", STAGE_SIGNAL_MAX_BYTES)
     if raw is None:
         return None
     try:
         d = json.loads(raw)
+    except (ValueError, RecursionError):
+        return None
+    return d if isinstance(d, dict) else None
+
+
+def stage_signal(d: dict) -> StageSignal | None:
+    """The signal a stage.json object holds, None when it holds none."""
+    try:
         note = d.get("note", "")
         return StageSignal(
             stage=str(d["stage"]),

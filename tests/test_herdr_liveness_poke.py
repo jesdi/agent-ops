@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 import dispatcher.main as main
-from dispatcher.main import STOPPED_NOTE
+from dispatcher.lifecycle import STOPPED_NOTE
 from dispatcher.sessions import Sessions
 from dispatcher.state import (PARK_HUMAN, PARK_LOGIN, WHY_DECISION, WHY_STALLED,
                               SessionRecord, Stage, mark_background, mark_waiting, save, write_session)

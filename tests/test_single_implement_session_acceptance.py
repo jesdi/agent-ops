@@ -20,7 +20,7 @@ from dispatcher.models import parse_policy
 from dispatcher.state import (PARK_HUMAN, PlanApprovalRequest, Stage, TaskState,
                               load, load_all, save)
 
-from tests.test_main import (FakeGitHub, FakeSessions, cfg, deps, make_task,
+from tests.test_main import (FakeGitHub, FakeSessions, approve_plan, cfg, deps, make_task,
                              patch_usage, patch_workspace, record_session,
                              write_tickets)
 
@@ -58,6 +58,7 @@ def _approved(c, issue=ISSUE):
     save(c.state_dir, dc_replace(_task(c, issue), branch=BRANCH,
                                  title="Export a portfolio as CSV"))
     write_tickets(wt, TICKETS)
+    approve_plan(c, wt, SPEC)
     _signal(wt, stage="plan", status="done", note="approved",
             artifact=".agent/tickets", track="standard")
     return wt

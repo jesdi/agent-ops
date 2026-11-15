@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Callable, Iterable, TypedDict
 
 from dispatcher import intents
-from dispatcher.state import (PARK_HUMAN, PARK_REVIEW, Stage, TaskState,
+from dispatcher.state import (PARK_HUMAN, PARK_REVIEW, TaskState, at_gate,
                               read_regular)
 from dispatcher.workspace import remove_worktree_file, write_worktree_file
 
@@ -80,6 +80,18 @@ def discard_stale(worktree: str | Path, kind: str, revision: str) -> None:
         print(f"[warn] {name} not removed: {exc}", file=sys.stderr)
 
 
+def approval(task: TaskState, intent: intents.Intent) -> str:
+    """The plan revision the task records as approved once the drained
+    submission `intent` is applied: its revision for an `approve` of a
+    plan-approval request, "" for a change request. A submission to another
+    kind of request leaves the record as it is. The answers file carries the
+    selections to the session, never the approval: the session writes it."""
+    if task.operator_request.kind != "plan-approval":
+        return task.plan_approval
+    submit = intent.payload.get("submit")
+    return intent.payload.get("revision", "") if submit == "approve" else ""
+
+
 def _valid(intent: intents.Intent, revision: str) -> bool:
     p = intent.payload
     return (p.get("submit") in (None, *SUBMITS)
@@ -98,8 +110,7 @@ def select(pending: Iterable[intents.Intent],
 
 def waits_for_operator(task: TaskState) -> bool:
     """Parked for input or review, or at the gate before the grace park."""
-    return (task.park in (PARK_HUMAN, PARK_REVIEW)
-            or (not task.park and task.stage is Stage.AWAITING_PLAN_REVIEW))
+    return task.park in (PARK_HUMAN, PARK_REVIEW) or at_gate(task)
 
 
 def disk_revision(task: TaskState | None) -> str:

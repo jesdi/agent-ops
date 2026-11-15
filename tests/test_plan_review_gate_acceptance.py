@@ -22,8 +22,8 @@ from dispatcher.models import parse_policy
 from dispatcher.state import (NO_SLOT, PARK_HUMAN, PARK_REVIEW, PlanApprovalRequest,
                               Stage, load, save)
 
-from tests.test_main import (FakeGitHub, FakeNotifier, FakeSessions, cfg,
-                             deps, make_task, patch_usage, patch_workspace,
+from tests.test_main import (FakeGitHub, FakeNotifier, FakeSessions, approve_plan,
+                             armed_request, cfg, deps, make_task, patch_usage, patch_workspace,
                              write_tickets, GOOD_TICKET)
 
 ISSUE = 412
@@ -80,7 +80,9 @@ def _ready(wt, **kw):
                    "open_questions": 0, **kw})
 
 
-def _done(wt, track="standard"):
+def _done(c, wt, track="standard"):
+    """The operator approved the plan on disk; the session reports done."""
+    approve_plan(c, wt, SPEC)
     _signal(wt, stage="plan", status="done", note="approved",
             artifact=".agent/tickets", track=track)
 
@@ -151,7 +153,7 @@ def _arm(c):
     """A request armed by hand is bound to the plan on disk, as a pass binds it."""
     t = _task(c)
     save(c.state_dir, dc_replace(
-        t, operator_request=main._plan_approval(t, t.operator_request.path)))
+        t, operator_request=armed_request(t, t.operator_request.path)))
 
 
 # 1. The task waits at the plan review gate.
@@ -231,7 +233,7 @@ def test_approval_starts_one_implement_session_on_the_standard_track(tmp_path, m
     c = _setup(tmp_path, monkeypatch)
     wt, sess, d = _first_gate(c, tmp_path)
     assert _task(c).stage.value == GATE   # the task did wait first
-    _done(wt)
+    _done(c, wt)
 
     main.run_pass(c, deps(sess=sess))
 
@@ -248,7 +250,7 @@ def test_approval_naming_security_runs_implement_on_the_security_entries(tmp_pat
     c = _setup(tmp_path, monkeypatch)
     wt, sess, d = _first_gate(c, tmp_path)
     assert _task(c).stage.value == GATE   # the task did wait first
-    _done(wt, track="security")
+    _done(c, wt, track="security")
 
     main.run_pass(c, deps(sess=sess))
 
@@ -270,7 +272,7 @@ def test_approval_naming_an_unconfigured_track_is_bounced_once(tmp_path, monkeyp
     c = _setup(tmp_path, monkeypatch)
     wt, sess, d = _first_gate(c, tmp_path)
     assert _task(c).stage.value == GATE   # the task did wait first
-    _done(wt, track="fast")
+    _done(c, wt, track="fast")
 
     main.run_pass(c, deps(sess=sess))
 
@@ -286,7 +288,7 @@ def test_approval_naming_an_unconfigured_track_is_bounced_once(tmp_path, monkeyp
 def test_plan_done_without_the_gate_is_resumed_once_then_parks(tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
     wt = _plan_task(c, tmp_path, git=False)
-    _done(wt)
+    _done(c, wt)
     sess = FakeSessions(alive={ISSUE})
 
     main.run_pass(c, deps(sess=sess))
@@ -297,7 +299,7 @@ def test_plan_done_without_the_gate_is_resumed_once_then_parks(tmp_path, monkeyp
     t = _task(c)
     assert t.stage is Stage.PLAN and t.park == ""
 
-    _done(wt)   # the session reports done a second time
+    _done(c, wt)   # the session reports done a second time
     main.run_pass(c, deps(sess=sess))
 
     assert len(sess.resumed) == 1
@@ -350,7 +352,7 @@ def test_respawn_ready_report_reuses_its_round_and_starts_a_fresh_grace_clock(
     t = _task(c)
     assert t.unattended_rounds == used + 1
     assert t.park == "" and t.slot != NO_SLOT
-    assert t.operator_request == main._plan_approval(t, SUMMARY)
+    assert t.operator_request == armed_request(t, SUMMARY)
     assert t.updated_at > old_clock and not main._grace_elapsed(c, t)
     assert d.notifier.sent == ["awaiting_plan_review"]
 
@@ -388,7 +390,7 @@ def test_gate_parks_after_the_grace_time_and_a_later_approval_starts_implement(
                              {"text": "approved"}, actor="op", epoch_ms=1)
     main.run_pass(c, deps(FakeGitHub(), sess))
     sess.alive_set.add(ISSUE)
-    _done(wt)
+    _done(c, wt)
     main.run_pass(c, deps(FakeGitHub(), sess))
 
     assert _task(c).stage is Stage.IMPLEMENT

@@ -464,12 +464,20 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         req = t.operator_request
         if req is None:
             return None
-        wt = Path(t.worktree).resolve()
         # Both request kinds are one file in the worktree: the plan review
         # summary, or the questionnaire.
         return read_model.OperatorRequest(
-            kind=req.kind, content=_resolve_content(req.path, wt),
+            kind=req.kind, content=_request_content(req, Path(t.worktree).resolve()),
             revision=req.fingerprint, answers=_saved_answers(t))
+
+    def _request_content(req, wt: Path
+                         ) -> read_model.ReadableContent | read_model.UnavailableContent:
+        """The request's page, unless it is armed for no revision (a session
+        that stopped before its page passed the check): an answer needs a
+        revision, so there is nothing to submit on it, an approve least of all."""
+        if not req.fingerprint:
+            return read_model.UnavailableContent(path=req.path, reason="no-revision")
+        return _resolve_content(req.path, wt)
 
     def _saved_answers(t) -> read_model.Answers:
         """The answers the page is restored with: those of the intent the
