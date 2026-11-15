@@ -691,6 +691,183 @@ def test_board_snapshot_includes_inspection_capacity(tmp_path):
     assert body["capacity"]["slots_used"] == 0
 
 
+def _snapshot_models(*, pinned=(), order=("claude-opus-5", "openai/gpt-6-luna")):
+    from dispatcher.models import parse_policy
+
+    stages = {name: list(order) for name in ("spec", "plan", "implement", "review")}
+    raw = {
+        "triage": ["claude-opus-5"], "untracked": "standard",
+        "tracks": {"standard": {"when": "Everything.", **stages}},
+    }
+    if pinned:
+        raw["pinned"] = list(pinned)
+    return parse_policy(raw)
+
+
+def _snapshot_client(startup_config, fake, config_loader, clock_loader=None):
+    """Build the route with a test-controlled effective-config loader.
+
+    The loader is injected on FastAPI app state so the route test can give
+    startup and request-effective configuration different values without
+    depending on a private reading/helper name.
+    """
+    app = create_app(startup_config, fake)
+    app.state.config_loader = config_loader
+    if clock_loader is not None:
+        app.state.clock_loader = clock_loader
+    return TestClient(app)
+
+
+def _snapshot_cards(body):
+    return {card["issue"]: card for column in body["columns"]
+            for card in column["cards"]}
+
+
+def _stored_snapshot_models(order):
+    stages = {name: list(order) for name in ("spec", "plan", "implement", "review")}
+    return {
+        "triage": ["claude-opus-5"], "untracked": "standard",
+        "tracks": {"standard": {"when": "Everything.", **stages}},
+    }
+
+
+def test_snapshot_is_local_and_uses_one_request_ordering(tmp_path):
+    from dispatcher import priority
+
+    fake = FakeSources()
+    config = replace(make_config(tmp_path), models=_snapshot_models())
+    fake.tasks_list = [make_task(issue=7, stage=Stage.PLAN)]
+    reads = []
+    client = _snapshot_client(config, fake, lambda: reads.append(config) or config)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("snapshot requested a live source")
+
+    fake.usage = forbidden
+    fake.rank_rows = forbidden
+    fake.session_alive = forbidden
+
+    automatic = client.get("/api/board/snapshot", headers=HEADERS)
+    assert automatic.status_code == 200
+    assert set(automatic.json()) == {"columns", "capacity", "median_cycle_seconds"}
+    assert _snapshot_cards(automatic.json())[7]["model"] == "anthropic/claude-opus-5"
+    assert len(reads) == 1
+
+    priority.save(tmp_path, "openai", actor="test",
+                  now=datetime(2026, 11, 15, tzinfo=timezone.utc))
+    fixed = client.get("/api/board/snapshot", headers=HEADERS)
+    assert fixed.status_code == 200
+    assert _snapshot_cards(fixed.json())[7]["model"] == "openai/gpt-6-luna"
+    assert len(reads) == 2
+
+
+def test_snapshot_uses_effective_policy_for_pins_picks_and_overrides(tmp_path):
+    from dispatcher import priority
+
+    fake = FakeSources()
+    startup = replace(make_config(tmp_path), models=_snapshot_models())
+    effective = replace(startup, models=_snapshot_models(pinned=("standard",)))
+    fake.tasks_list = [
+        make_task(issue=7, stage=Stage.PLAN),
+        make_task(issue=8, stage=Stage.PLAN,
+                  picks={"plan": "openai/gpt-6-luna@high"}),
+        make_task(issue=9, stage=Stage.PLAN),
+    ]
+    fake.execution_overrides[("alpha", 9)] = ("openai/gpt-6-luna@high", False)
+    client = _snapshot_client(startup, fake, lambda: effective)
+
+    automatic = client.get("/api/board/snapshot", headers=HEADERS)
+    assert automatic.status_code == 200
+    automatic_cards = _snapshot_cards(automatic.json())
+    assert automatic_cards[7]["model"] == "anthropic/claude-opus-5"
+    assert automatic_cards[7]["pinned_track"] == "standard"
+
+    priority.save(tmp_path, "openai", actor="test",
+                  now=datetime(2026, 11, 15, tzinfo=timezone.utc))
+    fixed = client.get("/api/board/snapshot", headers=HEADERS)
+    assert fixed.status_code == 200
+    cards = _snapshot_cards(fixed.json())
+    assert cards[7]["model"] == "anthropic/claude-opus-5"
+    assert cards[7]["pinned_track"] == "standard"
+    assert cards[8]["model"] == "openai/gpt-6-luna"
+    assert cards[9]["model"] == "openai/gpt-6-luna"
+
+
+def test_snapshot_capacity_and_task_policy_use_effective_configuration(tmp_path):
+    from dispatcher import priority
+
+    fake = FakeSources()
+    startup = replace(make_config(tmp_path, capacity=2),
+                      models=_snapshot_models())
+    effective = replace(startup, capacity=4,
+                        models=_snapshot_models(pinned=("standard",)))
+    fake.tasks_list = [make_task(issue=7, stage=Stage.PLAN)]
+    priority.save(tmp_path, "openai", actor="test",
+                  now=datetime(2026, 11, 15, tzinfo=timezone.utc))
+    client = _snapshot_client(startup, fake, lambda: effective)
+
+    response = client.get("/api/board/snapshot", headers=HEADERS)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["capacity"]["capacity"] == 4
+    card = _snapshot_cards(body)[7]
+    assert card["model"] == "anthropic/claude-opus-5"
+    assert card["pinned_track"] == "standard"
+
+
+def test_snapshot_reads_new_stored_models_only_on_the_next_request(tmp_path):
+    from dispatcher import model_settings
+    from dispatcher.config import apply_stored_models
+
+    first_order = ("claude-opus-5", "openai/gpt-6-luna")
+    second_order = ("openai/gpt-6-luna", "claude-opus-5")
+    first = _snapshot_models(order=first_order)
+    startup = replace(make_config(tmp_path), models=first)
+    model_settings.save(
+        tmp_path, _stored_snapshot_models(first_order), actor="test",
+        now=datetime(2026, 11, 15, tzinfo=timezone.utc))
+    fake = FakeSources()
+    fake.tasks_list = [make_task(issue=7, stage=Stage.PLAN),
+                       make_task(issue=8, stage=Stage.PLAN)]
+    changed_during_request = []
+
+    def change_after_first_task(repository, issue):
+        if not changed_during_request:
+            changed_during_request.append(issue)
+            model_settings.save(
+                tmp_path, _stored_snapshot_models(second_order), actor="test",
+                now=datetime(2026, 11, 15, tzinfo=timezone.utc))
+        return None
+
+    fake.execution_override = change_after_first_task
+    loads = []
+
+    def load_effective_config():
+        loads.append(1)
+        return apply_stored_models(startup)
+
+    clock_reads = []
+
+    def captured_time():
+        clock_reads.append(1)
+        return datetime(2026, 11, 15, 12, tzinfo=timezone.utc) + timedelta(
+            seconds=len(clock_reads))
+
+    client = _snapshot_client(startup, fake, load_effective_config, captured_time)
+    first_request = client.get("/api/board/snapshot", headers=HEADERS)
+    assert first_request.status_code == 200
+    assert changed_during_request == [7]
+    assert {issue: card["model"] for issue, card in _snapshot_cards(first_request.json()).items()} == {
+        7: "anthropic/claude-opus-5", 8: "anthropic/claude-opus-5"}
+
+    second_request = client.get("/api/board/snapshot", headers=HEADERS)
+    assert second_request.status_code == 200
+    assert {issue: card["model"] for issue, card in _snapshot_cards(second_request.json()).items()} == {
+        7: "openai/gpt-6-luna", 8: "openai/gpt-6-luna"}
+    assert len(loads) == 2
+    assert len(clock_reads) == 2
+
+
 class _RecordingGitHub:
     def __init__(self):
         self.state_calls = []
