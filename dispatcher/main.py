@@ -2642,11 +2642,18 @@ def _claim_picked(cfg: Config, deps: Deps, repository: Repository,
         wt = create_workspace(repository, cand.number, base, dry_run=dry_run,
                               auth=deps.github.auth)
     except MissingBaseError:
+        # Not claimed, not a failure: the issue stays Ready and every pass
+        # asks again; the operator hears once per issue and base.
         _wait_in_ready(cfg, deps, repository, cand.number,
                        f"base:{base}", f"base branch {base} is not on origin")
         return ClaimRoundOutcome.CONTINUE
     except Exception:
-        # A provisioning failure is capped at one per project per pass.
+        # Board never claimed (claim is last, still Ready) → no release
+        # needed; report + quarantine, and the pass survives. Cap at one
+        # provisioning failure per project per pass: a systemic fault (git
+        # remote down, podman down, worktrees volume full) would otherwise
+        # fail EVERY remaining Ready candidate. The project leaves this
+        # pass's round; the next pass retries its remaining candidates.
         _report_provisioning_failure(cfg, deps, repository, cand, dry_run)
         return ClaimRoundOutcome.PROJECT_FAILED
     base_line.clear_wait(cfg.state_dir, repository.name, cand.number)
@@ -2661,6 +2668,7 @@ def _read_claim_base(cfg: Config, deps: Deps, repository: Repository,
         body = deps.github.issue_body(repository, cand.number)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
             OSError, ValueError) as exc:  # ValueError: gh printed malformed JSON
+        # Unclaimed and still Ready: the next pass reads it again.
         print(f"[warn] body of #{cand.number} not read: {exc}", file=sys.stderr)
         return None
     base = base_line.parse_base(body)
@@ -2691,7 +2699,7 @@ def _claim_round_turn(cfg: Config, deps: Deps, state: ClaimRound,
     if outcome is ClaimRoundOutcome.CLAIMED:
         state.counts[name] += 1
         state.last_claimed[name] = _now()
-        state.free_slots -= 1
+        state.free_slots -= 1  # checked before the next pull, so no candidate is vetted that cannot be claimed
     return True
 
 
