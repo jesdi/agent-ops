@@ -1046,3 +1046,60 @@ def test_full_board_observes_model_settings_on_the_next_request(
                 8: "anthropic/claude-fable-5-1",
             }
     assert len(loads) == 2
+
+
+def test_full_board_preserves_policy_pick_override_pin_and_fallback_precedence(
+        tmp_path):
+    from dispatcher import priority
+    from tests.configfakes import with_project
+    from tests.webfakes import make_repository
+    from tests.usagefakes import session_usage
+
+    startup_global = _full_board_policy(["claude-opus-5"])
+    startup_project = _full_board_policy(["openai/gpt-6-luna"])
+    effective_global = _full_board_policy(["openai/gpt-6-luna"])
+    effective_project = _full_board_policy(
+        ["claude-opus-5", "openai/gpt-6-luna"], pinned=("standard",))
+    repository = make_repository()
+    startup = replace(
+        make_config(tmp_path, repositories=[
+            with_project(repository, models=startup_project)]),
+        models=startup_global)
+    effective = replace(
+        startup,
+        models=effective_global,
+        repositories=[with_project(repository, models=effective_project)])
+    fake = FakeSources()
+    fake.tasks_list = [
+        make_task(issue=7, stage=Stage.PLAN, park=PARK_WAKE),
+        make_task(issue=8, stage=Stage.PLAN, park=PARK_WAKE,
+                  picks={"plan": "openai/gpt-6-luna@high"}),
+        make_task(issue=9, stage=Stage.PLAN, park=PARK_WAKE),
+        make_task(issue=10, repository="removed", stage=Stage.PLAN,
+                  park=PARK_WAKE),
+    ]
+    fake.execution_overrides[("alpha", 9)] = (
+        "anthropic/claude-opus-5", True)
+    unavailable = session_usage(source="unavailable")
+    fake.usages = {
+        "anthropic": unavailable,
+        "openai": session_usage(source="unavailable", provider="openai"),
+    }
+    priority.save(tmp_path, "openai", actor="test",
+                  now=datetime(2026, 11, 15, tzinfo=timezone.utc))
+    client = _full_board_client(startup, fake, lambda: effective)
+
+    response = client.get("/api/board", headers=HEADERS)
+    assert response.status_code == 200
+    cards = _full_board_cards(response.json())
+    assert cards[7]["admission"]["requested"]["model"] == (
+        "anthropic/claude-opus-5")
+    assert cards[7]["admission"]["requested"]["admitted"] is False
+    assert cards[8]["admission"]["requested"]["model"] == (
+        "openai/gpt-6-luna")
+    assert cards[8]["admission"]["requested"]["admitted"] is False
+    assert cards[9]["model"] == "anthropic/claude-opus-5"
+    assert cards[9]["admission"] is None
+    assert cards[10]["admission"]["requested"]["model"] == (
+        "openai/gpt-6-luna")
+    assert cards[10]["admission"]["requested"]["admitted"] is False
