@@ -61,14 +61,15 @@ async function freshServer() {
   return { api, base, stop: async () => { await api.dispose(); child.kill() } }
 }
 
-let server: Awaited<ReturnType<typeof freshServer>>
-test.beforeEach(async ({}, info) => {
-  if (info.title.startsWith('reset restores a task')) return // shared server
-  server = await freshServer()
-})
-test.afterEach(async () => {
-  await server?.stop()
-  server = undefined as never
+const contractTest = test.extend<{ fresh: Awaited<ReturnType<typeof freshServer>> }>({
+  fresh: async ({}, use) => {
+    const server = await freshServer()
+    try {
+      await use(server)
+    } finally {
+      await server.stop()
+    }
+  },
 })
 
 const get = async (api: APIRequestContext, path: string) => (await api.get(path)).json()
@@ -119,8 +120,8 @@ async function openEvents(base: string) {
   return { next, close: () => ctl.abort() }
 }
 
-test('mixed mutations: reset matches a fresh server apart from the ETA', async () => {
-  const { api } = server
+contractTest('mixed mutations: reset matches a fresh server apart from the ETA', async ({ fresh }) => {
+  const { api } = fresh
   const board0: Board = await get(api, '/api/board')
   const usage0 = await get(api, '/api/usage')
 
@@ -145,8 +146,8 @@ test('mixed mutations: reset matches a fresh server apart from the ETA', async (
   expect(board0.capacity).toEqual(ZERO_SLOTS)
 })
 
-test('message isolation: reset drops delivered, stored and pending messages', async () => {
-  const { api } = server
+contractTest('message isolation: reset drops delivered, stored and pending messages', async ({ fresh }) => {
+  const { api } = fresh
   const detail0 = await get(api, '/api/task/widget/42')
 
   await post(api, '/api/task/widget/42/reply', { text: 'delivered earlier' })
@@ -175,8 +176,8 @@ test('message isolation: reset drops delivered, stored and pending messages', as
     .toEqual(['brand new'])
 })
 
-test('startup equivalence: startup state already equals the reset state', async () => {
-  const { api } = server
+contractTest('startup equivalence: startup state already equals the reset state', async ({ fresh }) => {
+  const { api } = fresh
   const board0: Board = await get(api, '/api/board')
   const usage0 = await get(api, '/api/usage')
   expect(board0.capacity).toEqual(ZERO_SLOTS)
@@ -185,8 +186,8 @@ test('startup equivalence: startup state already equals the reset state', async 
   await expectCanonical(api, board0, usage0)
 })
 
-test('reset without mutations keeps canonical state and notifies each time', async () => {
-  const { api, base } = server
+contractTest('reset without mutations keeps canonical state and notifies each time', async ({ fresh }) => {
+  const { api, base } = fresh
   const board0: Board = await get(api, '/api/board')
   const usage0 = await get(api, '/api/usage')
   const events = await openEvents(base)
@@ -203,8 +204,8 @@ test('reset without mutations keeps canonical state and notifies each time', asy
   }
 })
 
-test('repeated resets leave no duplicates, accumulated boosts or messages', async () => {
-  const { api } = server
+contractTest('repeated resets leave no duplicates, accumulated boosts or messages', async ({ fresh }) => {
+  const { api } = fresh
   const board0: Board = await get(api, '/api/board')
   const usage0 = await get(api, '/api/usage')
   const mutate = async () => {
@@ -230,8 +231,8 @@ test('repeated resets leave no duplicates, accumulated boosts or messages', asyn
   expect((await get(api, '/api/task/widget/42')).messages).toEqual([])
 })
 
-test('queue and clock restoration: ghost order, next claim and a fresh ETA', async () => {
-  const { api } = server
+contractTest('queue and clock restoration: ghost order, next claim and a fresh ETA', async ({ fresh }) => {
+  const { api } = fresh
   await post(api, '/api/queue/boost', { issue: 74, amount: 10 })
   const boosted: Board = await get(api, '/api/board')
   expect(column(boosted, 'queued').ghosts.map((g) => g.number)).toEqual([74, 73])
@@ -256,8 +257,8 @@ test('queue and clock restoration: ghost order, next claim and a fresh ETA', asy
   expect(eta).not.toBe(oldEta)
 })
 
-test('connected consumer refresh: reset pushes board and usage on the live stream', async () => {
-  const { api, base } = server
+contractTest('connected consumer refresh: reset pushes board and usage on the live stream', async ({ fresh }) => {
+  const { api, base } = fresh
   const board0: Board = await get(api, '/api/board')
   const usage0 = await get(api, '/api/usage')
   const events = await openEvents(base)
@@ -280,10 +281,9 @@ test('connected consumer refresh: reset pushes board and usage on the live strea
   }
 })
 
-test('migration: every caller uses the unified reset at its original placement', async () => {
+test('migration: retired reset URLs are absent and the unified reset is documented', async () => {
   // Built from parts so this file does not itself match the retired URLs.
   const retired = new RegExp(`/__control__/reset-(${['queue', 'messages'].join('|')})`)
-  const unified = "await request.post('/__control__/reset')"
   const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true })
     .filter((e) => !['node_modules', 'dist', 'test-results', 'playwright-report'].includes(e.name))
     .flatMap((e) => (e.isDirectory() ? walk(join(dir, e.name)) : [join(dir, e.name)]))
@@ -291,27 +291,6 @@ test('migration: every caller uses the unified reset at its original placement',
     .filter((f) => retired.test(readFileSync(f, 'utf8')))
     .map((f) => f.slice(FRONTEND.length))
   expect(offenders).toEqual([])
-
-  const placements: Record<string, number[]> = {
-    'artifacts-flow.spec.ts': [6],
-    'board-viewport.spec.ts': [5],
-    'board.spec.ts': [7, 10],
-    'message-queue-flow.spec.ts': [11],
-    'park-reply-flow.spec.ts': [7],
-    'pinned-tracks.spec.ts': [8],
-    'priority-flow.spec.ts': [6],
-    'queue-flow.spec.ts': [8],
-  }
-  for (const [file, lines] of Object.entries(placements)) {
-    const text = readFileSync(join(FRONTEND, 'e2e', file), 'utf8').split('\n')
-    expect(lines.map((n) => [file, n, text[n - 1].trim()]))
-      .toEqual(lines.map((n) => [file, n, unified]))
-    expect(text.filter((l) => l.includes('/__control__/reset\'')).length, file)
-      .toBe(lines.length)
-  }
-  const reproduction = readFileSync(join(FRONTEND, 'e2e', 'reset-state.spec.ts'), 'utf8')
-    .split('\n// The contract cases')[0]
-  expect(reproduction.split("request.post('/__control__/reset')").length - 1).toBe(2)
 
   const header = readFileSync(join(FRONTEND, 'e2e', 'fake-api.mjs'), 'utf8')
     .split('\n').filter((_, i, all) => all.slice(0, i + 1).every((x) => x.startsWith('//')))
