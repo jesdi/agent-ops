@@ -12,8 +12,8 @@
    paths. Reset produces fresh collections so mutations cannot contaminate
    later seeds. Priority returns to mode `auto`, first provider `anthropic`,
    options `auto`, `anthropic`, `openai`, and an empty pinned list. The only
-   startup/reset response difference allowed is the recomputed ETA.
-   Scenarios: startup equivalence, repeated resets, mixed mutations.
+   startup/reset difference in board and usage responses is the recomputed ETA.
+   Scenarios: startup equivalence, reset without mutations, repeated resets, mixed mutations.
 3. Each reset recomputes `next_pass_eta` as reset time plus six minutes, restores
    next issue 73 in repository `widget`, verdict `will-claim`, zero minutes to
    reset and empty `blocked_by`. Ghosts return in order 73 then 74, both with
@@ -77,6 +77,16 @@ regression; it runs the actual server through Playwright's request fixture.
 - **Then** startup already has `slots_used: 0`; all response fields match after
   ignoring only `next_claim.next_pass_eta`. Existing provider windows, gate,
   column metadata and other unchanged seed data remain unchanged.
+
+### Scenario: reset without mutations (requirements 1–4)
+
+- **Given** a canonical server with no pending intents or messages and an
+  established SSE connection.
+- **When** reset runs without intervening mutations, including a second
+  consecutive reset.
+- **Then** each call returns 200 and `{"ok": true}`, preserves canonical board
+  and usage apart from recomputed ETA, leaves messages and intents empty, and
+  emits `changed: ['board', 'usage']` on the same connection.
 
 ### Scenario: repeated resets (requirement 2)
 
