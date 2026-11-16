@@ -3,7 +3,13 @@
 An unreadable quarantine record is any `quarantine/{repository}-{issue}.json`
 whose read fails (`OSError` other than the file being gone), whose bytes are
 not UTF-8, whose text is not JSON, or whose JSON is not an object (`null`, a
-list, a number, a string). Any JSON object, even `{}`, is readable. A record
+list, a number, a string), or whose object contains a wrong-typed known field.
+Known fields `task_issue` and `blocker_issue` require exact integers (not
+booleans, floats or numeric strings); `blocker_repo`, `fingerprint` and
+`created_at` require strings. Validate the body before applying the filename
+identity. Missing fields and extra keys are allowed: `{}` remains readable.
+This classification follows the operator decision of 2026-11-16 and preserves
+the existing validation ADRs. A record
 that vanishes between listing the directory and reading it (a retry or a
 closed blocker deleted it) is gone, not unreadable: it blocks nothing.
 Its identity (`repository`, `task_issue`) always comes from the filename, the
@@ -74,6 +80,19 @@ This is the reproduction committed as
 - **When** `GET /api/failures`
 - **Then** its entry has `task_issue: 78`, `readable: true` and
   `blocker_open: null` — listed as today, not as unreadable
+
+### Scenario: wrong-typed known fields are unreadable (boundary)
+
+- **Given** otherwise valid quarantine objects with a wrong-typed known field:
+  `blocker_issue: "x"`, `fingerprint: null`, `blocker_issue: true`,
+  `task_issue: "83"`, `blocker_repo: 5`, `created_at: 1`, or `task_issue: true`
+- **When** `GET /api/failures` and `check_quarantine` read them
+- **Then** each is listed with its filename identity, `readable: false`,
+  `blocker_open: null` and blank metadata; no blocker lookup occurs, and each
+  remains on disk and blocks its issue
+- **And when** the retry route receives one of their identities **then** it
+  returns 202; applying a retry intent deletes the unreadable record
+- **And** an empty object remains readable as in the preceding scenario
 
 ### Scenario: the generated API types carry the flag
 

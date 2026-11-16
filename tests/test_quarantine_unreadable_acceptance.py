@@ -258,7 +258,8 @@ def test_the_claim_forecast_skips_an_unreadable_head(tmp_path):
 
 WRONG_TYPED = {80: {"blocker_issue": "x"}, 81: {"fingerprint": None},
                82: {"blocker_issue": True}, 83: {"task_issue": "83"},
-               84: {"blocker_repo": 5}, 85: {"created_at": 1}}
+               84: {"blocker_repo": 5}, 85: {"created_at": 1},
+               86: {"task_issue": True}}
 
 
 def _wrong_typed(state_dir):
