@@ -87,3 +87,14 @@ it('the banner vanishes when the usage query refetches with the marker cleared',
   await waitFor(() => expect(screen.queryByTestId('auth-dark-banner')).not.toBeInTheDocument())
   expect(screen.queryByRole('alert')).not.toBeInTheDocument()
 })
+
+
+it('hides the previous banner when a usage refetch fails', async () => {
+  serve(authDark)
+  const { queryClient } = render(<UsageBanner />)
+  await screen.findByTestId('auth-dark-banner')
+  server.use(http.get('/api/usage', () => HttpResponse.json({}, { status: 500 })))
+  await queryClient.invalidateQueries({ queryKey: ['usage'] })
+  await waitFor(() => expect(queryClient.getQueryState(['usage'])?.status).toBe('error'))
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+})

@@ -656,7 +656,7 @@ export interface components {
             next_claim: components["schemas"]["NextClaimView"];
             /** Queue Stale */
             queue_stale: boolean;
-            usage?: components["schemas"]["UsageView"] | null;
+            usage: components["schemas"]["UsageView"];
         };
         /** BoostReq */
         BoostReq: {

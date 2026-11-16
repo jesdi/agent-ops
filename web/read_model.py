@@ -9,7 +9,7 @@ from pathlib import Path
 
 from typing import Annotated, Collection, Literal, Mapping
 
-from pydantic import BaseModel, Field, StrictBool, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr
 
 from dispatcher import messages as msgq
 from dispatcher import priority
@@ -235,7 +235,7 @@ class BoardView(BoardSnapshot):
     # The ranking behind Queued's ghosts failed and a cached one is shown.
     queue_stale: bool
     next_claim: NextClaimView
-    usage: UsageView | None = None
+    usage: UsageView
 
 
 def task_card(t: TaskState, *, model: str,
@@ -387,7 +387,7 @@ def _ghost_cards(tasks: list[TaskState], queues: list[tuple[str, list[dict]]],
 def build_board(tasks: list[TaskState], *, capacity: int,
                 models: dict[tuple[str, int], str],
                 events: list[dict], heartbeat: dict | None, now: datetime,
-                gate: GateView,
+                usage: UsageView,
                 queues: list[tuple[str, list[dict]]],
                 queue_stale: bool, claims_paused: bool,
                 triage_running: bool,
@@ -401,7 +401,6 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                 max_open: int = sys.maxsize,
                 quarantined: Collection[tuple[str, int]] | None = None,
                 pinned_tracks: dict[tuple[str, int], str] | None = None,
-                usage: UsageView | None = None,
                 ) -> BoardView:
     ghosts = _ghost_cards(tasks, queues, candidate_admissions or {})
     snapshot = build_board_snapshot(
@@ -414,7 +413,7 @@ def build_board(tasks: list[TaskState], *, capacity: int,
         median_cycle_seconds=snapshot.median_cycle_seconds,
         queue_stale=queue_stale, usage=usage,
         next_claim=next_claim(heartbeat, now=now, tasks=tasks,
-                              capacity=max(0, capacity - onboarding_running), gate=gate,
+                              capacity=max(0, capacity - onboarding_running), gate=usage.gate,
                               queues=queues,
                               claims_paused=claims_paused,
                               triage_running=triage_running,
@@ -599,10 +598,12 @@ class AuthDarkView(BaseModel):
 
 
 class UsageView(BaseModel):
+    model_config = ConfigDict(json_schema_serialization_defaults_required=True)
+
     providers: list[ProviderUsageView]
     gate: GateView
     priority: PriorityView
-    auth_dark: AuthDarkView | None  # no default: the generated type stays required
+    auth_dark: AuthDarkView | None = None
 
 
 CLOSE_HEADROOM = 0.08

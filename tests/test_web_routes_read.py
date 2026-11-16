@@ -769,3 +769,18 @@ def test_api_board_usage_auth_dark_follows_the_marker(tmp_path):
     _write_marker(tmp_path)
     body = client.get("/api/board", headers=HEADERS).json()
     assert body["usage"]["auth_dark"] == {"since": AUTH_DARK_SINCE}
+
+
+def test_empty_marker_since_is_preserved_across_usage_routes(tmp_path):
+    fake = FakeSources(tmp_path)
+    client = TestClient(create_app(make_config(tmp_path), fake))
+    (tmp_path / "auth-dark").write_text('{"since": ""}')
+    assert client.get("/api/usage", headers=HEADERS).json()["auth_dark"] == {"since": ""}
+    assert client.get("/api/board", headers=HEADERS).json()["usage"]["auth_dark"] == {"since": ""}
+
+
+def test_full_board_schema_requires_a_usage_view(tmp_path):
+    _, client = rig(tmp_path)
+    schema = client.app.openapi()['components']['schemas']['BoardView']
+    assert 'usage' in schema['required']
+    assert schema['properties']['usage'] == {'$ref': '#/components/schemas/UsageView'}
