@@ -766,14 +766,11 @@ def _quarantine(tmp_path, name, **rec):
     (d / name).write_text(json.dumps(rec))
 
 
-def test_quarantine_entries_skip_an_unreadable_record(tmp_path, src):
-    """A torn write_text leaves invalid UTF-8, whose read_text raises
-    UnicodeDecodeError — a ValueError, NOT an OSError. The old
-    (JSONDecodeError, OSError) guard missed it and 500'd the route. Valid
-    JSON that is not an object (null, a list) has the same effect via
-    rec.get -> AttributeError. Neither may raise, and neither may reach
-    /api/failures: with no readable body every field would be blank and the
-    row would be indistinguishable from a real entry."""
+def test_quarantine_entries_list_an_unreadable_record_as_unreadable(tmp_path, src):
+    """A torn write (invalid UTF-8), JSON that is not an object (null, a
+    list) or text that is not JSON leaves a record nobody can read, and its
+    issue stays blocked: it is listed, keyed by its filename and marked
+    unreadable, never skipped and never raised."""
     d = tmp_path / "quarantine"
     d.mkdir(parents=True, exist_ok=True)
     (d / "alpha-73.json").write_bytes(b'{"blocker_issue": \xff\xfe}')
@@ -781,7 +778,10 @@ def test_quarantine_entries_skip_an_unreadable_record(tmp_path, src):
     (d / "alpha-75.json").write_text("[1, 2]")
     _quarantine(tmp_path, "alpha-76.json", task_issue=76, blocker_repo="r",
                 blocker_issue=1, fingerprint="f", created_at="c")
-    assert [e["task_issue"] for e in src.quarantine_entries()] == [76]
+    entries = sorted(src.quarantine_entries(), key=lambda e: e["task_issue"])
+    assert [(e["repository"], e["task_issue"], e["readable"])
+            for e in entries] == [("alpha", 73, False), ("alpha", 74, False),
+                                  ("alpha", 75, False), ("alpha", 76, True)]
 
 
 def test_quarantine_key_comes_from_the_filename_not_the_body(tmp_path, src):
@@ -812,28 +812,34 @@ _GOOD = dict(task_issue=0, blocker_repo="r", blocker_issue=1,
              fingerprint="f", created_at="c")
 
 
-def test_quarantine_entries_skip_wrong_typed_blocker_issue(tmp_path, src):
+def _rows(src):
+    return [(e["task_issue"], e["readable"], e["blocker_issue"])
+            for e in src.quarantine_entries()]
+
+
+def test_quarantine_entries_list_wrong_typed_blocker_issue_as_unreadable(tmp_path, src):
     for n, bad in enumerate(["abc", "5", True, 1.5, None, [1]], start=80):
         _quarantine(tmp_path, f"alpha-{n}.json",
                     **{**_GOOD, "task_issue": n, "blocker_issue": bad})
     _quarantine(tmp_path, "alpha-86.json",
                 **{**_GOOD, "task_issue": 86, "blocker_issue": 7})
-    entry, = src.quarantine_entries()
-    assert (entry["task_issue"], entry["blocker_issue"]) == (86, 7)
+    assert _rows(src) == [(n, False, 0) for n in range(80, 86)] + [(86, True, 7)]
 
 
-def test_quarantine_entries_skip_wrong_typed_task_issue_despite_filename(tmp_path, src):
+def test_quarantine_entries_list_wrong_typed_task_issue_as_unreadable(tmp_path, src):
     _quarantine(tmp_path, "alpha-90.json", **{**_GOOD, "task_issue": "x"})
-    assert [e["task_issue"] for e in src.quarantine_entries()] == []
+    assert _rows(src) == [(90, False, 0)]
 
 
-def test_quarantine_entries_skip_wrong_typed_string_fields(tmp_path, src):
+def test_quarantine_entries_list_wrong_typed_string_fields_as_unreadable(tmp_path, src):
     for n, key, bad in [(91, "blocker_repo", 5), (92, "fingerprint", None),
                         (93, "created_at", {"at": 1})]:
         _quarantine(tmp_path, f"alpha-{n}.json",
                     **{**_GOOD, "task_issue": n, key: bad})
     _quarantine(tmp_path, "alpha-94.json", **{**_GOOD, "task_issue": 94})
-    assert [e["task_issue"] for e in src.quarantine_entries()] == [94]
+    assert _rows(src) == [(91, False, 0), (92, False, 0), (93, False, 0),
+                          (94, True, 1)]
+    assert {e["fingerprint"] for e in src.quarantine_entries()} == {"", "f"}
 
 
 def test_quarantine_entries_keep_missing_fields_and_extra_keys(tmp_path, src):
@@ -844,15 +850,17 @@ def test_quarantine_entries_keep_missing_fields_and_extra_keys(tmp_path, src):
             entry["created_at"]) == ("alpha", 95, "r", 0, "", "")
 
 
-def test_quarantine_entries_existing_skips_still_hold(tmp_path, src):
+def test_quarantine_entries_type_check_leaves_unreadable_rows_listed(tmp_path, src):
     d = tmp_path / "quarantine"
     d.mkdir(parents=True, exist_ok=True)
     (d / "alpha-73.json").write_bytes(b"\xff\xfe\xfd")
     (d / "alpha-74.json").write_text("null")
     (d / "alpha-75.json").write_text("[1, 2]")
     _quarantine(tmp_path, "alpha-76.json", **{**_GOOD, "task_issue": 999})
-    entry, = src.quarantine_entries()
-    assert (entry["repository"], entry["task_issue"]) == ("alpha", 76)
+    assert [(e["repository"], e["task_issue"], e["readable"])
+            for e in src.quarantine_entries()] == [
+        ("alpha", 73, False), ("alpha", 74, False), ("alpha", 75, False),
+        ("alpha", 76, True)]
 
 
 # gh-backed caches: rank_rows and issue_description.

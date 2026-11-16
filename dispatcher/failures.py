@@ -164,6 +164,12 @@ def write_quarantine_verdict(state_dir: str | Path, pass_started: str,
         print(f"[warn] quarantine verdict write failed: {exc}", file=sys.stderr)
 
 
+# A record's fields and their blank values. A field present with another
+# type (bool is not an int) makes the record unreadable.
+QUARANTINE_DEFAULTS = {"task_issue": 0, "blocker_repo": "", "blocker_issue": 0,
+                       "fingerprint": "", "created_at": ""}
+
+
 def write_quarantine(state_dir: str | Path, repository_name: str, issue: int,
                      blocker_repo: str, blocker_issue: int, fp: str) -> None:
     p = quarantine_path(state_dir, repository_name, issue)
@@ -177,36 +183,72 @@ def write_quarantine(state_dir: str | Path, repository_name: str, issue: int,
     }, indent=2))
 
 
+# What read_quarantine returns for a record it has no object for.
+GONE = "gone"              # deleted before the read: blocks nothing
+UNREADABLE = "unreadable"  # unreadable bytes, not a JSON object or a
+                           # wrong-typed field: blocks
+
+
+def read_quarantine(p: Path) -> dict | str:
+    """The record's JSON object, GONE or UNREADABLE. Never raises.
+
+    The one reader for check_quarantine, the retry intent and the console,
+    so the three cannot disagree. A torn write is invalid UTF-8, a
+    ValueError like invalid JSON; `null` or a list is not a record, nor is
+    an object with a wrong-typed field (it would reach GitHub or 500 the
+    console). A missing field is fine."""
+    try:
+        rec = json.loads(p.read_text())
+    except FileNotFoundError:
+        return GONE
+    except (OSError, ValueError):
+        return UNREADABLE
+    return rec if _well_typed(rec) else UNREADABLE
+
+
+def _well_typed(rec) -> bool:
+    return isinstance(rec, dict) and all(
+        type(rec[k]) is type(default)
+        for k, default in QUARANTINE_DEFAULTS.items() if k in rec)
+
+
+def _blocker_open(name: str, github, rec: dict) -> bool:
+    """True unless the record's blocker issue is known to be closed."""
+    if not rec.get("blocker_issue"):
+        print(f"[warn] quarantine {name} has no blocker issue; "
+              f"delete the record to retry", file=sys.stderr)
+        return True
+    try:
+        state = github.issue_state(rec["blocker_repo"], rec["blocker_issue"])
+    except Exception as exc:
+        print(f"[warn] issue_state failed for {name}: {exc} — "
+              f"treating as still blocked", file=sys.stderr)
+        return True
+    return str(state).upper() == "OPEN"
+
+
 def check_quarantine(state_dir: str | Path, github, repository_name: str,
                      issue: int) -> bool:
     """True = still quarantined (skip the candidate). Deleting the record
     file manually force-retries; closing the blocker issue deletes it here,
     making the candidate claimable in the same pass."""
     p = quarantine_path(state_dir, repository_name, issue)
-    if not p.exists():
+    rec = read_quarantine(p)
+    if rec is GONE:
         return False
-    try:
-        rec = json.loads(p.read_text())
-    except (json.JSONDecodeError, OSError):
-        return True  # unreadable record: stay blocked; a human deletes it
-    if not rec.get("blocker_issue"):
-        print(f"[warn] quarantine {p.name} has no blocker issue; "
-              f"delete the record to retry", file=sys.stderr)
+    if rec is UNREADABLE:
+        return True  # stay blocked; Retry or a human deletes it
+    if _blocker_open(p.name, github, rec):
         return True
-    try:
-        state = github.issue_state(rec["blocker_repo"], rec["blocker_issue"])
-    except Exception as exc:
-        print(f"[warn] issue_state failed for {p.name}: {exc} — "
-              f"treating as still blocked", file=sys.stderr)
-        return True
-    if str(state).upper() == "OPEN":
-        return True
-    # Blocker closed: clear the fingerprint marker too, or a human closing
-    # the issue without fixing the cause silently loops forever — the
-    # marker still dedupes, so report_failure files nothing and pings
-    # nothing next time the same failure recurs.
-    fp = rec.get("fingerprint")
-    if fp:
-        fingerprint_path(state_dir, fp).unlink(missing_ok=True)
-    p.unlink(missing_ok=True)
+    _clear_quarantine(state_dir, p, rec)
     return False
+
+
+def _clear_quarantine(state_dir: str | Path, p: Path, rec: dict) -> None:
+    """Blocker closed: clear the fingerprint marker too, or a human closing
+    the issue without fixing the cause silently loops forever — the marker
+    still dedupes, so report_failure files nothing and pings nothing next
+    time the same failure recurs."""
+    if rec.get("fingerprint"):
+        fingerprint_path(state_dir, rec["fingerprint"]).unlink(missing_ok=True)
+    p.unlink(missing_ok=True)

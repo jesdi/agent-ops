@@ -2913,12 +2913,10 @@ def _apply_cancel_intent(cfg: Config, deps: Deps, by_name: dict,
 def _apply_retry_intent(cfg: Config, issue: int) -> None:
     for repository in cfg.repositories:
         qp = failures.quarantine_path(cfg.state_dir, repository.name, issue)
-        if not qp.exists():
+        rec = failures.read_quarantine(qp)
+        if rec is failures.GONE:
             continue
-        try:
-            fp = json.loads(qp.read_text()).get("fingerprint")
-        except (json.JSONDecodeError, OSError):
-            fp = None
+        fp = rec.get("fingerprint") if isinstance(rec, dict) else None
         if fp:
             failures.fingerprint_path(cfg.state_dir, fp).unlink(missing_ok=True)
         qp.unlink(missing_ok=True)

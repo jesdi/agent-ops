@@ -265,11 +265,24 @@ session and the state of every ticket. A session that finds one continues
 from it. The review session reads it only after its own review. Never
 committed.
 
+**Unreadable quarantine record**:
+A quarantine file whose read fails other than absence, whose contents are
+not UTF-8/JSON or a JSON object, or whose known fields have wrong types.
+The shared reader in `dispatcher/failures.py` owns this classification
+(ADRs 0017–0018). It still blocks, is listed with `readable: false` and can
+be retried. An empty object is readable.
+
+**Gone quarantine record**:
+A record whose read raises `FileNotFoundError`, including deletion between
+the directory scan and read. It blocks nothing and is not listed.
+
 **Malformed quarantine record**:
 A readable JSON object under `state_dir/quarantine/` with a wrong-typed
 `task_issue`, `blocker_issue`, `blocker_repo`, `fingerprint` or `created_at`.
-`Sources.quarantine_entries()` skips it as it skips an unreadable record;
-the field types are checked before the filename supplies the task key.
+A kind of unreadable quarantine record: `failures.read_quarantine` returns
+`UNREADABLE` for it (a missing field is fine; bool is not an int), so it
+still blocks its issue with no blocker lookup, is listed as unreadable and
+can be retried.
 
 **Quarantine verdict**:
 `<state_dir>/quarantine-verdict.json`: the `[repository, issue]` pairs that

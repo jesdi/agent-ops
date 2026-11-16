@@ -137,7 +137,11 @@ export const failures: FailuresView = {
   quarantined: [{
     repository: 'widget', task_issue: 38, blocker_repo: 'jesdi/widget',
     blocker_issue: 39, fingerprint: 'pytest::test_auth_flow',
-    created_at: '2026-07-24T22:10:00Z', blocker_open: true,
+    created_at: '2026-07-24T22:10:00Z', blocker_open: true, readable: true,
+  }, {
+    // A record nobody can read: it still blocks widget#40.
+    repository: 'widget', task_issue: 40, readable: false, blocker_repo: '',
+    blocker_issue: 0, fingerprint: '', created_at: '', blocker_open: null,
   }],
   fingerprints: [{
     fingerprint: 'pytest::test_auth_flow', repo: 'jesdi/widget',
