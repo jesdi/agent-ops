@@ -141,6 +141,8 @@ This is the reproduction committed as
 
 - **Given** `alpha`'s queue head is #212 and `quarantine/alpha-212.json` =
   `{not json`, with #213 next in the queue
+- **And** the dispatcher has checked that record and published its skipped
+  identity in the quarantine verdict matching the latest pass heartbeat
 - **When** `GET /api/board`
 - **Then** the next-claim forecast names #213, not #212
 

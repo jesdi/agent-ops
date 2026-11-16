@@ -243,10 +243,13 @@ def test_the_claim_forecast_skips_an_unreadable_head(tmp_path):
         def usage(self, routed):
             return {"anthropic": session_usage(0.5)}
 
+    started_at = datetime.now(timezone.utc).isoformat()
     (tmp_path / "pass.json").write_text(json.dumps({
-        "finished_at": datetime.now(timezone.utc).isoformat(),
+        "started_at": started_at, "finished_at": started_at,
         "interval_minutes": 10}))
     _write_record(tmp_path, 212, b"{not json")
+    assert failures.check_quarantine(tmp_path, _NullGitHub(), "alpha", 212)
+    failures.write_quarantine_verdict(tmp_path, started_at, {("alpha", 212)})
     cfg = make_config(tmp_path)
     client = TestClient(create_app(cfg, _UsageSources(
         cfg.state_dir, _NullSessions(), _QueueGitHub())))
