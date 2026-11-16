@@ -71,3 +71,7 @@ Testing decisions: drive behavior through the existing FastAPI TestClient routes
 ## Out of scope
 
 No frontend or API schema changes; no new runtime policy, targets.yaml hot reload, source-wide transactional snapshot, shared cache, persistence, authentication or settings-write changes. No redesign of unrelated routes, dispatcher admission logic, or `dispatcher.usage.Reading`. This stage writes only proposal and spec; design and tickets belong to plan. There are no open operator decisions.
+
+## Implementation ruling (2026-11-16)
+
+The operator reviewed ticket 03 after its test-writer reported that three task-detail HTTP characterization probes passed before implementation. Those results show the listed public behavior is already satisfied; they are not evidence for inventing a new HTTP behavior change. Keep all ticket 03 acceptance criteria as compatibility invariants while completing the behavior-preserving request-reading helper/interface refactor. Verify the helper-signature and dependency contract through type checking, static inspection and independent code review, while retaining the existing route invariants. The test-writer report records the probes and their removal as already-satisfied behavior.
