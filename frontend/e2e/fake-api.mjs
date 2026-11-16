@@ -11,7 +11,7 @@ import { extname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const DIST = fileURLToPath(new URL('../dist/', import.meta.url))
-const PORT = 8481
+const PORT = Number(process.env.FAKE_API_PORT ?? 8481) // reset-state.spec.ts starts fresh servers
 
 const parkedCard = {
   issue: 42, repository: 'widget', project: 'widget', title: 'Fix login redirect',
