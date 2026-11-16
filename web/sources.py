@@ -12,7 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Collection, Literal
 
-from dispatcher import (claims, eventlog, execution_overrides, messages as msgq,
+from dispatcher import (claims, eventlog, execution_overrides, failures,
+                        messages as msgq,
                         onboard, onboarding_sessions, priority, queue_ops, state, task_artifacts, triage)
 from dispatcher.usage import ProviderUsage
 from dispatcher.usage_providers import ADAPTERS, fetch_provider
@@ -27,6 +28,26 @@ DESCRIPTION_TTL_SECONDS = 300.0
 DESCRIPTION_RETRY_SECONDS = 30.0  # cold failure: retry sooner than the TTL
 DISPATCHER_KICK = ("systemctl", "--user", "start", "--no-block",
                    "agent-ops-dispatcher.service")
+
+
+def _matching_quarantine_skipped(verdict: object, started_at: str) -> list | None:
+    """Return skipped entries only from a well-shaped verdict for this pass."""
+    if not isinstance(verdict, dict):
+        return None
+    skipped = verdict.get("skipped")
+    if verdict.get("pass_started") != started_at or not isinstance(skipped, list):
+        return None
+    return skipped
+
+
+def _is_quarantine_pair(entry: object) -> bool:
+    return (isinstance(entry, list) and len(entry) == 2
+            and isinstance(entry[0], str) and type(entry[1]) is int)
+
+
+def _quarantine_pairs(skipped: list) -> frozenset[tuple[str, int]]:
+    return frozenset((entry[0], entry[1]) for entry in skipped
+                     if _is_quarantine_pair(entry))
 
 
 def _iso(ts: float) -> str:
@@ -251,6 +272,22 @@ class Sources:
                 entry["task_issue"] = keyed_issue
             entries.append(entry)
         return entries
+
+    def quarantine_verdict(self, heartbeat: dict | None) -> frozenset[tuple[str, int]]:
+        """Read the dispatcher's quarantine snapshot only for its matching pass."""
+        if not isinstance(heartbeat, dict):
+            return frozenset()
+        started_at = heartbeat.get("started_at")
+        if not isinstance(started_at, str):
+            return frozenset()
+        try:
+            verdict = json.loads(failures.quarantine_verdict_path(self.state_dir).read_text())
+        except (OSError, ValueError):
+            return frozenset()
+        skipped = _matching_quarantine_skipped(verdict, started_at)
+        if skipped is None:
+            return frozenset()
+        return _quarantine_pairs(skipped)
 
     def fingerprint_entries(self) -> list[dict]:
         root = self.state_dir / "failures"

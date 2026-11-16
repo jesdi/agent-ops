@@ -877,6 +877,30 @@ def _pick(names: list[str], tasks: list[TaskState],
                         project_last_claims(last_claimed, project_of), caps)
 
 
+def _unpaused_head_names(heads: Mapping[str, list[tuple[str, int]]],
+                         projects: Mapping[str, Project]) -> list[str]:
+    paused = {p.name for p in projects.values() if p.paused}
+    return [name for name in heads if name not in paused]
+
+
+def _next_claim_from_heads(heads: dict[str, tuple[str, int]], *,
+                           blocker: Blocker | None, eta: str,
+                           tasks: list[TaskState],
+                           projects: Mapping[str, Project],
+                           last_claimed: Mapping[str, str]) -> NextClaimView:
+    if not heads:
+        return NextClaimView(verdict="no-candidates", next_pass_eta=eta)
+    names = _unpaused_head_names(heads, projects)
+    if not names:
+        return NextClaimView(verdict="projects-paused", next_pass_eta=eta)
+    name = _pick(names, tasks, projects, last_claimed) if blocker is None else None
+    if name is None:
+        return NextClaimView(verdict="capacity-full", next_pass_eta=eta)
+    repository, issue = heads[name]
+    return NextClaimView(verdict="will-claim", next_pass_eta=eta,
+                         next_issue=issue, next_repository=repository)
+
+
 def _early_verdict(blocker: Blocker | None, gate: GateView,
                    eta: str) -> NextClaimView | None:
     """The forecast when the shared gate alone decides it, else None."""
@@ -917,10 +941,13 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
     routes to another model can be claimed while this says budget-blocked,
     or denied while this says will-claim.
 
+    Quarantine is modelled from the dispatcher's verdict as of the last
+    completed pass. A record written or a blocker closed after that pass shows
+    up one pass later. Unreached candidates are absent: a project that got no
+    turn because capacity ran out first, or whose board read failed, is not in
+    the set, so the forecast treats its candidates as claimable, as before.
+
     Gates it does NOT model, so `will-claim` can still be wrong:
-      * failures.check_quarantine's live blocker check — `quarantined` skips
-        every local record, so a record whose blocker already closed hides
-        its candidate until the dispatcher's next pass clears it.
       * slot exhaustion (the round stops when allocate_slot returns None)
         and a create_workspace failure — only knowable at claim time.
       * queue movement since the rank rows were cached (rank_rows has a TTL,
@@ -935,18 +962,8 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
     if early:
         return early
     heads = _queue_heads(queues, tasks, quarantined)
-    if not heads:
-        return NextClaimView(verdict="no-candidates", next_pass_eta=eta)
-    paused = {p.name for p in projects.values() if p.paused}
-    names = [n for n in heads if n not in paused]
-    if not names:
-        return NextClaimView(verdict="projects-paused", next_pass_eta=eta)
-    name = _pick(names, tasks, projects, last_claimed) if blocker is None else None
-    if name is None:
-        return NextClaimView(verdict="capacity-full", next_pass_eta=eta)
-    repository, issue = heads[name]
-    return NextClaimView(verdict="will-claim", next_pass_eta=eta,
-                         next_issue=issue, next_repository=repository)
+    return _next_claim_from_heads(heads, blocker=blocker, eta=eta, tasks=tasks,
+                                  projects=projects, last_claimed=last_claimed)
 
 
 def _on_timeline(e: dict, repository: str, issue: int) -> bool:

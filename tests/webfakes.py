@@ -52,6 +52,8 @@ class FakeSources:
         self.descriptions = {}    # (repo, number) -> dict
         self.usages = {"anthropic": session_usage(0.5)}
         self.quarantine = []
+        self.quarantine_verdict_result = frozenset()
+        self.quarantine_verdict_inputs = []
         self.fingerprints = []
         self.open_issues = {}     # (repo, number) -> bool | None
         self.events = []
@@ -66,6 +68,7 @@ class FakeSources:
         self.fingerprint = ('{"board": "a", "failures": "a",'
                             ' "history": "0", "queue": "a", "usage": "a"}')
         self.heartbeat = None     # dict | None returned by pass_heartbeat()
+        self.pass_heartbeat_reads = 0
         self._claims_paused = False
         self._triage_running = False
         self.messages_by_key = {}     # (repository, issue) -> list[msgq.Message]
@@ -114,6 +117,10 @@ class FakeSources:
     def quarantine_entries(self):
         return list(self.quarantine)
 
+    def quarantine_verdict(self, heartbeat):
+        self.quarantine_verdict_inputs.append(heartbeat)
+        return frozenset(self.quarantine_verdict_result)
+
     def fingerprint_entries(self):
         return list(self.fingerprints)
 
@@ -121,6 +128,7 @@ class FakeSources:
         return self.open_issues.get((repo, number))
 
     def pass_heartbeat(self):
+        self.pass_heartbeat_reads += 1
         return self.heartbeat
 
     def onboarding_running(self):

@@ -1377,6 +1377,241 @@ def test_issue_state_error_keeps_candidate_quarantined(tmp_path, monkeypatch):
     assert gh.claimed == [43]
 
 
+def test_quarantine_verdict_tracks_an_open_blocker_and_pass_heartbeat(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    failures.write_quarantine(c.state_dir, "portfolio_eval", 42,
+                              "jesdi/agent-ops", 501, "abc")
+    gh = FakeGitHub([Candidate(42, "Blocked", "u42")],
+                    issue_states={("jesdi/agent-ops", 501): "OPEN"})
+
+    main.run_pass(c, deps(gh, FakeSessions()))
+
+    heartbeat = json.loads((Path(c.state_dir) / "pass.json").read_text())
+    verdict = json.loads(
+        (Path(c.state_dir) / "quarantine-verdict.json").read_text())
+    assert verdict == {"pass_started": heartbeat["started_at"],
+                       "skipped": [["portfolio_eval", 42]]}
+    assert gh.claimed == []
+
+
+def test_quarantine_verdict_clears_a_closed_blocker_same_pass(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    failures.write_quarantine(c.state_dir, "portfolio_eval", 42,
+                              "jesdi/agent-ops", 501, "abc")
+    verdict_path = Path(c.state_dir) / "quarantine-verdict.json"
+    verdict_path.parent.mkdir(parents=True, exist_ok=True)
+    verdict_path.write_text(json.dumps({
+        "pass_started": "2026-11-15T09:50:00+00:00",
+        "skipped": [["portfolio_eval", 42]],
+    }))
+    gh = FakeGitHub([Candidate(42, "Unblocked", "u42")],
+                    issue_states={("jesdi/agent-ops", 501): "CLOSED"})
+
+    main.run_pass(c, deps(gh, FakeSessions()))
+
+    heartbeat = json.loads((Path(c.state_dir) / "pass.json").read_text())
+    verdict = json.loads(verdict_path.read_text())
+    assert verdict == {"pass_started": heartbeat["started_at"], "skipped": []}
+    assert gh.claimed == [42]
+    assert not failures.quarantine_path(c.state_dir, "portfolio_eval", 42).exists()
+
+
+def test_quarantine_verdict_lists_a_record_without_a_blocker(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    no_blocker = failures.quarantine_path(c.state_dir, "portfolio_eval", 42)
+    no_blocker.parent.mkdir(parents=True, exist_ok=True)
+    no_blocker.write_text(json.dumps({
+        "task_issue": 42, "blocker_repo": "jesdi/agent-ops",
+        "blocker_issue": 0, "fingerprint": "abc", "created_at": "now",
+    }))
+    gh = FakeGitHub([Candidate(42, "No blocker reference", "u42")])
+
+    main.run_pass(c, deps(gh, FakeSessions()))
+
+    heartbeat = json.loads((Path(c.state_dir) / "pass.json").read_text())
+    verdict = json.loads(
+        (Path(c.state_dir) / "quarantine-verdict.json").read_text())
+    assert verdict == {"pass_started": heartbeat["started_at"],
+                       "skipped": [["portfolio_eval", 42]]}
+    assert gh.claimed == []
+
+
+def test_quarantine_verdict_lists_unreadable_and_failed_lookup_candidates(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    alpha = dc_replace(
+        c.repositories[0], name="alpha", repo="jesdi/alpha",
+        clone_path=str(tmp_path / "alpha"),
+        worktrees_path=str(tmp_path / "alpha.worktrees"),
+        project=dc_replace(c.repositories[0].project, name="alpha"))
+    beta = dc_replace(
+        c.repositories[0], name="beta", repo="jesdi/beta",
+        clone_path=str(tmp_path / "beta"),
+        worktrees_path=str(tmp_path / "beta.worktrees"),
+        project=dc_replace(c.repositories[0].project, name="beta"))
+    c = dc_replace(c, repositories=[alpha, beta], capacity=2)
+    bad_record = failures.quarantine_path(c.state_dir, "alpha", 73)
+    bad_record.parent.mkdir(parents=True, exist_ok=True)
+    bad_record.write_text("{")
+    failures.write_quarantine(c.state_dir, "beta", 12,
+                              "jesdi/agent-ops", 502, "def")
+    gh = FakeGitHub(
+        issue_state_raises=True,
+        cands_by_repository={
+            "alpha": [Candidate(73, "Unreadable quarantine", "u73")],
+            "beta": [Candidate(12, "Failed blocker lookup", "u12")],
+        })
+
+    main.run_pass(c, deps(gh, FakeSessions()))
+
+    heartbeat = json.loads((Path(c.state_dir) / "pass.json").read_text())
+    verdict = json.loads(
+        (Path(c.state_dir) / "quarantine-verdict.json").read_text())
+    assert verdict == {"pass_started": heartbeat["started_at"],
+                       "skipped": [["alpha", 73], ["beta", 12]]}
+    assert gh.claimed == []
+
+
+def test_quarantine_verdict_is_written_when_capacity_is_full(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    for slot, issue in enumerate((1, 2, 3)):
+        wt = Path(c.repositories[0].worktrees_path) / f"task-{issue}"
+        (wt / ".agent").mkdir(parents=True)
+        save(c.state_dir, TaskState(
+            issue=issue, repository="portfolio_eval", stage=Stage.SPEC,
+            slot=slot, worktree=str(wt), branch=f"agent/task-{issue}",
+            title="t", updated_at="2026-07-14T00:00:00+00:00",
+            track="standard"))
+    gh = FakeGitHub([Candidate(99, "No room", "u99")])
+
+    main.run_pass(c, deps(gh, FakeSessions(alive={1, 2, 3})))
+
+    heartbeat = json.loads((Path(c.state_dir) / "pass.json").read_text())
+    verdict = json.loads(
+        (Path(c.state_dir) / "quarantine-verdict.json").read_text())
+    assert verdict == {"pass_started": heartbeat["started_at"], "skipped": []}
+    assert gh.claimed == []
+
+
+def test_quarantine_verdict_is_written_when_slot_allocation_exhausts(
+        tmp_path, monkeypatch):
+    c = cfg(tmp_path)
+    failures.write_quarantine(c.state_dir, "portfolio_eval", 73,
+                              "jesdi/agent-ops", 501, "abc")
+    gh = FakeGitHub(
+        [Candidate(73, "Blocked", "u73"), Candidate(74, "No slot", "u74")],
+        issue_states={("jesdi/agent-ops", 501): "OPEN"})
+    monkeypatch.setattr(main, "allocate_slot", lambda *a, **kw: None)
+    pass_started = "2026-11-15T10:00:00+00:00"
+
+    main._claim_new(c, deps(gh), c.repositories, ADMIT_ALL, tuple, False,
+                    pass_started)
+
+    verdict = json.loads(
+        (Path(c.state_dir) / "quarantine-verdict.json").read_text())
+    assert verdict == {"pass_started": pass_started,
+                       "skipped": [["portfolio_eval", 73]]}
+    assert gh.claimed == []
+
+
+def test_quarantine_verdict_is_written_when_no_project_remains_to_pick(
+        tmp_path, monkeypatch):
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    c = dc_replace(c, repositories=[with_project(
+        c.repositories[0], max_active=1)], capacity=2)
+    failures.write_quarantine(c.state_dir, "portfolio_eval", 73,
+                              "jesdi/agent-ops", 501, "abc")
+    gh = FakeGitHub(
+        [Candidate(73, "Blocked", "u73"), Candidate(74, "Claimed", "u74")],
+        issue_states={("jesdi/agent-ops", 501): "OPEN"})
+    pass_started = "2026-11-15T10:00:00+00:00"
+
+    main._claim_new(c, deps(gh), c.repositories, ADMIT_ALL, tuple, False,
+                    pass_started)
+
+    verdict = json.loads(
+        (Path(c.state_dir) / "quarantine-verdict.json").read_text())
+    assert verdict == {"pass_started": pass_started,
+                       "skipped": [["portfolio_eval", 73]]}
+    assert gh.claimed == [74]
+
+
+def test_quarantine_verdict_write_failure_warns_without_breaking_pass(
+        tmp_path, monkeypatch, capsys):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    verdict_path = Path(c.state_dir) / "quarantine-verdict.json"
+    verdict_path.mkdir(parents=True)
+
+    d = deps()
+    main.run_pass(c, d)
+
+    captured = capsys.readouterr()
+    assert "[warn]" in captured.err and "quarantine verdict" in captured.err.lower()
+    assert (Path(c.state_dir) / "pass.json").is_file()
+
+
+def test_claims_paused_keeps_the_verdict_file_stale_and_untrusted(
+        tmp_path, monkeypatch):
+    from dispatcher import triage
+    from web.sources import Sources
+
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    verdict_path = Path(c.state_dir) / "quarantine-verdict.json"
+    verdict_path.parent.mkdir(parents=True, exist_ok=True)
+    prior = (b'{"pass_started":"2026-11-15T09:50:00+00:00",'
+             b'"skipped":[["portfolio_eval",42]]}')
+    verdict_path.write_bytes(prior)
+    (Path(c.state_dir) / triage.REQUEST_FILE).write_text(
+        '{"requested_at":"2026-11-15T09:50:00+00:00"}')
+    # The request is still waiting for capacity: tick neither launches nor
+    # expires it, so the pass sees claims paused.
+    monkeypatch.setattr(triage, "tick", lambda *_args: None)
+
+    d = deps()
+    main.run_pass(c, d)
+
+    heartbeat = json.loads((Path(c.state_dir) / "pass.json").read_text())
+    assert verdict_path.read_bytes() == prior
+    assert heartbeat["started_at"] != "2026-11-15T09:50:00+00:00"
+    assert Sources(c.state_dir, d.sessions, d.github).quarantine_verdict(
+        heartbeat) == frozenset()
+
+
+def test_run_pass_verdict_is_readable_against_its_pass_heartbeat(
+        tmp_path, monkeypatch):
+    from web.sources import Sources
+
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    failures.write_quarantine(c.state_dir, "portfolio_eval", 42,
+                              "jesdi/agent-ops", 501, "abc")
+    gh = FakeGitHub([Candidate(42, "Blocked", "u42")],
+                    issue_states={("jesdi/agent-ops", 501): "OPEN"})
+
+    d = deps(gh, FakeSessions())
+    main.run_pass(c, d)
+
+    sources = Sources(c.state_dir, d.sessions, d.github)
+    assert sources.quarantine_verdict(sources.pass_heartbeat()) == frozenset({
+        ("portfolio_eval", 42)})
+
+
 def test_release_called_when_claim_fails(tmp_path, monkeypatch):
     """github.claim failure after workspace+save must trigger release and leave QUEUED state (regression: orphan-claim window)."""
     patch_usage(monkeypatch)

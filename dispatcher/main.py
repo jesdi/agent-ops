@@ -20,8 +20,9 @@ import traceback
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
+from enum import Enum, auto
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 
 from dispatcher.convergence import pass_lock
 from dispatcher.config import (Config, Repository, apply_stored_models,
@@ -140,6 +141,9 @@ class Launch:
     @property
     def model(self) -> str:
         return self.entry.model_id
+
+
+ClaimCandidate = tuple[Repository, Candidate, Launch]
 
 
 def _launch_for(cfg: Config, repository: Repository | None, task: TaskState,
@@ -2498,43 +2502,89 @@ def _no_task_tokens(deps: Deps) -> str:
     return "" if registered else f"the GitHub App is not registered: {github_app.README}"
 
 
+def _ranked_claim_candidates(deps: Deps, members: list[Repository]):
+    """Read one project's ranked candidates, warning when its turn cannot run."""
+    why = _no_task_tokens(deps)
+    if why:
+        print(f"[warn] {members[0].project.name}: no claims this pass — {why}",
+              file=sys.stderr)
+        return ()
+    try:
+        return deps.github.candidates(members)
+    except (BoardError, host_auth.HostWait) as exc:
+        print(f"[warn] {members[0].project.name}: no claims this pass — {exc}",
+              file=sys.stderr)
+        return ()
+
+
+def _skip_stale_claim(cfg: Config, by_issue: dict,
+                      repository: Repository, cand: Candidate,
+                      pass_started: str) -> bool:
+    """Drop an already-known candidate unless it was reopened this pass."""
+    key = (repository.name, cand.number)
+    stale = by_issue.get(key)
+    if stale is None:
+        return False
+    if not _reopened(stale, pass_started):
+        return True
+    delete(cfg.state_dir, *key)
+    del by_issue[key]
+    eventlog.append_event(cfg.state_dir, "reopened", repository=repository.name,
+                          issue=cand.number,
+                          detail="canceled task ranked again — reopened by operator")
+    return False
+
+
+def _claim_launch(cfg: Config, deps: Deps, repository: Repository,
+                  cand: Candidate, admit: Admit, order: Order,
+                  skipped: set[tuple[str, int]]) -> Launch | None:
+    """Return a candidate's launch unless quarantine or policy rejects it."""
+    if failures.check_quarantine(cfg.state_dir, deps.github, repository.name,
+                                 cand.number):
+        skipped.add((repository.name, cand.number))
+        return None
+    launch, _bypass = _candidate_launch(cfg, repository, cand, admit, order)
+    return launch
+
+
 def _claimable(cfg: Config, deps: Deps, members: list[Repository], tasks: list[TaskState],
-               admit: Admit, order: Order, pass_started: str):
+               admit: Admit, order: Order, pass_started: str,
+               skipped: set[tuple[str, int]]) -> Iterator[ClaimCandidate]:
     """One project's ranked candidates this pass may claim, across its member
     repositories in rank order, each with its repository and the spec launch it
     would start. Skips issues that already have a task, quarantined issues,
     and candidates whose spec model has no headroom — a denied candidate
     leaves the next one eligible, since its model may differ."""
-    why = _no_task_tokens(deps)
-    if why:   # a claim could only park: no container ever runs on the stored auth
-        print(f"[warn] {members[0].project.name}: no claims this pass — {why}", file=sys.stderr)
-        return
     by_name = {r.name: r for r in members}
     by_issue = {(t.repository, t.issue): t for t in tasks}
-    try:
-        cands = deps.github.candidates(members)
-    except (BoardError, host_auth.HostWait) as exc:  # this project only: the round goes on
-        print(f"[warn] {members[0].project.name}: no claims this pass — {exc}",
-              file=sys.stderr)
-        return
-    for cand in cands:
+    for cand in _ranked_claim_candidates(deps, members):
         repository = by_name[cand.repository]
-        stale = by_issue.get((repository.name, cand.number))
-        if stale is not None:
-            if not _reopened(stale, pass_started):
-                continue
-            delete(cfg.state_dir, repository.name, cand.number)
-            del by_issue[(repository.name, cand.number)]
-            eventlog.append_event(cfg.state_dir, "reopened",
-                                  repository=repository.name, issue=cand.number,
-                                  detail="canceled task ranked again — "
-                                         "reopened by operator")
-        if failures.check_quarantine(cfg.state_dir, deps.github, repository.name,
-                                     cand.number):
+        if _skip_stale_claim(cfg, by_issue, repository, cand, pass_started):
             continue
-        launch, _bypass = _candidate_launch(cfg, repository, cand, admit, order)
+        launch = _claim_launch(cfg, deps, repository, cand, admit, order, skipped)
         if launch is not None:
             yield repository, cand, launch
+
+
+class ClaimRoundOutcome(Enum):
+    """How claiming one picked candidate ends for the round."""
+
+    CONTINUE = auto()
+    STOP = auto()
+    PROJECT_FAILED = auto()
+    CLAIMED = auto()
+
+
+@dataclass
+class ClaimRound:
+    """Mutable state of one claim round."""
+
+    free_slots: int
+    projects: dict[str, list[Repository]]
+    counts: dict[str, int]
+    last_claimed: dict[str, str]
+    caps: dict[str, int | None]
+    candidates: dict[str, Iterator[ClaimCandidate]]
 
 
 def _commit_claim(cfg: Config, deps: Deps, repository: Repository, cand: Candidate,
@@ -2578,75 +2628,137 @@ def _wait_in_ready(cfg: Config, deps: Deps, repository: Repository, number: int,
         base_line.record_wait(cfg.state_dir, repository.name, number, key)
 
 
+def _claim_picked(cfg: Config, deps: Deps, repository: Repository,
+                  cand: Candidate, launch: Launch,
+                  dry_run: bool) -> ClaimRoundOutcome:
+    """Provision and commit one ranked candidate; return its round outcome."""
+    base = _read_claim_base(cfg, deps, repository, cand)
+    if base is None:
+        return ClaimRoundOutcome.CONTINUE
+    slot = allocate_slot(load_all(cfg.state_dir), max_slots(cfg.capacity))
+    if slot is None:
+        return ClaimRoundOutcome.STOP
+    try:
+        wt = create_workspace(repository, cand.number, base, dry_run=dry_run,
+                              auth=deps.github.auth)
+    except MissingBaseError:
+        # Not claimed, not a failure: the issue stays Ready and every pass
+        # asks again; the operator hears once per issue and base.
+        _wait_in_ready(cfg, deps, repository, cand.number,
+                       f"base:{base}", f"base branch {base} is not on origin")
+        return ClaimRoundOutcome.CONTINUE
+    except Exception:
+        # Board never claimed (claim is last, still Ready) → no release
+        # needed; report + quarantine, and the pass survives. Cap at one
+        # provisioning failure per project per pass: a systemic fault (git
+        # remote down, podman down, worktrees volume full) would otherwise
+        # fail EVERY remaining Ready candidate. The project leaves this
+        # pass's round; the next pass retries its remaining candidates.
+        _report_provisioning_failure(cfg, deps, repository, cand, dry_run)
+        return ClaimRoundOutcome.PROJECT_FAILED
+    base_line.clear_wait(cfg.state_dir, repository.name, cand.number)
+    _commit_claim(cfg, deps, repository, cand, slot, wt, launch, base)
+    return ClaimRoundOutcome.CLAIMED
+
+
+def _read_claim_base(cfg: Config, deps: Deps, repository: Repository,
+                     cand: Candidate) -> str | None:
+    """Read and validate a candidate's base line, recording invalid bases."""
+    try:
+        body = deps.github.issue_body(repository, cand.number)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+            OSError, ValueError) as exc:  # ValueError: gh printed malformed JSON
+        # Unclaimed and still Ready: the next pass reads it again.
+        print(f"[warn] body of #{cand.number} not read: {exc}", file=sys.stderr)
+        return None
+    base = base_line.parse_base(body)
+    if base is None:
+        _wait_in_ready(cfg, deps, repository, cand.number, "invalid",
+                       "its base line names no valid branch")
+        return None
+    return base
+
+
+def _claim_round_turn(cfg: Config, deps: Deps, state: ClaimRound,
+                      dry_run: bool) -> bool:
+    """Take one project turn; False when the round must stop."""
+    name = claims.pick_project(list(state.projects), state.counts,
+                               state.last_claimed, state.caps)
+    if name is None:
+        return False
+    picked = next(state.candidates[name], None)
+    if picked is None:
+        del state.projects[name]
+        return True
+    repository, cand, launch = picked
+    outcome = _claim_picked(cfg, deps, repository, cand, launch, dry_run)
+    if outcome is ClaimRoundOutcome.STOP:
+        return False
+    if outcome is ClaimRoundOutcome.PROJECT_FAILED:
+        del state.projects[name]
+    if outcome is ClaimRoundOutcome.CLAIMED:
+        state.counts[name] += 1
+        state.last_claimed[name] = _now()
+        state.free_slots -= 1  # checked before the next pull, so no candidate is vetted that cannot be claimed
+    return True
+
+
+def _claim_generators(
+        cfg: Config, deps: Deps, in_round: dict[str, list[Repository]],
+        all_tasks: list[TaskState], admit: Admit, order: Order,
+        pass_started: str, skipped: set[tuple[str, int]],
+) -> dict[str, Iterator[ClaimCandidate]]:
+    """Lazy per-project candidate streams for the claim round."""
+    return {name: _claimable(cfg, deps, members, all_tasks, admit, order,
+                             pass_started, skipped)
+            for name, members in in_round.items()}
+
+
+def _claim_round_data(cfg: Config, deps: Deps,
+                      repositories: list[Repository], admit: Admit,
+                      order: Order, pass_started: str,
+                      skipped: set[tuple[str, int]]) -> ClaimRound | None:
+    """Build one claim round's state, or None when there is no claim room."""
+    all_tasks = load_all(cfg.state_dir)
+    free = claims.claim_room(cfg.capacity, cfg.max_open, all_tasks,
+                             triage_running=False)
+    if free <= 0:
+        return None
+    in_round = by_project([r for r in repositories if not r.project.paused])
+    project_of = {r.name: r.project.name for r in repositories}
+    counts = claims.project_counts(list(in_round), all_tasks, project_of)
+    last = claims.project_last_claims(claims.last_claims(cfg.state_dir), project_of)
+    caps = {name: members[0].project.max_active for name, members in in_round.items()}
+    # Generator bodies run on first next(), so a project's board is read only on its turn.
+    gens = _claim_generators(cfg, deps, in_round, all_tasks, admit, order,
+                             pass_started, skipped)
+    return ClaimRound(free_slots=free, projects=in_round, counts=counts,
+                      last_claimed=last, caps=caps, candidates=gens)
+
+
+def _run_claim_round(cfg: Config, deps: Deps, repositories: list[Repository],
+                     admit: Admit, order: Order, dry_run: bool,
+                     pass_started: str, skipped: set[tuple[str, int]]) -> None:
+    """Claim until capacity or candidates run out; quarantine skips land in `skipped`."""
+    state = _claim_round_data(cfg, deps, repositories, admit, order,
+                              pass_started, skipped)
+    while state is not None and state.free_slots > 0:
+        if not _claim_round_turn(cfg, deps, state, dry_run):
+            return
+
+
 def _claim_new(cfg: Config, deps: Deps, repositories: list[Repository],
                admit: Admit, order: Order, dry_run: bool,
                pass_started: str = "") -> None:
     """Claim free units one at a time, each via claims.pick_project. A paused
     project claims nothing; a project leaves the round when its candidates run
     out or provisioning fails for it."""
-    all_tasks = load_all(cfg.state_dir)
-    free = claims.claim_room(cfg.capacity, cfg.max_open, all_tasks,
-                             triage_running=False)
-    if free <= 0:
-        return
-    in_round = by_project([r for r in repositories if not r.project.paused])
-    project_of = {r.name: r.project.name for r in repositories}
-    counts = claims.project_counts(list(in_round), all_tasks, project_of)
-    last = claims.project_last_claims(claims.last_claims(cfg.state_dir), project_of)
-    caps = {name: members[0].project.max_active for name, members in in_round.items()}
-    # Generator bodies run on first next(), so a project's board is read and
-    # ranked only when it gets a turn.
-    gens = {name: _claimable(cfg, deps, members, all_tasks, admit, order, pass_started)
-            for name, members in in_round.items()}
-    while free > 0:
-        name = claims.pick_project(list(in_round), counts, last, caps)
-        if name is None:
-            return
-        picked = next(gens[name], None)
-        if picked is None:
-            del in_round[name]
-            continue
-        repository, cand, launch = picked
-        try:
-            body = deps.github.issue_body(repository, cand.number)
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
-                OSError, ValueError) as exc:  # ValueError: gh printed JSON that does not parse
-            # Unclaimed and still Ready: the next pass reads it again, and
-            # the round goes on to the other candidates.
-            print(f"[warn] body of #{cand.number} not read: {exc}", file=sys.stderr)
-            continue
-        base = base_line.parse_base(body)
-        if base is None:
-            _wait_in_ready(cfg, deps, repository, cand.number, "invalid", "its base line names no valid branch")
-            continue
-        slot = allocate_slot(load_all(cfg.state_dir), max_slots(cfg.capacity))
-        if slot is None:
-            return
-        try:
-            wt = create_workspace(repository, cand.number, base, dry_run=dry_run,
-                                  auth=deps.github.auth)
-        except MissingBaseError:
-            # Not claimed, not a failure: the issue stays Ready and every pass
-            # asks again; the operator hears once per issue and base.
-            _wait_in_ready(cfg, deps, repository, cand.number, f"base:{base}", f"base branch {base} is not on origin")
-            continue
-        except Exception:
-            # Board never claimed (claim is last, still Ready) → no release
-            # needed; report + quarantine, and the pass survives.
-            _report_provisioning_failure(cfg, deps, repository, cand, dry_run)
-            # Cap at one provisioning failure per project per pass: a
-            # systemic fault (git remote down, podman down, worktrees
-            # volume full) would otherwise fail EVERY remaining Ready
-            # candidate, filing an issue + ping + quarantine record per
-            # candidate. The project leaves this pass's round; the next pass
-            # retries its remaining candidates, and other projects keep claiming.
-            del in_round[name]
-            continue
-        base_line.clear_wait(cfg.state_dir, repository.name, cand.number)
-        _commit_claim(cfg, deps, repository, cand, slot, wt, launch, base)
-        counts[name] += 1
-        last[name] = _now()
-        free -= 1  # checked before the next pull, so no candidate is vetted (or swept) that cannot be claimed
+    skipped: set[tuple[str, int]] = set()
+    try:
+        _run_claim_round(cfg, deps, repositories, admit, order, dry_run,
+                         pass_started, skipped)
+    finally:
+        failures.write_quarantine_verdict(cfg.state_dir, pass_started, skipped)
 
 
 def _task_for_intent(cfg: Config, intent: intents.Intent) -> TaskState | None:
