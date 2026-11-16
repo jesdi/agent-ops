@@ -4,6 +4,9 @@
 // drains intents into the durable message queue (without resuming the starved
 // task). POST /__control__/free-slot simulates a slot becoming available:
 // the parked task resumes and all queued messages are delivered.
+// POST /__control__/reset rebuilds every piece of mutable state (cards, ghosts,
+// capacity, next claim, priority, messages, intents) from the same seed as
+// startup, then pushes board and usage. Specs call it to stay isolated.
 import { existsSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
@@ -59,7 +62,9 @@ const seedGhosts = () => [
 
 const queued = () => state.board.columns.find((c) => c.key === 'queued')
 
-const state = {
+// Fresh objects on every call: startup and reset share it, so mutations
+// never leak into a later seed.
+const seedState = () => ({
   board: {
     columns: [
       { key: 'needs-review', title: 'Needs review', zone: 'needs-you', cards: [], ghosts: [] },
@@ -74,7 +79,7 @@ const state = {
       { key: 'done', title: 'Done', zone: 'pipeline', cards: [], ghosts: [] },
       { key: 'wont-do', title: 'Wont do', zone: 'pipeline', cards: [], ghosts: [] },
     ],
-    capacity: { active: 0, capacity: 3, slots_used: 1, max_slots: 5, slots_held: [] },
+    capacity: { active: 0, capacity: 3, slots_used: 0, max_slots: 5, slots_held: [] },
     queue_stale: false,
     median_cycle_seconds: 7200,
     next_claim: {
@@ -113,7 +118,9 @@ const state = {
   intents: [],
   // issue -> [{ id, text, actor, created_at, delivered_at }]
   messages: {},
-}
+})
+
+const state = seedState()
 
 function messageViews(issue) {
   const stored = (state.messages[issue] ?? []).map((m) => ({
@@ -319,17 +326,9 @@ const server = createServer(async (req, res) => {
   if (url.pathname.startsWith('/api/')) {
     return json(404, { detail: 'not found' })
   }
-  // Resets only the mutable queue state touched by queue-flow.spec.ts so the
-  // spec is idempotent across Playwright retries (workers:1, no parallel runs).
-  if (url.pathname === '/__control__/reset-queue' && req.method === 'POST') {
-    queued().ghosts = seedGhosts()
-    state.usage.priority = { mode: 'auto', options: ['auto', 'anthropic', 'openai'], first: 'anthropic', pinned: [] }
-    for (const c of state.board.columns) c.cards = c.cards.filter((x) => x.pinned_track === undefined)
-    state.board.next_claim = {
-      verdict: 'will-claim',
-      next_pass_eta: new Date(Date.now() + 6 * 60_000).toISOString(),
-      next_issue: 73, next_repository: 'widget', minutes_to_reset: 0, blocked_by: '',
-    }
+  if (url.pathname === '/__control__/reset' && req.method === 'POST') {
+    Object.assign(state, seedState())
+    push(['board', 'usage'])
     return json(200, { ok: true })
   }
   if (url.pathname === '/__control__/seed-pinned' && req.method === 'POST') {
@@ -378,21 +377,6 @@ const server = createServer(async (req, res) => {
       slots_used: 1, slots_held: [0],
     }
     push(['board', 'history'])
-    return json(200, { ok: true })
-  }
-
-  // Restores the seed so the spec is idempotent across Playwright retries.
-  if (url.pathname === '/__control__/reset-messages' && req.method === 'POST') {
-    state.messages = {}
-    state.intents = []
-    const parked = state.board.columns.find((c) => c.key === 'parked')
-    const inProgress = state.board.columns.find((c) => c.key === 'in-progress')
-    inProgress.cards = []
-    parked.cards = [{ ...parkedCard }]
-    state.board.capacity = {
-      active: 0, capacity: 3, slots_used: 0, max_slots: 5, slots_held: [],
-    }
-    push(['board'])
     return json(200, { ok: true })
   }
 
