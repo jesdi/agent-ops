@@ -937,6 +937,14 @@ def _full_board_cards(body):
             for card in column["cards"]}
 
 
+def _full_board_candidate(number=73):
+    return {
+        "number": number, "title": f"candidate {number}", "url": "u",
+        "status": "Ready", "labels": ["auto"], "blocked": False,
+        "score": 2.0, "boost": 0,
+    }
+
+
 def _full_board_policy(implement, *, spec=None, pinned=()):
     from dispatcher.models import parse_policy
 
@@ -957,7 +965,8 @@ def _full_board_policy(implement, *, spec=None, pinned=()):
 
 def _full_board_usage(now, *, anthropic_session=0.1,
                       anthropic_reset_minutes=120, fable_week=0.0,
-                      openai_session=0.1, openai_reset_minutes=120):
+                      openai_session=0.1, openai_reset_minutes=120,
+                      anthropic_week=0.0, openai_week=0.0):
     from dispatcher.usage import ProviderUsage, Window, WindowKind
 
     def provider(name, session_used, reset_minutes, week_used=0.0):
@@ -974,13 +983,15 @@ def _full_board_usage(now, *, anthropic_session=0.1,
 
     return {
         "anthropic": provider("anthropic", anthropic_session,
-                              anthropic_reset_minutes),
-        "openai": provider("openai", openai_session, openai_reset_minutes),
+                              anthropic_reset_minutes,
+                              week_used=anthropic_week),
+        "openai": provider("openai", openai_session, openai_reset_minutes,
+                           week_used=openai_week),
     }
 
 
 def test_full_board_observes_model_settings_on_the_next_request(
-        tmp_path):
+        tmp_path, monkeypatch):
     from dispatcher import model_settings, priority
     from dispatcher.config import apply_stored_models
 
@@ -1004,11 +1015,21 @@ def test_full_board_observes_model_settings_on_the_next_request(
         now=datetime(2026, 11, 15, tzinfo=timezone.utc))
     priority.save(tmp_path, "anthropic", actor="test",
                   now=datetime(2026, 11, 15, tzinfo=timezone.utc))
+    first_time = datetime(2026, 11, 16, 12, tzinfo=timezone.utc)
+    clock_value = [first_time]
+    clock_reads = []
+
+    def load_clock():
+        clock_reads.append(clock_value[0])
+        return clock_value[0]
+
     fake = FakeSources()
     fake.tasks_list = [make_task(issue=7, stage=Stage.PLAN),
                        make_task(issue=8, stage=Stage.PLAN)]
-    fake.usages = _full_board_usage(datetime.now(timezone.utc),
-                                    fable_week=0.1)
+    fake.rank["alpha"] = ([_full_board_candidate()], "now", False)
+    fake.usages = _full_board_usage(first_time, anthropic_session=0.9,
+                                    anthropic_reset_minutes=60,
+                                    openai_session=0.2)
     changed_during_request = []
 
     def update_settings(repository, issue):
@@ -1017,16 +1038,30 @@ def test_full_board_observes_model_settings_on_the_next_request(
             model_settings.save(
                 tmp_path, stored(second_order), actor="test",
                 now=datetime(2026, 11, 15, tzinfo=timezone.utc))
+            clock_value[0] = first_time + timedelta(minutes=45)
         return None
 
     fake.execution_override = update_settings
-    loads = []
+    loads, mode_reads, order_reads, usage_reads = [], [], [], []
 
     def load_effective_config():
         loads.append(1)
         return apply_stored_models(startup)
 
-    client = _full_board_client(startup, fake, load_effective_config)
+    real_mode_load, real_order = priority.load, priority.order
+    monkeypatch.setattr(
+        priority, "load",
+        lambda *args, **kwargs: mode_reads.append(1)
+        or real_mode_load(*args, **kwargs))
+    monkeypatch.setattr(
+        priority, "order",
+        lambda *args, **kwargs: order_reads.append(1)
+        or real_order(*args, **kwargs))
+    real_usage = fake.usage
+    fake.usage = lambda routed=(): usage_reads.append(1) or real_usage(routed)
+
+    client = _full_board_client(startup, fake, load_effective_config,
+                                clock_loader=load_clock)
     first_request = client.get("/api/board", headers=HEADERS)
     assert first_request.status_code == 200
     assert changed_during_request == [7]
@@ -1035,6 +1070,19 @@ def test_full_board_observes_model_settings_on_the_next_request(
                 7: "anthropic/claude-opus-5",
                 8: "anthropic/claude-opus-5",
             }
+    first_cards = _full_board_cards(first_request.json())
+    assert all(first_cards[issue]["admission"]["requested"]["admitted"]
+               is False for issue in (7, 8))
+    queued = next(column for column in first_request.json()["columns"]
+                  if column["key"] == "queued")
+    (candidate,) = queued["ghosts"]
+    assert candidate["number"] == 73
+    assert candidate["admission"]["requested"]["model"] == (
+        "anthropic/claude-opus-5")
+    assert candidate["admission"]["requested"]["admitted"] is False
+    assert clock_reads == [first_time]
+    assert (len(loads), len(mode_reads), len(order_reads), len(usage_reads)) == (
+        1, 1, 1, 1)
 
     second_request = client.get("/api/board", headers=HEADERS)
     assert second_request.status_code == 200
@@ -1043,7 +1091,14 @@ def test_full_board_observes_model_settings_on_the_next_request(
                 7: "anthropic/claude-fable-5-1",
                 8: "anthropic/claude-fable-5-1",
             }
-    assert len(loads) == 2
+    assert all(card["admission"] is None for card in
+               _full_board_cards(second_request.json()).values())
+    second_queue = next(column for column in second_request.json()["columns"]
+                        if column["key"] == "queued")
+    assert second_queue["ghosts"][0]["admission"] is None
+    assert clock_reads == [first_time, first_time + timedelta(minutes=45)]
+    assert (len(loads), len(mode_reads), len(order_reads), len(usage_reads)) == (
+        2, 2, 2, 2)
 
 
 def test_full_board_preserves_policy_pick_override_pin_and_fallback_precedence(
@@ -1076,6 +1131,7 @@ def test_full_board_preserves_policy_pick_override_pin_and_fallback_precedence(
         make_task(issue=10, repository="removed", stage=Stage.PLAN,
                   park=PARK_WAKE),
     ]
+    fake.rank["alpha"] = ([_full_board_candidate()], "now", False)
     fake.execution_overrides[("alpha", 9)] = (
         "anthropic/claude-opus-5", True)
     unavailable = session_usage(source="unavailable")
@@ -1101,3 +1157,106 @@ def test_full_board_preserves_policy_pick_override_pin_and_fallback_precedence(
     assert cards[10]["admission"]["requested"]["model"] == (
         "openai/gpt-6-luna")
     assert cards[10]["admission"]["requested"]["admitted"] is False
+    queued = next(column for column in response.json()["columns"]
+                  if column["key"] == "queued")
+    candidate = queued["ghosts"][0]
+    assert candidate["admission"]["requested"]["model"] == (
+        "anthropic/claude-opus-5")
+    assert candidate["admission"]["requested"]["admitted"] is False
+
+    fake.usages = {}
+    empty_usage_response = client.get("/api/board", headers=HEADERS)
+    assert empty_usage_response.status_code == 200
+    empty_cards = _full_board_cards(empty_usage_response.json())
+    assert empty_cards[7]["admission"]["requested"]["model"] == (
+        "anthropic/claude-opus-5")
+    assert empty_cards[7]["admission"]["requested"]["admitted"] is False
+    empty_queue = next(column for column in empty_usage_response.json()["columns"]
+                       if column["key"] == "queued")
+    empty_candidate = empty_queue["ghosts"][0]
+    assert empty_candidate["admission"]["requested"]["model"] == (
+        "anthropic/claude-opus-5")
+    assert empty_candidate["admission"]["requested"]["admitted"] is False
+
+
+def test_full_board_uses_effective_capacity_max_open_and_pace(tmp_path):
+    from dispatcher import priority
+    from dispatcher.models import parse_policy
+    from dispatcher.usage import PaceConfig
+    from tests.configfakes import with_project
+    from tests.webfakes import make_repository
+
+    now = datetime.now(timezone.utc)
+    repository = make_repository()
+    global_policy = _full_board_policy(["openai/gpt-6-luna"])
+    project_policy = parse_policy({
+        "triage": ["claude-opus-5"],
+        "untracked": "standard",
+        "tracks": {
+            "standard": {
+                "when": "Standard tasks.",
+                "spec": ["claude-opus-5"], "plan": ["claude-opus-5"],
+                "implement": ["claude-opus-5"], "review": ["claude-opus-5"],
+            },
+            "flex": {
+                "when": "Flexible tasks.",
+                "spec": ["openai/gpt-6-luna", "claude-opus-5"],
+                "plan": ["openai/gpt-6-luna", "claude-opus-5"],
+                "implement": ["openai/gpt-6-luna", "claude-opus-5"],
+                "review": ["openai/gpt-6-luna", "claude-opus-5"],
+            },
+        },
+    })
+    startup = replace(make_config(tmp_path, repositories=[repository]),
+                      models=global_policy)
+    effective = replace(
+        startup, capacity=4, max_open=4, models=global_policy,
+        pace=PaceConfig(budget_threshold=0.4, racing_minutes=30,
+                        racing_threshold=0.95, pace_margin=0.1,
+                        weekend_weight=1.0,
+                        session_week_share={"anthropic": 0.01}),
+        repositories=[with_project(repository, models=project_policy)])
+    fake = FakeSources()
+    fake.heartbeat = _fresh_heartbeat()
+    fake.tasks_list = [
+        make_task(issue=7, stage=Stage.PLAN, park=PARK_WAKE, track="flex"),
+        make_task(issue=8, stage=Stage.PLAN, park=PARK_WAKE),
+        make_task(issue=9, stage=Stage.PLAN, park=PARK_WAKE),
+        make_task(issue=10, stage=Stage.PLAN, park=PARK_WAKE),
+    ]
+    fake.rank["alpha"] = ([_full_board_candidate()], "now", False)
+    fake.usages = _full_board_usage(
+        now, anthropic_session=0.2, openai_session=0.2,
+        anthropic_week=0.2, openai_week=0.05)
+    priority.save(tmp_path, "auto", actor="test", now=now)
+    client = _full_board_client(startup, fake, lambda: effective,
+                                clock_loader=lambda: now)
+
+    ordered_response = client.get("/api/board", headers=HEADERS)
+    assert ordered_response.status_code == 200
+    ordered_body = ordered_response.json()
+    ordered_cards = _full_board_cards(ordered_body)
+    assert ordered_body["capacity"]["capacity"] == 4
+    assert ordered_body["next_claim"]["verdict"] == "capacity-full"
+    assert ordered_cards[7]["model"] == "anthropic/claude-opus-5"
+
+    fake.usages = _full_board_usage(
+        now, anthropic_session=0.2, openai_session=0.5,
+        anthropic_week=0.2, openai_week=0.05)
+    blocked_gate = client.get("/api/board", headers=HEADERS).json()
+    assert blocked_gate["next_claim"]["verdict"] == "budget-blocked"
+
+    fake.usages = _full_board_usage(
+        now, anthropic_session=0.5, openai_session=0.2,
+        anthropic_week=0.2, openai_week=0.05)
+    blocked_models = client.get("/api/board", headers=HEADERS).json()
+    blocked_cards = _full_board_cards(blocked_models)
+    assert blocked_cards[8]["admission"]["requested"]["model"] == (
+        "anthropic/claude-opus-5")
+    assert blocked_cards[8]["admission"]["requested"]["admitted"] is False
+    blocked_queue = next(column for column in blocked_models["columns"]
+                         if column["key"] == "queued")
+    blocked_candidate = blocked_queue["ghosts"][0]
+    assert blocked_candidate["admission"]["requested"]["model"] == (
+        "anthropic/claude-opus-5")
+    assert blocked_candidate["admission"]["requested"]["admitted"] is False
