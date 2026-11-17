@@ -14,7 +14,7 @@ override IMPLEMENT_SPEC_LOCKED := $(value IMPLEMENT_SPEC_LOCKED)
 export IMPLEMENT_SPEC_LOCKED
 
 test:  ## Dispatcher/console unit suite
-	$(RUN) python -m pytest -q
+	$(RUN) python -m pytest -q -n auto
 
 fast:  ## Selected acceptance tests plus frontend lint and types
 	$(RUN) python scripts/fast_gate.py
