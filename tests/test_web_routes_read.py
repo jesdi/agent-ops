@@ -1250,3 +1250,11 @@ def test_full_board_uses_effective_capacity_max_open_and_pace(tmp_path):
     assert blocked_candidate["admission"]["requested"]["model"] == (
         "anthropic/claude-opus-5")
     assert blocked_candidate["admission"]["requested"]["admitted"] is False
+
+    # Detail, and both usage routes, read the same effective pace and time.
+    detail = client.get("/api/task/alpha/8", headers=HEADERS).json()
+    assert detail["card"]["model"] == blocked_cards[8]["model"]
+    assert detail["card"]["admission"] == blocked_cards[8]["admission"]
+    usage = client.get("/api/usage", headers=HEADERS).json()
+    socket = TestClient(client.app.state.usage_app).get("/usage").json()
+    assert socket == usage
