@@ -392,7 +392,8 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
             reading.usages, now=reading.now, pace=reading.config.pace,
             default_model=reading.config.models.gate_entry().model_id,
             mode=reading.mode, routed=routed_providers(reading.config),
-            pinned=reading.config.models.pinned, order=reading.order)
+            pinned=reading.config.models.pinned, order=reading.order,
+            auth_dark_since=sources.auth_dark_since())
 
     @app.get("/api/board", response_model=read_model.BoardView)
     def board(op: Operator = Depends(current_operator)):
@@ -412,7 +413,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
             events=sources.events_tail(EVENTS_SCAN_LIMIT),
             heartbeat=heartbeat,
             now=reading.now,
-            gate=usage.gate,
+            usage=usage,
             queues=queues, queue_stale=stale_any,
             # One session-layer probe for both signals (cf. dispatcher run_pass).
             claims_paused=claims_paused, triage_running=triage_running,
@@ -583,7 +584,10 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
     # (the socket's file permissions are the boundary) and no other route.
     usage_app = FastAPI(title="agent-ops usage socket", openapi_url=None,
                         docs_url=None, redoc_url=None)
-    usage_app.get("/usage", response_model=read_model.UsageView)(_current_usage)
+    # `/usage` is the socket's established path; `/api/usage` is the same view
+    # under the TCP path, so one client URL works over both.
+    for path in ("/usage", "/api/usage"):
+        usage_app.get(path, response_model=read_model.UsageView)(_current_usage)
     app.state.usage_app = usage_app
 
     @app.post("/api/priority")

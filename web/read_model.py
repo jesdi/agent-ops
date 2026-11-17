@@ -9,7 +9,7 @@ from pathlib import Path
 
 from typing import Annotated, Collection, Literal, Mapping
 
-from pydantic import BaseModel, Field, StrictBool, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr
 
 from dispatcher import messages as msgq
 from dispatcher import priority
@@ -235,6 +235,7 @@ class BoardView(BoardSnapshot):
     # The ranking behind Queued's ghosts failed and a cached one is shown.
     queue_stale: bool
     next_claim: NextClaimView
+    usage: UsageView
 
 
 def task_card(t: TaskState, *, model: str,
@@ -364,10 +365,29 @@ def build_board_snapshot(tasks: list[TaskState], *, capacity: int,
         median_cycle_seconds=median_cycle_seconds(events))
 
 
+def _ghost_card(project: str, r: dict,
+                admissions: Mapping[tuple[str, int], TaskAdmissionView]) -> GhostCard:
+    return GhostCard(number=r["number"], repository=r["repository"],
+                     project=project, title=r.get("title", ""), url=r.get("url", ""),
+                     score=r.get("score"), boost=int(r.get("boost") or 0),
+                     admission=admissions.get((r["repository"], r["number"])))
+
+
+def _ghost_cards(tasks: list[TaskState], queues: list[tuple[str, list[dict]]],
+                 admissions: Mapping[tuple[str, int], TaskAdmissionView]) -> list[GhostCard]:
+    # Key on (repository, issue) so alpha#73 does not hide beta#73. Issue numbers
+    # are per-repo; bare numbers would wrongly suppress cross-repository candidates
+    # (cf. dispatcher/main.py:223 which acknowledges number collisions).
+    known = {(t.repository, t.issue) for t in tasks}
+    return [_ghost_card(project, r, admissions)
+            for project, rows in queues for r in rows
+            if _is_candidate(r) and (r["repository"], r["number"]) not in known]
+
+
 def build_board(tasks: list[TaskState], *, capacity: int,
                 models: dict[tuple[str, int], str],
                 events: list[dict], heartbeat: dict | None, now: datetime,
-                gate: GateView,
+                usage: UsageView,
                 queues: list[tuple[str, list[dict]]],
                 queue_stale: bool, claims_paused: bool,
                 triage_running: bool,
@@ -382,17 +402,7 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                 quarantined: Collection[tuple[str, int]] | None = None,
                 pinned_tracks: dict[tuple[str, int], str] | None = None,
                 ) -> BoardView:
-    # Key on (repository, issue) so alpha#73 does not hide beta#73. Issue numbers
-    # are per-repo; bare numbers would wrongly suppress cross-repository candidates
-    # (cf. dispatcher/main.py:223 which acknowledges number collisions).
-    known = {(t.repository, t.issue) for t in tasks}
-    ghost_admissions = candidate_admissions or {}
-    ghosts = [GhostCard(number=r["number"], repository=r["repository"],
-                        project=project, title=r.get("title", ""), url=r.get("url", ""),
-                        score=r.get("score"), boost=int(r.get("boost") or 0),
-                        admission=ghost_admissions.get((r["repository"], r["number"])))
-              for project, rows in queues for r in rows
-              if _is_candidate(r) and (r["repository"], r["number"]) not in known]
+    ghosts = _ghost_cards(tasks, queues, candidate_admissions or {})
     snapshot = build_board_snapshot(
         tasks, capacity=capacity, models=models, events=events, queues=queues,
         undelivered=undelivered, wake_blocked=wake_blocked,
@@ -401,9 +411,9 @@ def build_board(tasks: list[TaskState], *, capacity: int,
     return BoardView(
         columns=snapshot.columns, capacity=snapshot.capacity,
         median_cycle_seconds=snapshot.median_cycle_seconds,
-        queue_stale=queue_stale,
+        queue_stale=queue_stale, usage=usage,
         next_claim=next_claim(heartbeat, now=now, tasks=tasks,
-                              capacity=max(0, capacity - onboarding_running), gate=gate,
+                              capacity=max(0, capacity - onboarding_running), gate=usage.gate,
                               queues=queues,
                               claims_paused=claims_paused,
                               triage_running=triage_running,
@@ -583,10 +593,17 @@ class PriorityView(BaseModel):
     pinned: list[str] = []  # the tracks the mode does not apply to, in policy order
 
 
+class AuthDarkView(BaseModel):
+    since: str  # ISO timestamp the login went dark
+
+
 class UsageView(BaseModel):
+    model_config = ConfigDict(json_schema_serialization_defaults_required=True)
+
     providers: list[ProviderUsageView]
     gate: GateView
     priority: PriorityView
+    auth_dark: AuthDarkView | None = None
 
 
 CLOSE_HEADROOM = 0.08
@@ -649,7 +666,8 @@ def usage_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
                pace: PaceConfig, default_model: str, mode: str,
                routed: Collection[str],
                pinned: Collection[str] = (),
-               order: Order | None = None) -> UsageView:
+               order: Order | None = None,
+               auth_dark_since: str | None = None) -> UsageView:
     """Every provider's windows, sorted by provider name, one gate (the
     verdict for the policy default model), and what the priority `mode` is
     doing over the `routed` providers, minus the `pinned` tracks it never
@@ -663,7 +681,8 @@ def usage_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
         providers=_usage_provider_views(usages, now, pace),
         gate=_usage_gate_view(verdict, default_model, now, pace),
         priority=_usage_priority_view(usages, now, pace, mode, routed, pinned,
-                                      order))
+                                      order),
+        auth_dark=None if auth_dark_since is None else AuthDarkView(since=auth_dark_since))
 
 
 class QuarantineEntry(BaseModel):

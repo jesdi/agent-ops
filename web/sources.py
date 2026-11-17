@@ -55,6 +55,18 @@ def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
+def _marker_since(path: Path) -> str | None:
+    """The `since` the marker was written with; None when unreadable or absent
+    from it. A missing file propagates: the marker is gone, not dark."""
+    try:
+        since = json.loads(path.read_text()).get("since")
+    except FileNotFoundError:
+        raise
+    except (OSError, ValueError, AttributeError):  # unreadable, bad JSON, not an object
+        return None
+    return since if isinstance(since, str) else None
+
+
 ArtifactStatus = Literal["published", "local", "expired", "unavailable"]
 
 
@@ -249,6 +261,26 @@ class Sources:
                   for p in sorted(routed | ADAPTERS.keys())}
         return {p: u for p, u in usages.items()
                 if p in routed or u.source != "unavailable"}
+
+    def auth_dark_since(self) -> str | None:
+        """When the dispatcher's `auth-dark` marker says the login went dark,
+        None when it is absent. Read-only: only the dispatcher writes or
+        deletes it. A marker that parses to no `since`, or cannot be read,
+        still reports dark, with its mtime; one deleted mid-read reads as
+        absent."""
+        path = self.state_dir / "auth-dark"
+        try:
+            since = _marker_since(path)
+            return since if since is not None else _iso(path.stat().st_mtime)
+        except FileNotFoundError:
+            return None
+        except OSError:  # unreadable: still dark, by mtime, unless it vanished
+            try:
+                return _iso(path.stat().st_mtime)
+            except FileNotFoundError:
+                return None
+            except OSError:  # metadata unreadable too: dark, since now
+                return _iso(time.time())
 
     def quarantine_entries(self) -> list[dict]:
         """Every quarantine record, for /api/failures, the retry route's "is
@@ -458,7 +490,7 @@ class Sources:
             + list((root / "artifacts").glob("*/index.json"))
             + [root / "pass.json", mode])
         usage = digest(sorted((root / "usage").glob("*.json"))
-                       + [root / "budget-stalled", mode])
+                       + [root / "budget-stalled", root / "auth-dark", mode])
         failures = digest(
             (list((root / "failures").iterdir())
              if (root / "failures").exists() else [])

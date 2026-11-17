@@ -633,6 +633,11 @@ export interface components {
             /** Items */
             items: components["schemas"]["ArtifactView"][];
         };
+        /** AuthDarkView */
+        AuthDarkView: {
+            /** Since */
+            since: string;
+        };
         /** BoardSnapshot */
         BoardSnapshot: {
             capacity: components["schemas"]["CapacityView"];
@@ -651,6 +656,7 @@ export interface components {
             next_claim: components["schemas"]["NextClaimView"];
             /** Queue Stale */
             queue_stale: boolean;
+            usage: components["schemas"]["UsageView"];
         };
         /** BoostReq */
         BoostReq: {
@@ -1508,6 +1514,7 @@ export interface components {
         };
         /** UsageView */
         UsageView: {
+            auth_dark: components["schemas"]["AuthDarkView"] | null;
             gate: components["schemas"]["GateView"];
             priority: components["schemas"]["PriorityView"];
             /** Providers */

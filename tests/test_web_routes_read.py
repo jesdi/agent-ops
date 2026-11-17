@@ -1258,3 +1258,41 @@ def test_full_board_uses_effective_capacity_max_open_and_pace(tmp_path):
     usage = client.get("/api/usage", headers=HEADERS).json()
     socket = TestClient(client.app.state.usage_app).get("/usage").json()
     assert socket == usage
+AUTH_DARK_SINCE = "2026-11-05T10:00:00+00:00"
+
+
+def _write_marker(tmp_path):
+    (tmp_path / "auth-dark").write_text(
+        json.dumps({"since": AUTH_DARK_SINCE, "alerted": False}))
+
+
+def test_api_usage_auth_dark_follows_the_marker(tmp_path):
+    fake = FakeSources(tmp_path)
+    client = TestClient(create_app(make_config(tmp_path), fake))
+    assert client.get("/api/usage", headers=HEADERS).json()["auth_dark"] is None
+    _write_marker(tmp_path)
+    assert client.get("/api/usage", headers=HEADERS).json()["auth_dark"] == {
+        "since": AUTH_DARK_SINCE}
+
+
+def test_api_board_usage_auth_dark_follows_the_marker(tmp_path):
+    fake = FakeSources(tmp_path)
+    client = TestClient(create_app(make_config(tmp_path), fake))
+    _write_marker(tmp_path)
+    body = client.get("/api/board", headers=HEADERS).json()
+    assert body["usage"]["auth_dark"] == {"since": AUTH_DARK_SINCE}
+
+
+def test_empty_marker_since_is_preserved_across_usage_routes(tmp_path):
+    fake = FakeSources(tmp_path)
+    client = TestClient(create_app(make_config(tmp_path), fake))
+    (tmp_path / "auth-dark").write_text('{"since": ""}')
+    assert client.get("/api/usage", headers=HEADERS).json()["auth_dark"] == {"since": ""}
+    assert client.get("/api/board", headers=HEADERS).json()["usage"]["auth_dark"] == {"since": ""}
+
+
+def test_full_board_schema_requires_a_usage_view(tmp_path):
+    _, client = rig(tmp_path)
+    schema = client.app.openapi()['components']['schemas']['BoardView']
+    assert 'usage' in schema['required']
+    assert schema['properties']['usage'] == {'$ref': '#/components/schemas/UsageView'}
