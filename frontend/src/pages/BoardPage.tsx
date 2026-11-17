@@ -180,36 +180,25 @@ function columnViews(columns: Column[], degraded: QueueDegraded,
   }))
 }
 
-/** Use the full board when available, falling back to the saved snapshot. */
-function useBoardData() {
+export function BoardPage() {
   const boardQuery = useTasks()
   const snapshotQuery = useBoardSnapshot(!boardQuery.data)
-  const board = boardQuery.data ?? snapshotQuery.data
-  return { boardQuery, snapshotQuery, board, columns: board?.columns ?? [] }
-}
-
-function boardNotice(projectPending: boolean, boardQuery: ReturnType<typeof useTasks>,
-                     snapshotQuery: ReturnType<typeof useBoardSnapshot>) {
-  if (projectPending || boardQuery.isPending || snapshotQuery.isPending) {
-    return <p className="p-4 text-ink-muted">loading board…</p>
-  }
-  return <p className="p-4 text-failed-fg">board unavailable: {boardQuery.error?.message ?? snapshotQuery.error?.message}</p>
-}
-
-export function BoardPage() {
-  const { boardQuery, snapshotQuery, board, columns } = useBoardData()
   const intentsQuery = usePendingIntents()
   const queue = useQueueActions()
   const wontDo = useWontDo()
 
-  const project = useProjectBoard(columns)
+  const board = boardQuery.data ?? snapshotQuery.data
+  const project = useProjectBoard(board?.columns ?? [])
   const views = columnViews(project.columns, queueDegraded(boardQuery.data, queue.queueError), wontDo.propose)
   // Anything occupied stays in the row, so a card can never disappear into
   // the strip.
   const inRow = views.filter((v) => v.count > 0)
   const tabs = useActiveColumn(inRow.map((v) => v.column.key), boardQuery.data !== undefined)
 
-  if (!board || project.pending) return boardNotice(project.pending, boardQuery, snapshotQuery)
+  if (project.pending || (!board && (boardQuery.isPending || snapshotQuery.isPending))) return <p className="p-4 text-ink-muted">loading board…</p>
+  if (!board) {
+    return <p className="p-4 text-failed-fg">board unavailable: {boardQuery.error?.message ?? snapshotQuery.error?.message}</p>
+  }
 
   const pendingByKey = pendingIntentsByKey(intentsQuery.data?.intents ?? [])
 
