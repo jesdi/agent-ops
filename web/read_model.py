@@ -16,7 +16,7 @@ from dispatcher import priority
 from dispatcher.claims import (claim_room, pick_project, project_counts,
                                project_last_claims)
 from dispatcher.config import Project, Repository
-from dispatcher.models import Entry
+from dispatcher.models import Entry, Order
 from dispatcher.usage import (PaceConfig, ProviderUsage, Reading, Source,
                               WindowKind, admits, minutes_to_reset, readings,
                               required_pace, verdict_note)
@@ -614,10 +614,42 @@ def model_admission_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
                               note=verdict_note(verdict, now))
 
 
+def _usage_provider_views(usages: Mapping[str, ProviderUsage], now: datetime,
+                          pace: PaceConfig) -> list[ProviderUsageView]:
+    return [ProviderUsageView(
+        provider=name, source=usages[name].source,
+        windows=[_window_view(r, now, pace)
+                 for r in readings(usages[name], now, pace)])
+        for name in sorted(usages)]
+
+
+def _usage_priority_view(usages: Mapping[str, ProviderUsage], now: datetime,
+                         pace: PaceConfig, mode: str, routed: Collection[str],
+                         pinned: Collection[str], order: Order | None
+                         ) -> PriorityView:
+    ordering = order or priority.order(mode, usages, now, pace)
+    ranked = ordering(tuple(
+        Entry(p, "") for p in sorted(routed, key=lambda p: (p != "anthropic", p))))
+    return PriorityView(
+        mode=mode, options=[priority.AUTO, *sorted(routed)],
+        first=ranked[0].provider if ranked else "",
+        pinned=list(pinned))
+
+
+def _usage_gate_view(verdict, default_model: str, now: datetime,
+                     pace: PaceConfig) -> GateView:
+    binding = _window_view(verdict.binding, now, pace) if verdict.binding else None
+    return GateView(model=default_model, provider=verdict.provider,
+                    admitted=verdict.admitted, note=verdict_note(verdict, now),
+                    minutes_to_reset=binding.minutes_to_reset if binding else 0.0,
+                    binding=binding, reason=verdict.reason)
+
+
 def usage_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
                pace: PaceConfig, default_model: str, mode: str,
                routed: Collection[str],
-               pinned: Collection[str] = ()) -> UsageView:
+               pinned: Collection[str] = (),
+               order: Order | None = None) -> UsageView:
     """Every provider's windows, sorted by provider name, one gate (the
     verdict for the policy default model), and what the priority `mode` is
     doing over the `routed` providers, minus the `pinned` tracks it never
@@ -627,23 +659,11 @@ def usage_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
     differ from the entry a task gets when a model has its own weekly window.
     anthropic is written first, so it wins a tie and the no-pace case."""
     verdict = admits(usages, default_model, now, pace)
-    ranked = priority.order(mode, usages, now, pace)(tuple(
-        Entry(p, "") for p in sorted(routed, key=lambda p: (p != "anthropic", p))))
-    binding = _window_view(verdict.binding, now, pace) if verdict.binding else None
     return UsageView(
-        providers=[ProviderUsageView(
-            provider=name, source=usages[name].source,
-            windows=[_window_view(r, now, pace)
-                     for r in readings(usages[name], now, pace)])
-            for name in sorted(usages)],
-        gate=GateView(model=default_model, provider=verdict.provider,
-                      admitted=verdict.admitted, note=verdict_note(verdict, now),
-                      minutes_to_reset=binding.minutes_to_reset if binding else 0.0,
-                      binding=binding, reason=verdict.reason),
-        priority=PriorityView(
-            mode=mode, options=[priority.AUTO, *sorted(routed)],
-            first=ranked[0].provider if ranked else "",
-            pinned=list(pinned)))
+        providers=_usage_provider_views(usages, now, pace),
+        gate=_usage_gate_view(verdict, default_model, now, pace),
+        priority=_usage_priority_view(usages, now, pace, mode, routed, pinned,
+                                      order))
 
 
 class QuarantineEntry(BaseModel):
