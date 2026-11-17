@@ -180,37 +180,24 @@ function columnViews(columns: Column[], degraded: QueueDegraded,
   }))
 }
 
-type BoardState<B> =
-  | { kind: 'ready'; board: B }
-  | { kind: 'loading' }
-  | { kind: 'unavailable'; message: string | undefined }
-
-type BoardQuery = { isPending: boolean; error: { message: string } | null }
-
-function boardState<B>(board: B | undefined, queries: BoardQuery[]): BoardState<B> {
-  if (board) return { kind: 'ready', board }
-  if (queries.some((q) => q.isPending)) return { kind: 'loading' }
-  return { kind: 'unavailable', message: queries.map((q) => q.error?.message).find((m) => m !== undefined) }
-}
-
-/** The full board when it has arrived, else the saved-cards snapshot, settled
- * into the one state the page renders. */
+/** Use the full board when available, falling back to the saved snapshot. */
 function useBoardData() {
   const boardQuery = useTasks()
   const snapshotQuery = useBoardSnapshot(!boardQuery.data)
   const board = boardQuery.data ?? snapshotQuery.data
-  return { boardQuery, state: boardState(board, [boardQuery, snapshotQuery]), columns: board?.columns ?? [] }
+  return { boardQuery, snapshotQuery, board, columns: board?.columns ?? [] }
 }
 
-function boardNotice(pending: boolean, state: BoardState<unknown>) {
-  if (!pending && state.kind === 'unavailable') {
-    return <p className="p-4 text-failed-fg">board unavailable: {state.message}</p>
+function boardNotice(projectPending: boolean, boardQuery: ReturnType<typeof useTasks>,
+                     snapshotQuery: ReturnType<typeof useBoardSnapshot>) {
+  if (projectPending || boardQuery.isPending || snapshotQuery.isPending) {
+    return <p className="p-4 text-ink-muted">loading board…</p>
   }
-  return <p className="p-4 text-ink-muted">loading board…</p>
+  return <p className="p-4 text-failed-fg">board unavailable: {boardQuery.error?.message ?? snapshotQuery.error?.message}</p>
 }
 
 export function BoardPage() {
-  const { boardQuery, state, columns } = useBoardData()
+  const { boardQuery, snapshotQuery, board, columns } = useBoardData()
   const intentsQuery = usePendingIntents()
   const queue = useQueueActions()
   const wontDo = useWontDo()
@@ -222,8 +209,7 @@ export function BoardPage() {
   const inRow = views.filter((v) => v.count > 0)
   const tabs = useActiveColumn(inRow.map((v) => v.column.key), boardQuery.data !== undefined)
 
-  if (project.pending || state.kind !== 'ready') return boardNotice(project.pending, state)
-  const { board } = state
+  if (!board || project.pending) return boardNotice(project.pending, boardQuery, snapshotQuery)
 
   const pendingByKey = pendingIntentsByKey(intentsQuery.data?.intents ?? [])
 
