@@ -240,8 +240,8 @@ export function BoardPage() {
   const snapshotQuery = useBoardSnapshot(!boardQuery.data)
   const board = boardQuery.data ?? snapshotQuery.data
 
-  if (!board && (boardQuery.isPending || snapshotQuery.isPending)) return <p className="p-4 text-ink-muted">loading board…</p>
   if (!board) {
+    if (boardQuery.isPending || snapshotQuery.isPending) return <p className="p-4 text-ink-muted">loading board…</p>
     return <p className="p-4 text-failed-fg">board unavailable: {boardQuery.error?.message ?? snapshotQuery.error?.message}</p>
   }
   return <ReadyBoard board={board} liveBoard={boardQuery.data} />
