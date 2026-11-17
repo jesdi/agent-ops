@@ -386,6 +386,12 @@ it never stores a raw token.
 **Reading**:
 The `ProviderUsage` returned by a usage adapter.
 
+**Request reading**:
+The console's per-request `web.app.RequestReading`: effective configuration,
+captured time, priority mode and order, and usage, or `None` when usage was not
+collected. Every board, detail, usage and run calculation takes it. Distinct
+from a usage **Reading**.
+
 **Unavailable reading**:
 A reading with `source == "unavailable"` and no windows. The Anthropic adapter
 returns it after exhausting OAuth candidates, with no ccusage fallback.
