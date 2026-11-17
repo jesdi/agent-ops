@@ -4,10 +4,10 @@ import { showColumn } from './phone.js'
 // A cancel records a pending intent in the fake server; clear it both ways so
 // neither this spec nor a later one sees a stray badge.
 test.beforeEach(async ({ request }) => {
-  await request.post('/__control__/reset-messages')
+  await request.post('/__control__/reset')
 })
 test.afterEach(async ({ request }) => {
-  await request.post('/__control__/reset-messages')
+  await request.post('/__control__/reset')
 })
 
 test('empty columns are chips and the Wont do chip takes a drop', async ({ page }) => {

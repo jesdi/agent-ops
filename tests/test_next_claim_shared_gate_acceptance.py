@@ -74,10 +74,68 @@ def test_quarantined_queue_head_is_skipped_for_the_next_candidate():
         "will-claim", "alpha", 213)
 
 
-def test_board_route_skips_a_quarantined_head(tmp_path):
+def test_only_candidate_in_a_matching_verdict_returns_no_candidates(tmp_path):
+    from web.sources import Sources
+
+    heartbeat = dict(FRESH, started_at="2026-11-06T11:59:00+00:00")
+    (tmp_path / "quarantine-verdict.json").write_text(
+        '{"pass_started":"2026-11-06T11:59:00+00:00",'
+        '"skipped":[["alpha",73]]}')
+    quarantined = Sources(tmp_path, object(), object()).quarantine_verdict(
+        heartbeat)
+
+    v = next_claim(heartbeat, now=NOW, tasks=[], capacity=3, gate=GATE_OK,
+                   queues=[rows("alpha", 73)], projects=PROJECTS,
+                   last_claimed={}, quarantined=quarantined)
+
+    assert v.verdict == "no-candidates"
+
+
+def test_every_project_candidate_in_a_matching_verdict_returns_no_candidates(
+        tmp_path):
+    from web.sources import Sources
+
+    heartbeat = dict(FRESH, started_at="2026-11-06T11:59:00+00:00")
+    (tmp_path / "quarantine-verdict.json").write_text(
+        '{"pass_started":"2026-11-06T11:59:00+00:00",'
+        '"skipped":[["alpha",73],["beta",12]]}')
+    quarantined = Sources(tmp_path, object(), object()).quarantine_verdict(
+        heartbeat)
+
+    v = next_claim(heartbeat, now=NOW, tasks=[], capacity=3, gate=GATE_OK,
+                   queues=[rows("alpha", 73), rows("beta", 12)],
+                   projects=PROJECTS, last_claimed={},
+                   quarantined=quarantined)
+
+    assert v.verdict == "no-candidates"
+
+
+def test_board_route_ignores_a_record_when_the_fresh_verdict_is_empty(tmp_path):
     fake = FakeSources()
     now = datetime.now(timezone.utc)
-    fake.heartbeat = {"finished_at": (now - timedelta(minutes=1)).isoformat(),
+    fake.heartbeat = {"started_at": "2026-11-06T11:59:00+00:00",
+                      "finished_at": (now - timedelta(minutes=1)).isoformat(),
+                      "interval_minutes": 10}
+    fake.rank["alpha"] = ([{"number": n, "title": "t", "url": "u",
+                            "status": "Ready", "labels": ["auto"],
+                            "blocked": False, "score": 2.0, "boost": 0}
+                           for n in (212, 213)], "2026-08-01T12:00:00+00:00", False)
+    fake.quarantine = [{"repository": "alpha", "task_issue": 212,
+                        "blocker_repo": "alpha", "blocker_issue": 205,
+                        "fingerprint": "", "created_at": "",
+                        "readable": True}]
+    fake.quarantine_verdict_result = frozenset()
+    client = TestClient(create_app(make_config(tmp_path), fake))
+    nc = client.get("/api/board", headers=HEADERS).json()["next_claim"]
+    assert (nc["verdict"], nc["next_issue"]) == ("will-claim", 212)
+
+
+def test_board_route_uses_the_fresh_verdict_to_skip_a_record(
+        tmp_path):
+    fake = FakeSources()
+    now = datetime.now(timezone.utc)
+    fake.heartbeat = {"started_at": "2026-11-06T11:59:00+00:00",
+                      "finished_at": (now - timedelta(minutes=1)).isoformat(),
                       "interval_minutes": 10}
     fake.rank["alpha"] = ([{"number": n, "title": "t", "url": "u",
                             "status": "Ready", "labels": ["auto"],
@@ -86,9 +144,43 @@ def test_board_route_skips_a_quarantined_head(tmp_path):
     fake.quarantine = [{"repository": "alpha", "task_issue": 212,
                         "blocker_repo": "alpha", "blocker_issue": 205,
                         "fingerprint": "", "created_at": ""}]
+    fake.quarantine_verdict_result = frozenset({("alpha", 212)})
     client = TestClient(create_app(make_config(tmp_path), fake))
+
     nc = client.get("/api/board", headers=HEADERS).json()["next_claim"]
+
     assert (nc["verdict"], nc["next_issue"]) == ("will-claim", 213)
+    assert fake.quarantine_verdict_inputs == [fake.heartbeat]
+
+
+def test_board_route_reads_one_heartbeat_for_the_verdict_and_forecast(
+        tmp_path):
+    fake = FakeSources()
+    now = datetime.now(timezone.utc)
+    fake.heartbeat = {"started_at": "2026-11-06T11:59:00+00:00",
+                      "finished_at": (now - timedelta(minutes=1)).isoformat(),
+                      "interval_minutes": 10}
+    fake.rank["alpha"] = ([{"number": 212, "title": "t", "url": "u",
+                            "status": "Ready", "labels": ["auto"],
+                            "blocked": False, "score": 2.0, "boost": 0}],
+                          "2026-08-01T12:00:00+00:00", False)
+    client = TestClient(create_app(make_config(tmp_path), fake))
+
+    client.get("/api/board", headers=HEADERS)
+
+    assert fake.pass_heartbeat_reads == 1
+    assert fake.quarantine_verdict_inputs == [fake.heartbeat]
+    assert fake.quarantine_verdict_inputs[0] is fake.heartbeat
+
+
+def test_next_claim_docstring_describes_dispatcher_verdict_lag():
+    from web.read_model import next_claim
+
+    doc = next_claim.__doc__ or ""
+
+    assert "check_quarantine" not in doc
+    assert "one pass" in doc.lower()
+    assert "unreached" in doc.lower()
 
 
 def test_quarantine_of_beta_73_does_not_hide_alpha_73():

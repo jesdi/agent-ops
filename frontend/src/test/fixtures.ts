@@ -59,24 +59,6 @@ export const projects: ProjectsView = {
   projects: [{ name: 'widget', paused: false, repositories: ['widget'] }],
 }
 
-export const board: BoardView = {
-  columns: [
-    { key: 'needs-review', title: 'Needs review', zone: 'needs-you', cards: [], ghosts: [] },
-    { key: 'pr-open', title: 'PR review', zone: 'needs-you', cards: [], ghosts: [] },
-    { key: 'parked', title: 'Parked', zone: 'needs-you', cards: [parkedCard, loginParkedCard], ghosts: [] },
-    { key: 'failed', title: 'Failed', zone: 'needs-you', cards: [], ghosts: [] },
-    { key: 'stalled', title: 'Stalled on budget', zone: 'needs-you', cards: [], ghosts: [] },
-    { key: 'queued', title: 'Queued', zone: 'pipeline', cards: [], ghosts: [] },
-    { key: 'in-progress', title: 'In progress', zone: 'pipeline', cards: [inProgressCard], ghosts: [] },
-    { key: 'awaiting-ci', title: 'Awaiting CI', zone: 'pipeline', cards: [ciParkedCard], ghosts: [] },
-    { key: 'resuming', title: 'Resuming', zone: 'pipeline', cards: [], ghosts: [] },
-    { key: 'done', title: 'Done', zone: 'pipeline', cards: [], ghosts: [] },
-    { key: 'wont-do', title: 'Wont do', zone: 'pipeline', cards: [], ghosts: [] },
-  ],
-  capacity: { active: 2, capacity: 3, slots_used: 4, max_slots: 3, slots_held: [1, 2] },
-  queue_stale: false, median_cycle_seconds: null,
-  next_claim: { verdict: 'no-candidates', next_pass_eta: '2026-07-25T12:05:00Z', next_issue: 0, next_repository: '', minutes_to_reset: 0, blocked_by: '' },
-}
 
 const weekAll: WindowView = { kind: 'weekly', scope: null, used: 0.13, allowance: 0.289, headroom: 0.159, minutes_to_reset: 7320, severity: 'ok', required_pace: 1.1 }
 const ccusageSession: WindowView = { kind: 'session', scope: null, used: 0.62, allowance: 0.8, headroom: 0.18, minutes_to_reset: 45, severity: 'ok', required_pace: null }
@@ -98,6 +80,27 @@ export const usage: UsageView = {
     minutes_to_reset: 7320, binding: weekAll,
   },
   priority: { mode: 'auto', options: ['auto', 'anthropic'], first: 'anthropic', pinned: [] },
+  auth_dark: null,
+}
+
+export const board: BoardView = {
+  usage,
+  columns: [
+    { key: 'needs-review', title: 'Needs review', zone: 'needs-you', cards: [], ghosts: [] },
+    { key: 'pr-open', title: 'PR review', zone: 'needs-you', cards: [], ghosts: [] },
+    { key: 'parked', title: 'Parked', zone: 'needs-you', cards: [parkedCard, loginParkedCard], ghosts: [] },
+    { key: 'failed', title: 'Failed', zone: 'needs-you', cards: [], ghosts: [] },
+    { key: 'stalled', title: 'Stalled on budget', zone: 'needs-you', cards: [], ghosts: [] },
+    { key: 'queued', title: 'Queued', zone: 'pipeline', cards: [], ghosts: [] },
+    { key: 'in-progress', title: 'In progress', zone: 'pipeline', cards: [inProgressCard], ghosts: [] },
+    { key: 'awaiting-ci', title: 'Awaiting CI', zone: 'pipeline', cards: [ciParkedCard], ghosts: [] },
+    { key: 'resuming', title: 'Resuming', zone: 'pipeline', cards: [], ghosts: [] },
+    { key: 'done', title: 'Done', zone: 'pipeline', cards: [], ghosts: [] },
+    { key: 'wont-do', title: 'Wont do', zone: 'pipeline', cards: [], ghosts: [] },
+  ],
+  capacity: { active: 2, capacity: 3, slots_used: 4, max_slots: 3, slots_held: [1, 2] },
+  queue_stale: false, median_cycle_seconds: null,
+  next_claim: { verdict: 'no-candidates', next_pass_eta: '2026-07-25T12:05:00Z', next_issue: 0, next_repository: '', minutes_to_reset: 0, blocked_by: '' },
 }
 
 export const usageUnavailable: UsageView = {
@@ -107,6 +110,7 @@ export const usageUnavailable: UsageView = {
     note: 'anthropic: usage unavailable', minutes_to_reset: 0, binding: null,
   },
   priority: { mode: 'auto', options: ['auto', 'anthropic'], first: 'anthropic', pinned: [] },
+  auth_dark: null,
 }
 
 export const usageCcusage: UsageView = {
@@ -117,6 +121,7 @@ export const usageCcusage: UsageView = {
     minutes_to_reset: 45, binding: ccusageSession,
   },
   priority: { mode: 'auto', options: ['auto', 'anthropic'], first: 'anthropic', pinned: [] },
+  auth_dark: null,
 }
 
 export const taskDetail: TaskDetail = {
@@ -137,7 +142,11 @@ export const failures: FailuresView = {
   quarantined: [{
     repository: 'widget', task_issue: 38, blocker_repo: 'jesdi/widget',
     blocker_issue: 39, fingerprint: 'pytest::test_auth_flow',
-    created_at: '2026-07-24T22:10:00Z', blocker_open: true,
+    created_at: '2026-07-24T22:10:00Z', blocker_open: true, readable: true,
+  }, {
+    // A record nobody can read: it still blocks widget#40.
+    repository: 'widget', task_issue: 40, readable: false, blocker_repo: '',
+    blocker_issue: 0, fingerprint: '', created_at: '', blocker_open: null,
   }],
   fingerprints: [{
     fingerprint: 'pytest::test_auth_flow', repo: 'jesdi/widget',
@@ -178,6 +187,7 @@ export const usageRouted: UsageView = {
   ],
   gate: usage.gate,
   priority: { mode: 'auto', options: ['auto', 'anthropic', 'openai'], first: 'anthropic', pinned: [] },
+  auth_dark: null,
 }
 
 // Pinned tracks (ticket 03).

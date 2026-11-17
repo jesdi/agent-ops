@@ -260,7 +260,8 @@ def test_failures_joins_blocker_state(tmp_path):
     fake.quarantine = [{"repository": "alpha", "task_issue": 7,
                         "blocker_repo": "jesdi/agent-ops",
                         "blocker_issue": 31, "fingerprint": "abc",
-                        "created_at": "2026-07-25T09:05:00"}]
+                        "created_at": "2026-07-25T09:05:00",
+                        "readable": True}]
     fake.fingerprints = [{"fingerprint": "abc", "repo": "jesdi/alpha",
                           "issue": 4, "when": "2026-07-25T09:00:00"}]
     fake.open_issues[("jesdi/agent-ops", 31)] = True
@@ -273,7 +274,8 @@ def test_failures_blocker_unknown_is_null(tmp_path):
     fake, client = rig(tmp_path)
     fake.quarantine = [{"repository": "alpha", "task_issue": 7,
                         "blocker_repo": "r", "blocker_issue": 1,
-                        "fingerprint": "f", "created_at": "c"}]
+                        "fingerprint": "f", "created_at": "c",
+                        "readable": True}]
     body = client.get("/api/failures", headers=HEADERS).json()
     assert body["quarantined"][0]["blocker_open"] is None
 
@@ -535,13 +537,12 @@ def test_description_resolves_each_repositories_own_repo(tmp_path):
     assert b.json()["title"] == "beta-73"
 
 
-def test_failures_degrades_to_200_on_corrupt_quarantine_record(tmp_path):
+def test_failures_lists_a_corrupt_quarantine_record_as_unreadable(tmp_path):
     """A torn quarantine record (invalid UTF-8 -> UnicodeDecodeError, a
     ValueError not an OSError) must not 500 /api/failures. Real Sources so
     the guard in sources.py is what is exercised, mirroring the corrupt-
-    events test above. The unreadable records are SKIPPED, not surfaced: a
-    row with every field blank is indistinguishable from a real entry, and
-    the console's rule is never a blank, always an explicit state."""
+    events test above. The unreadable records still block their issues, so
+    they are listed, explicitly marked unreadable rather than blank."""
     from web.sources import Sources
     cfg = make_config(tmp_path)
     (tmp_path / "quarantine").mkdir(parents=True, exist_ok=True)
@@ -561,15 +562,18 @@ def test_failures_degrades_to_200_on_corrupt_quarantine_record(tmp_path):
                                                  _NullGitHub())))
     resp = client2.get("/api/failures", headers=HEADERS)
     assert resp.status_code == 200
-    assert [q["task_issue"] for q in resp.json()["quarantined"]] == [75]
+    rows = sorted(resp.json()["quarantined"], key=lambda q: q["task_issue"])
+    assert [(q["task_issue"], q["readable"], q["blocker_open"])
+            for q in rows] == [(73, False, None), (74, False, None),
+                               (75, True, None)]
 
 
 def test_failures_degrades_to_200_on_wrong_typed_quarantine_record(tmp_path):
     """Issue #88: a quarantine record that is readable, valid JSON and an
     object can still carry a wrong-typed field (a hand edit, a partial
     write). It must not reach QuarantineEntry validation and 500
-    /api/failures: a malformed record is skipped exactly like an unreadable
-    one, and the well-formed records still list."""
+    /api/failures: since #87 a malformed record is unreadable, listed with
+    blank fields, and the well-formed records still list."""
     from web.sources import Sources
     cfg = make_config(tmp_path)
     q = tmp_path / "quarantine"
@@ -595,7 +599,9 @@ def test_failures_degrades_to_200_on_wrong_typed_quarantine_record(tmp_path):
                         raise_server_exceptions=False)
     resp = client.get("/api/failures", headers=HEADERS)
     assert resp.status_code == 200
-    assert [q["task_issue"] for q in resp.json()["quarantined"]] == [75]
+    assert [(q["task_issue"], q["readable"], q["blocker_repo"])
+            for q in resp.json()["quarantined"]] == [
+        (73, False, ""), (74, False, ""), (75, True, "r")]
 
 
 def test_terminal_websocket_route_is_gone(tmp_path):
@@ -682,6 +688,187 @@ def test_board_snapshot_includes_inspection_capacity(tmp_path):
     assert body["capacity"]["slots_used"] == 0
 
 
+def _snapshot_models(*, pinned=(), order=("claude-opus-5", "openai/gpt-6-luna")):
+    from dispatcher.models import parse_policy
+
+    stages = {name: list(order) for name in ("spec", "plan", "implement", "review")}
+    raw = {
+        "triage": ["claude-opus-5"], "untracked": "standard",
+        "tracks": {"standard": {"when": "Everything.", **stages}},
+    }
+    if pinned:
+        raw["pinned"] = list(pinned)
+    return parse_policy(raw)
+
+
+def _reading_client(startup_config, fake, config_loader, clock_loader=None):
+    """A console whose effective configuration (and clock) the test controls,
+    so startup and effective values can differ."""
+    return TestClient(create_app(startup_config, fake,
+                                 config_loader=config_loader,
+                                 clock=clock_loader))
+
+
+def _board_cards(body):
+    return {card["issue"]: card for column in body["columns"]
+            for card in column["cards"]}
+
+
+def _stored_snapshot_models(order):
+    stages = {name: list(order) for name in ("spec", "plan", "implement", "review")}
+    return {
+        "triage": ["claude-opus-5"], "untracked": "standard",
+        "tracks": {"standard": {"when": "Everything.", **stages}},
+    }
+
+
+def test_snapshot_is_local_and_uses_one_request_ordering(tmp_path):
+    from dispatcher import priority
+
+    fake = FakeSources()
+    config = replace(make_config(tmp_path), models=_snapshot_models())
+    fake.tasks_list = [make_task(issue=7, stage=Stage.PLAN)]
+    reads = []
+    client = _reading_client(config, fake, lambda: reads.append(config) or config)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("snapshot requested a live source")
+
+    fake.usage = forbidden
+    fake.rank_rows = forbidden
+    fake.session_alive = forbidden
+
+    automatic = client.get("/api/board/snapshot", headers=HEADERS)
+    assert automatic.status_code == 200
+    assert set(automatic.json()) == {"columns", "capacity", "median_cycle_seconds"}
+    assert _board_cards(automatic.json())[7]["model"] == "anthropic/claude-opus-5"
+    assert len(reads) == 1
+
+    priority.save(tmp_path, "openai", actor="test",
+                  now=datetime(2026, 11, 15, tzinfo=timezone.utc))
+    fixed = client.get("/api/board/snapshot", headers=HEADERS)
+    assert fixed.status_code == 200
+    assert _board_cards(fixed.json())[7]["model"] == "openai/gpt-6-luna"
+    assert len(reads) == 2
+
+
+def test_snapshot_uses_effective_policy_for_pins_picks_and_overrides(tmp_path):
+    from dispatcher import priority
+
+    fake = FakeSources()
+    startup = replace(make_config(tmp_path), models=_snapshot_models())
+    effective = replace(startup, models=_snapshot_models(pinned=("standard",)))
+    fake.tasks_list = [
+        make_task(issue=7, stage=Stage.PLAN),
+        make_task(issue=8, stage=Stage.PLAN,
+                  picks={"plan": "openai/gpt-6-luna@high"}),
+        make_task(issue=9, stage=Stage.PLAN),
+    ]
+    fake.execution_overrides[("alpha", 9)] = ("openai/gpt-6-luna@high", False)
+    client = _reading_client(startup, fake, lambda: effective)
+
+    automatic = client.get("/api/board/snapshot", headers=HEADERS)
+    assert automatic.status_code == 200
+    automatic_cards = _board_cards(automatic.json())
+    assert automatic_cards[7]["model"] == "anthropic/claude-opus-5"
+    assert automatic_cards[7]["pinned_track"] == "standard"
+
+    priority.save(tmp_path, "openai", actor="test",
+                  now=datetime(2026, 11, 15, tzinfo=timezone.utc))
+    fixed = client.get("/api/board/snapshot", headers=HEADERS)
+    assert fixed.status_code == 200
+    cards = _board_cards(fixed.json())
+    assert cards[7]["model"] == "anthropic/claude-opus-5"
+    assert cards[7]["pinned_track"] == "standard"
+    assert cards[8]["model"] == "openai/gpt-6-luna"
+    # A one-shot override is shown as written, effort included.
+    assert cards[9]["model"] == "openai/gpt-6-luna@high"
+
+
+def test_snapshot_tolerates_a_malformed_one_shot_override(tmp_path):
+    fake = FakeSources()
+    fake.tasks_list = [make_task(issue=7, stage=Stage.PLAN)]
+    fake.execution_overrides[("alpha", 7)] = ("bogus/x y", False)
+    client = TestClient(create_app(make_config(tmp_path), fake))
+    r = client.get("/api/board/snapshot", headers=HEADERS)
+    assert r.status_code == 200
+
+
+def test_snapshot_capacity_and_task_policy_use_effective_configuration(tmp_path):
+    from dispatcher import priority
+
+    fake = FakeSources()
+    startup = replace(make_config(tmp_path, capacity=2),
+                      models=_snapshot_models())
+    effective = replace(startup, capacity=4,
+                        models=_snapshot_models(pinned=("standard",)))
+    fake.tasks_list = [make_task(issue=7, stage=Stage.PLAN)]
+    priority.save(tmp_path, "openai", actor="test",
+                  now=datetime(2026, 11, 15, tzinfo=timezone.utc))
+    client = _reading_client(startup, fake, lambda: effective)
+
+    response = client.get("/api/board/snapshot", headers=HEADERS)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["capacity"]["capacity"] == 4
+    card = _board_cards(body)[7]
+    assert card["model"] == "anthropic/claude-opus-5"
+    assert card["pinned_track"] == "standard"
+
+
+def test_snapshot_reads_new_stored_models_only_on_the_next_request(tmp_path):
+    from dispatcher import model_settings
+    from dispatcher.config import apply_stored_models
+
+    first_order = ("claude-opus-5", "openai/gpt-6-luna")
+    second_order = ("openai/gpt-6-luna", "claude-opus-5")
+    first = _snapshot_models(order=first_order)
+    startup = replace(make_config(tmp_path), models=first)
+    model_settings.save(
+        tmp_path, _stored_snapshot_models(first_order), actor="test",
+        now=datetime(2026, 11, 15, tzinfo=timezone.utc))
+    fake = FakeSources()
+    fake.tasks_list = [make_task(issue=7, stage=Stage.PLAN),
+                       make_task(issue=8, stage=Stage.PLAN)]
+    changed_during_request = []
+
+    def change_after_first_task(repository, issue):
+        if not changed_during_request:
+            changed_during_request.append(issue)
+            model_settings.save(
+                tmp_path, _stored_snapshot_models(second_order), actor="test",
+                now=datetime(2026, 11, 15, tzinfo=timezone.utc))
+        return None
+
+    fake.execution_override = change_after_first_task
+    loads = []
+
+    def load_effective_config():
+        loads.append(1)
+        return apply_stored_models(startup)
+
+    clock_reads = []
+
+    def captured_time():
+        clock_reads.append(1)
+        return datetime(2026, 11, 15, 12, tzinfo=timezone.utc) + timedelta(
+            seconds=len(clock_reads))
+
+    client = _reading_client(startup, fake, load_effective_config, captured_time)
+    first_request = client.get("/api/board/snapshot", headers=HEADERS)
+    assert first_request.status_code == 200
+    assert changed_during_request == [7]
+    assert {issue: card["model"] for issue, card in _board_cards(first_request.json()).items()} == {
+        7: "anthropic/claude-opus-5", 8: "anthropic/claude-opus-5"}
+
+    second_request = client.get("/api/board/snapshot", headers=HEADERS)
+    assert second_request.status_code == 200
+    assert {issue: card["model"] for issue, card in _board_cards(second_request.json()).items()} == {
+        7: "openai/gpt-6-luna", 8: "openai/gpt-6-luna"}
+    assert len(loads) == 2
+    assert len(clock_reads) == 2
+
+
 class _RecordingGitHub:
     def __init__(self):
         self.state_calls = []
@@ -734,5 +921,375 @@ def test_board_and_retry_tolerate_a_malformed_record(tmp_path):
         "fingerprint": "f", "created_at": "c"}})
     assert client.get("/api/board", headers=HEADERS).status_code == 200
     r = client.post("/api/task/alpha/73/retry", headers=HEADERS, json={})
-    assert r.status_code == 404
-    assert "issue alpha/73 is not quarantined" in r.text
+    assert r.status_code == 202, r.text
+
+
+def _full_board_candidate(number=73):
+    return {
+        "number": number, "title": f"candidate {number}", "url": "u",
+        "status": "Ready", "labels": ["auto"], "blocked": False,
+        "score": 2.0, "boost": 0,
+    }
+
+
+def _full_board_policy(implement, *, spec=None, pinned=()):
+    from dispatcher.models import parse_policy
+
+    raw = {
+        "triage": ["claude-opus-5"], "untracked": "standard",
+        "tracks": {
+            "standard": {
+                "when": "Everything.",
+                "spec": list(spec or implement), "plan": list(implement),
+                "implement": list(implement), "review": list(implement),
+            },
+        },
+    }
+    if pinned:
+        raw["pinned"] = list(pinned)
+    return parse_policy(raw)
+
+
+def _full_board_usage(now, *, anthropic_session=0.1,
+                      anthropic_reset_minutes=120, fable_week=0.0,
+                      openai_session=0.1, openai_reset_minutes=120,
+                      anthropic_week=0.0, openai_week=0.0):
+    from dispatcher.usage import ProviderUsage, Window, WindowKind
+
+    def provider(name, session_used, reset_minutes, week_used=0.0):
+        windows = [
+            Window(WindowKind.SESSION, None, session_used,
+                   now + timedelta(minutes=reset_minutes)),
+            Window(WindowKind.WEEKLY, None, week_used,
+                   now + timedelta(days=3.5)),
+        ]
+        if name == "anthropic":
+            windows.append(Window(WindowKind.WEEKLY, "Fable", fable_week,
+                                  now + timedelta(days=3.5)))
+        return ProviderUsage(name, "oauth", now.timestamp(), tuple(windows))
+
+    return {
+        "anthropic": provider("anthropic", anthropic_session,
+                              anthropic_reset_minutes,
+                              week_used=anthropic_week),
+        "openai": provider("openai", openai_session, openai_reset_minutes,
+                           week_used=openai_week),
+    }
+
+
+def test_full_board_observes_model_settings_on_the_next_request(
+        tmp_path, monkeypatch):
+    from dispatcher import model_settings, priority
+    from dispatcher.config import apply_stored_models
+
+    first_order = ("claude-opus-5", "claude-fable-5-1")
+    second_order = ("claude-fable-5-1", "claude-opus-5")
+    first = _full_board_policy(first_order)
+    startup = replace(make_config(tmp_path), models=first)
+
+    def stored(order):
+        return {
+            "triage": ["claude-opus-5"], "untracked": "standard",
+            "tracks": {"standard": {
+                "when": "Everything.", "spec": list(order),
+                "plan": list(order), "implement": list(order),
+                "review": list(order),
+            }},
+        }
+
+    model_settings.save(
+        tmp_path, stored(first_order), actor="test",
+        now=datetime(2026, 11, 15, tzinfo=timezone.utc))
+    priority.save(tmp_path, "anthropic", actor="test",
+                  now=datetime(2026, 11, 15, tzinfo=timezone.utc))
+    first_time = datetime(2026, 11, 16, 12, tzinfo=timezone.utc)
+    clock_value = [first_time]
+    clock_reads = []
+
+    def load_clock():
+        clock_reads.append(clock_value[0])
+        return clock_value[0]
+
+    fake = FakeSources()
+    fake.tasks_list = [make_task(issue=7, stage=Stage.PLAN),
+                       make_task(issue=8, stage=Stage.PLAN)]
+    fake.rank["alpha"] = ([_full_board_candidate()], "now", False)
+    fake.usages = _full_board_usage(first_time, anthropic_session=0.9,
+                                    anthropic_reset_minutes=60,
+                                    openai_session=0.2)
+    changed_during_request = []
+
+    def update_settings(repository, issue):
+        if not changed_during_request:
+            changed_during_request.append(issue)
+            model_settings.save(
+                tmp_path, stored(second_order), actor="test",
+                now=datetime(2026, 11, 15, tzinfo=timezone.utc))
+            clock_value[0] = first_time + timedelta(minutes=45)
+        return None
+
+    fake.execution_override = update_settings
+    loads, mode_reads, order_reads, usage_reads = [], [], [], []
+
+    def load_effective_config():
+        loads.append(1)
+        return apply_stored_models(startup)
+
+    real_mode_load, real_order = priority.load, priority.order
+    monkeypatch.setattr(
+        priority, "load",
+        lambda *args, **kwargs: mode_reads.append(1)
+        or real_mode_load(*args, **kwargs))
+    monkeypatch.setattr(
+        priority, "order",
+        lambda *args, **kwargs: order_reads.append(1)
+        or real_order(*args, **kwargs))
+    real_usage = fake.usage
+    fake.usage = lambda routed=(): usage_reads.append(1) or real_usage(routed)
+
+    client = _reading_client(startup, fake, load_effective_config,
+                                clock_loader=load_clock)
+    first_request = client.get("/api/board", headers=HEADERS)
+    assert first_request.status_code == 200
+    assert changed_during_request == [7]
+    assert {issue: card["model"] for issue, card in
+            _board_cards(first_request.json()).items()} == {
+                7: "anthropic/claude-opus-5",
+                8: "anthropic/claude-opus-5",
+            }
+    first_cards = _board_cards(first_request.json())
+    assert all(first_cards[issue]["admission"]["requested"]["admitted"]
+               is False for issue in (7, 8))
+    queued = next(column for column in first_request.json()["columns"]
+                  if column["key"] == "queued")
+    (candidate,) = queued["ghosts"]
+    assert candidate["number"] == 73
+    assert candidate["admission"]["requested"]["model"] == (
+        "anthropic/claude-opus-5")
+    assert candidate["admission"]["requested"]["admitted"] is False
+    assert clock_reads == [first_time]
+    assert (len(loads), len(mode_reads), len(order_reads), len(usage_reads)) == (
+        1, 1, 1, 1)
+
+    second_request = client.get("/api/board", headers=HEADERS)
+    assert second_request.status_code == 200
+    assert {issue: card["model"] for issue, card in
+            _board_cards(second_request.json()).items()} == {
+                7: "anthropic/claude-fable-5-1",
+                8: "anthropic/claude-fable-5-1",
+            }
+    assert all(card["admission"] is None for card in
+               _board_cards(second_request.json()).values())
+    second_queue = next(column for column in second_request.json()["columns"]
+                        if column["key"] == "queued")
+    assert second_queue["ghosts"][0]["admission"] is None
+    assert clock_reads == [first_time, first_time + timedelta(minutes=45)]
+    assert (len(loads), len(mode_reads), len(order_reads), len(usage_reads)) == (
+        2, 2, 2, 2)
+
+
+def test_full_board_preserves_policy_pick_override_pin_and_fallback_precedence(
+        tmp_path):
+    from dispatcher import priority
+    from tests.configfakes import with_project
+    from tests.webfakes import make_repository
+    from tests.usagefakes import session_usage
+
+    startup_global = _full_board_policy(["claude-opus-5"])
+    startup_project = _full_board_policy(["openai/gpt-6-luna"])
+    effective_global = _full_board_policy(["openai/gpt-6-luna"])
+    effective_project = _full_board_policy(
+        ["claude-opus-5", "openai/gpt-6-luna"], pinned=("standard",))
+    repository = make_repository()
+    startup = replace(
+        make_config(tmp_path, repositories=[
+            with_project(repository, models=startup_project)]),
+        models=startup_global)
+    effective = replace(
+        startup,
+        models=effective_global,
+        repositories=[with_project(repository, models=effective_project)])
+    fake = FakeSources()
+    fake.tasks_list = [
+        make_task(issue=7, stage=Stage.PLAN, status=waking()),
+        make_task(issue=8, stage=Stage.PLAN, status=waking(),
+                  picks={"plan": "openai/gpt-6-luna@high"}),
+        make_task(issue=9, stage=Stage.PLAN, status=waking()),
+        make_task(issue=10, repository="removed", stage=Stage.PLAN,
+                  status=waking()),
+    ]
+    fake.rank["alpha"] = ([_full_board_candidate()], "now", False)
+    fake.execution_overrides[("alpha", 9)] = (
+        "anthropic/claude-opus-5", True)
+    unavailable = session_usage(source="unavailable")
+    fake.usages = {
+        "anthropic": unavailable,
+        "openai": session_usage(source="unavailable", provider="openai"),
+    }
+    priority.save(tmp_path, "openai", actor="test",
+                  now=datetime(2026, 11, 15, tzinfo=timezone.utc))
+    client = _reading_client(startup, fake, lambda: effective)
+
+    response = client.get("/api/board", headers=HEADERS)
+    assert response.status_code == 200
+    cards = _board_cards(response.json())
+    assert cards[7]["admission"]["requested"]["model"] == (
+        "anthropic/claude-opus-5")
+    assert cards[7]["admission"]["requested"]["admitted"] is False
+    assert cards[8]["admission"]["requested"]["model"] == (
+        "openai/gpt-6-luna")
+    assert cards[8]["admission"]["requested"]["admitted"] is False
+    assert cards[9]["model"] == "anthropic/claude-opus-5"
+    assert cards[9]["admission"] is None
+    assert cards[10]["admission"]["requested"]["model"] == (
+        "openai/gpt-6-luna")
+    assert cards[10]["admission"]["requested"]["admitted"] is False
+    queued = next(column for column in response.json()["columns"]
+                  if column["key"] == "queued")
+    candidate = queued["ghosts"][0]
+    assert candidate["admission"]["requested"]["model"] == (
+        "anthropic/claude-opus-5")
+    assert candidate["admission"]["requested"]["admitted"] is False
+
+    fake.usages = {}
+    empty_usage_response = client.get("/api/board", headers=HEADERS)
+    assert empty_usage_response.status_code == 200
+    empty_cards = _board_cards(empty_usage_response.json())
+    assert empty_cards[7]["admission"]["requested"]["model"] == (
+        "anthropic/claude-opus-5")
+    assert empty_cards[7]["admission"]["requested"]["admitted"] is False
+    empty_queue = next(column for column in empty_usage_response.json()["columns"]
+                       if column["key"] == "queued")
+    empty_candidate = empty_queue["ghosts"][0]
+    assert empty_candidate["admission"]["requested"]["model"] == (
+        "anthropic/claude-opus-5")
+    assert empty_candidate["admission"]["requested"]["admitted"] is False
+
+
+def test_full_board_uses_effective_capacity_max_open_and_pace(tmp_path):
+    from dispatcher import priority
+    from dispatcher.models import parse_policy
+    from dispatcher.usage import PaceConfig
+    from tests.configfakes import with_project
+    from tests.webfakes import make_repository
+
+    now = datetime.now(timezone.utc)
+    repository = make_repository()
+    global_policy = _full_board_policy(["openai/gpt-6-luna"])
+    project_policy = parse_policy({
+        "triage": ["claude-opus-5"],
+        "untracked": "standard",
+        "tracks": {
+            "standard": {
+                "when": "Standard tasks.",
+                "spec": ["claude-opus-5"], "plan": ["claude-opus-5"],
+                "implement": ["claude-opus-5"], "review": ["claude-opus-5"],
+            },
+            "flex": {
+                "when": "Flexible tasks.",
+                "spec": ["openai/gpt-6-luna", "claude-opus-5"],
+                "plan": ["openai/gpt-6-luna", "claude-opus-5"],
+                "implement": ["openai/gpt-6-luna", "claude-opus-5"],
+                "review": ["openai/gpt-6-luna", "claude-opus-5"],
+            },
+        },
+    })
+    startup = replace(make_config(tmp_path, repositories=[repository]),
+                      models=global_policy)
+    effective = replace(
+        startup, capacity=4, max_open=4, models=global_policy,
+        pace=PaceConfig(budget_threshold=0.4, racing_minutes=30,
+                        racing_threshold=0.95, pace_margin=0.1,
+                        weekend_weight=1.0,
+                        session_week_share={"anthropic": 0.01}),
+        repositories=[with_project(repository, models=project_policy)])
+    fake = FakeSources()
+    fake.heartbeat = _fresh_heartbeat()
+    fake.tasks_list = [
+        make_task(issue=7, stage=Stage.PLAN, status=waking(), track="flex"),
+        make_task(issue=8, stage=Stage.PLAN, status=waking()),
+        make_task(issue=9, stage=Stage.PLAN, status=waking()),
+        make_task(issue=10, stage=Stage.PLAN, status=waking()),
+    ]
+    fake.rank["alpha"] = ([_full_board_candidate()], "now", False)
+    fake.usages = _full_board_usage(
+        now, anthropic_session=0.2, openai_session=0.2,
+        anthropic_week=0.2, openai_week=0.05)
+    priority.save(tmp_path, "auto", actor="test", now=now)
+    client = _reading_client(startup, fake, lambda: effective,
+                                clock_loader=lambda: now)
+
+    ordered_response = client.get("/api/board", headers=HEADERS)
+    assert ordered_response.status_code == 200
+    ordered_body = ordered_response.json()
+    ordered_cards = _board_cards(ordered_body)
+    assert ordered_body["capacity"]["capacity"] == 4
+    assert ordered_body["next_claim"]["verdict"] == "capacity-full"
+    assert ordered_cards[7]["model"] == "anthropic/claude-opus-5"
+
+    fake.usages = _full_board_usage(
+        now, anthropic_session=0.2, openai_session=0.5,
+        anthropic_week=0.2, openai_week=0.05)
+    blocked_gate = client.get("/api/board", headers=HEADERS).json()
+    assert blocked_gate["next_claim"]["verdict"] == "budget-blocked"
+
+    fake.usages = _full_board_usage(
+        now, anthropic_session=0.5, openai_session=0.2,
+        anthropic_week=0.2, openai_week=0.05)
+    blocked_models = client.get("/api/board", headers=HEADERS).json()
+    blocked_cards = _board_cards(blocked_models)
+    assert blocked_cards[8]["admission"]["requested"]["model"] == (
+        "anthropic/claude-opus-5")
+    assert blocked_cards[8]["admission"]["requested"]["admitted"] is False
+    blocked_queue = next(column for column in blocked_models["columns"]
+                         if column["key"] == "queued")
+    blocked_candidate = blocked_queue["ghosts"][0]
+    assert blocked_candidate["admission"]["requested"]["model"] == (
+        "anthropic/claude-opus-5")
+    assert blocked_candidate["admission"]["requested"]["admitted"] is False
+
+    # Detail, and both usage routes, read the same effective pace and time.
+    detail = client.get("/api/task/alpha/8", headers=HEADERS).json()
+    assert detail["card"]["model"] == blocked_cards[8]["model"]
+    assert detail["card"]["admission"] == blocked_cards[8]["admission"]
+    usage = client.get("/api/usage", headers=HEADERS).json()
+    socket = TestClient(client.app.state.usage_app).get("/usage").json()
+    assert socket == usage
+AUTH_DARK_SINCE = "2026-11-05T10:00:00+00:00"
+
+
+def _write_marker(tmp_path):
+    (tmp_path / "auth-dark").write_text(
+        json.dumps({"since": AUTH_DARK_SINCE, "alerted": False}))
+
+
+def test_api_usage_auth_dark_follows_the_marker(tmp_path):
+    fake = FakeSources(tmp_path)
+    client = TestClient(create_app(make_config(tmp_path), fake))
+    assert client.get("/api/usage", headers=HEADERS).json()["auth_dark"] is None
+    _write_marker(tmp_path)
+    assert client.get("/api/usage", headers=HEADERS).json()["auth_dark"] == {
+        "since": AUTH_DARK_SINCE}
+
+
+def test_api_board_usage_auth_dark_follows_the_marker(tmp_path):
+    fake = FakeSources(tmp_path)
+    client = TestClient(create_app(make_config(tmp_path), fake))
+    _write_marker(tmp_path)
+    body = client.get("/api/board", headers=HEADERS).json()
+    assert body["usage"]["auth_dark"] == {"since": AUTH_DARK_SINCE}
+
+
+def test_empty_marker_since_is_preserved_across_usage_routes(tmp_path):
+    fake = FakeSources(tmp_path)
+    client = TestClient(create_app(make_config(tmp_path), fake))
+    (tmp_path / "auth-dark").write_text('{"since": ""}')
+    assert client.get("/api/usage", headers=HEADERS).json()["auth_dark"] == {"since": ""}
+    assert client.get("/api/board", headers=HEADERS).json()["usage"]["auth_dark"] == {"since": ""}
+
+
+def test_full_board_schema_requires_a_usage_view(tmp_path):
+    _, client = rig(tmp_path)
+    schema = client.app.openapi()['components']['schemas']['BoardView']
+    assert 'usage' in schema['required']
+    assert schema['properties']['usage'] == {'$ref': '#/components/schemas/UsageView'}

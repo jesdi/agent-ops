@@ -6,12 +6,23 @@ sessions to a finished PR.
 
 ## Language
 
+**Fake API reset**:
+`POST /__control__/reset` restores the Playwright fake API to its canonical
+startup seed, with zero occupied slots and a new six-minute next-pass ETA.
+It clears messages and intents and notifies board and usage on retained SSE
+connections. Serial tests await mutations before resetting (ADRs 0020–0025).
+
 **Atomic state write**:
 Whole-file replacement for dispatcher state and settings files through
 `dispatcher.state.write_atomic`, or `write_json_atomic` for JSON. It uses a
 unique hidden temp file in the target directory, sets mode 0644, and renames
 over the target. `workspace.write_worktree_file` is the symlink-safe worktree
 variant and remains separate.
+
+**Triage probe cache**:
+The five-second, per-`Sources` cache of `triage.running()` used by the board.
+It stores a failed probe as `False`, uses the injected clock, and leaves the
+triage request file readable on every board load.
 
 **Dark usage**:
 A dispatcher pass whose usage fetch returns no providers or only providers
@@ -36,6 +47,12 @@ owns the value. Each alert's `minutes` still counts from incident start.
 The `last_alert` ISO-8601 UTC timestamp in the auth-dark marker, written after
 a successful send. An alerted marker without it is a legacy marker and uses
 the incident's `since` timestamp until its next alert.
+
+**Usage banner**:
+The alert above the loaded Board header. It shows an auth-dark incident when
+the dispatcher-owned marker exists; otherwise it shows an over-pace pause when
+the live usage gate is closed by a binding window. It disappears when neither
+condition applies and refreshes through the existing `usage` SSE key.
 
 **Frontend Node version**:
 Node 24 is the supported version for local frontend work and the `frontend` and
@@ -260,11 +277,33 @@ session and the state of every ticket. A session that finds one continues
 from it. The review session reads it only after its own review. Never
 committed.
 
+**Unreadable quarantine record**:
+A quarantine file whose read fails other than absence, whose contents are
+not UTF-8/JSON or a JSON object, or whose known fields have wrong types.
+The shared reader in `dispatcher/failures.py` owns this classification
+(ADRs 0017–0018). It still blocks, is listed with `readable: false` and can
+be retried. An empty object is readable.
+
+**Gone quarantine record**:
+A record whose read raises `FileNotFoundError`, including deletion between
+the directory scan and read. It blocks nothing and is not listed.
+
 **Malformed quarantine record**:
 A readable JSON object under `state_dir/quarantine/` with a wrong-typed
 `task_issue`, `blocker_issue`, `blocker_repo`, `fingerprint` or `created_at`.
-`Sources.quarantine_entries()` skips it as it skips an unreadable record;
-the field types are checked before the filename supplies the task key.
+A kind of unreadable quarantine record: `failures.read_quarantine` returns
+`UNREADABLE` for it (a missing field is fine; bool is not an int), so it
+still blocks its issue with no blocker lookup, is listed as unreadable and
+can be retried.
+
+**Quarantine verdict**:
+`<state_dir>/quarantine-verdict.json`: the `[repository, issue]` pairs that
+`check_quarantine` skipped in the last pass that reached `_claim_new`, stamped
+with that pass's `pass_started`. The claim forecast trusts it only when the
+stamp equals `pass.json`'s `started_at`; otherwise it skips no quarantined
+candidate.
+_Avoid_: quarantine records (those are the per-issue files the verdict is
+computed from)
 
 **Implement progress**:
 The note of the implement session's last `working` report, for example
@@ -358,6 +397,12 @@ it never stores a raw token.
 
 **Reading**:
 The `ProviderUsage` returned by a usage adapter.
+
+**Request reading**:
+The console's per-request `web.app.RequestReading`: effective configuration,
+captured time, priority mode and order, and usage, or `None` when usage was not
+collected. Every board, detail, usage and run calculation takes it. Distinct
+from a usage **Reading**.
 
 **Unavailable reading**:
 A reading with `source == "unavailable"` and no windows. The Anthropic adapter

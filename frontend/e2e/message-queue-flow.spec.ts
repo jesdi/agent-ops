@@ -8,7 +8,7 @@ const stateOf = (page: Page, id: string) =>
   page.getByTestId(`message-${id}`).getByTestId('message-state')
 
 test('reply to a starved parked task: sending -> queued -> delivered', async ({ page, request }) => {
-  await request.post('/__control__/reset-messages')
+  await request.post('/__control__/reset')
   await page.goto('/task/widget/42')
 
   // The compose box states the contract before anything is sent.

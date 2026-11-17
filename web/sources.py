@@ -12,7 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Collection, Literal
 
-from dispatcher import (claims, eventlog, execution_overrides, messages as msgq,
+from dispatcher import (claims, eventlog, execution_overrides, failures,
+                        messages as msgq,
                         onboard, onboarding_sessions, priority, queue_ops, state, task_artifacts, triage)
 from dispatcher.usage import ProviderUsage
 from dispatcher.usage_providers import ADAPTERS, fetch_provider
@@ -25,12 +26,45 @@ from dispatcher.state import TaskState
 RANK_TTL_SECONDS = 15.0
 DESCRIPTION_TTL_SECONDS = 300.0
 DESCRIPTION_RETRY_SECONDS = 30.0  # cold failure: retry sooner than the TTL
+TRIAGE_TTL_SECONDS = 5.0
 DISPATCHER_KICK = ("systemctl", "--user", "start", "--no-block",
                    "agent-ops-dispatcher.service")
 
 
+def _matching_quarantine_skipped(verdict: object, started_at: str) -> list | None:
+    """Return skipped entries only from a well-shaped verdict for this pass."""
+    if not isinstance(verdict, dict):
+        return None
+    skipped = verdict.get("skipped")
+    if verdict.get("pass_started") != started_at or not isinstance(skipped, list):
+        return None
+    return skipped
+
+
+def _is_quarantine_pair(entry: object) -> bool:
+    return (isinstance(entry, list) and len(entry) == 2
+            and isinstance(entry[0], str) and type(entry[1]) is int)
+
+
+def _quarantine_pairs(skipped: list) -> frozenset[tuple[str, int]]:
+    return frozenset((entry[0], entry[1]) for entry in skipped
+                     if _is_quarantine_pair(entry))
+
+
 def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+
+def _marker_since(path: Path) -> str | None:
+    """The `since` the marker was written with; None when unreadable or absent
+    from it. A missing file propagates: the marker is gone, not dark."""
+    try:
+        since = json.loads(path.read_text()).get("since")
+    except FileNotFoundError:
+        raise
+    except (OSError, ValueError, AttributeError):  # unreadable, bad JSON, not an object
+        return None
+    return since if isinstance(since, str) else None
 
 
 ArtifactStatus = Literal["published", "local", "expired", "unavailable"]
@@ -49,8 +83,30 @@ class ArtifactListing:
     expired: bool
 
 
-_QUARANTINE_DEFAULTS = {"task_issue": 0, "blocker_repo": "", "blocker_issue": 0,
-                        "fingerprint": "", "created_at": ""}
+def _quarantine_key(p: Path) -> tuple[str, int | None]:
+    """(repository, issue) from the filename; issue None if it does not parse."""
+    return state.parse_task_key(p.stem) or (p.stem.rsplit("-", 1)[0], None)
+
+
+def _blocks_nothing(d, keyed_issue: int | None) -> bool:
+    """Gone by its read, or unreadable with a name that keys no issue."""
+    return d is failures.GONE or (not isinstance(d, dict) and keyed_issue is None)
+
+
+def _quarantine_entry(p: Path) -> dict | None:
+    """One quarantine_entries row, or None for a record that blocks nothing."""
+    repository, keyed_issue = _quarantine_key(p)
+    d = failures.read_quarantine(p)
+    if _blocks_nothing(d, keyed_issue):
+        return None
+    readable = isinstance(d, dict)
+    # Blank defaults keep FailuresView's model valid for a readable record
+    # that is missing a field, and for an unreadable one.
+    entry = {**failures.QUARANTINE_DEFAULTS, **(d if readable else {}),
+             "repository": repository, "readable": readable}
+    if keyed_issue is not None:
+        entry["task_issue"] = keyed_issue
+    return entry
 
 
 class Sources:
@@ -66,6 +122,7 @@ class Sources:
         self._systemctl = systemctl
         self._rank_cache: dict[str, dict] = {}
         self._desc_cache: dict[tuple[str, int], dict] = {}
+        self._triage_running: tuple[float, bool] | None = None
 
     @property
     def state_dir(self) -> Path:
@@ -205,9 +262,29 @@ class Sources:
         return {p: u for p, u in usages.items()
                 if p in routed or u.source != "unavailable"}
 
+    def auth_dark_since(self) -> str | None:
+        """When the dispatcher's `auth-dark` marker says the login went dark,
+        None when it is absent. Read-only: only the dispatcher writes or
+        deletes it. A marker that parses to no `since`, or cannot be read,
+        still reports dark, with its mtime; one deleted mid-read reads as
+        absent."""
+        path = self.state_dir / "auth-dark"
+        try:
+            since = _marker_since(path)
+            return since if since is not None else _iso(path.stat().st_mtime)
+        except FileNotFoundError:
+            return None
+        except OSError:  # unreadable: still dark, by mtime, unless it vanished
+            try:
+                return _iso(path.stat().st_mtime)
+            except FileNotFoundError:
+                return None
+            except OSError:  # metadata unreadable too: dark, since now
+                return _iso(time.time())
+
     def quarantine_entries(self) -> list[dict]:
-        """Every readable quarantine record, for /api/failures and the retry
-        route's "is this issue quarantined?" check.
+        """Every quarantine record, for /api/failures, the retry route's "is
+        this issue quarantined?" check and the board's claim forecast.
 
         Keyed the way failures.check_quarantine keys them: by FILENAME
         (`{repository}-{issue}.json`), which is the only thing a lookup can match,
@@ -215,42 +292,32 @@ class Sources:
         key that /api/task/{issue}/retry validates against. Names that do not
         fit the scheme fall back to the body's task_issue.
 
-        A record whose body is unreadable, or is valid JSON that is not an
-        object, is SKIPPED. Every field would be blank and the row would be
-        indistinguishable from a real entry — the console's constraint is
-        never a blank, always an explicit state, and a row that says nothing
-        is worse than no row. The board's claim forecast skips these heads.
-
-        The read is guarded with (OSError, ValueError), not
-        (json.JSONDecodeError, OSError): a torn write_text yields invalid UTF-8
-        and raises UnicodeDecodeError, a ValueError — the same widening
-        pass_heartbeat and events_tail already carry. This route may never 500.
+        Read through failures.read_quarantine, the dispatcher's own reader.
+        An unreadable record still blocks its issue, so it is listed with
+        `readable: False` and blank fields (blocker_issue 0: no blocker
+        lookup) — unless its name does not parse, then nothing keys it and
+        it blocks nothing. A record gone by its read is not listed.
+        This route may never 500.
         """
         root = self.state_dir / "quarantine"
-        entries = []
-        for p in sorted(root.glob("*.json")) if root.exists() else []:
-            parsed = state.parse_task_key(p.stem)
-            repository, keyed_issue = parsed if parsed else ("", None)
-            try:
-                d = json.loads(p.read_text())
-            except (OSError, ValueError):
-                continue
-            if not isinstance(d, dict):
-                continue  # null / a list: rec.get() would raise downstream
-            # Blank defaults keep FailuresView's model valid for a readable
-            # record that is missing a field.
-            entry = {**_QUARANTINE_DEFAULTS, **d}
-            # A wrong-typed field would 500 FailuresView or reach GitHub; skip
-            # like an unreadable record. bool is an int subclass: reject it.
-            if not all(type(entry[k]) is type(default)
-                       for k, default in _QUARANTINE_DEFAULTS.items()):
-                continue
-            entry["repository"] = (repository if keyed_issue is not None
-                                   else p.stem.rsplit("-", 1)[0])
-            if keyed_issue is not None:
-                entry["task_issue"] = keyed_issue
-            entries.append(entry)
-        return entries
+        paths = sorted(root.glob("*.json")) if root.exists() else []
+        return [e for e in map(_quarantine_entry, paths) if e is not None]
+
+    def quarantine_verdict(self, heartbeat: dict | None) -> frozenset[tuple[str, int]]:
+        """Read the dispatcher's quarantine snapshot only for its matching pass."""
+        if not isinstance(heartbeat, dict):
+            return frozenset()
+        started_at = heartbeat.get("started_at")
+        if not isinstance(started_at, str):
+            return frozenset()
+        try:
+            verdict = json.loads(failures.quarantine_verdict_path(self.state_dir).read_text())
+        except (OSError, ValueError):
+            return frozenset()
+        skipped = _matching_quarantine_skipped(verdict, started_at)
+        if skipped is None:
+            return frozenset()
+        return _quarantine_pairs(skipped)
 
     def fingerprint_entries(self) -> list[dict]:
         root = self.state_dir / "failures"
@@ -284,7 +351,8 @@ class Sources:
         return onboarding_sessions.running(self.state_dir)
 
     def triage_state(self) -> tuple[bool, bool]:
-        """(claims_paused, triage_running) from exactly ONE session-layer probe.
+        """(claims_paused, triage_running) from at most ONE session-layer probe
+        per TRIAGE_TTL_SECONDS window (the request file is read on every call).
 
         Mirrors dispatcher/main.py:1135-1137, which evaluates triage.running()
         once per pass for the reason its comment gives: running() is a real
@@ -295,16 +363,24 @@ class Sources:
 
         Degrades to (False, False) on any error: False is the non-blocking
         value for both. A read failure must not make the console claim claims
-        are paused, nor reduce the effective capacity it shows.
+        are paused, nor reduce the effective capacity it shows. A raising probe
+        is cached as False for the window, so a wedged server costs one slow
+        probe per TTL, not one per request.
         """
-        try:
-            running = triage.running()
-        except Exception:
-            running = False
+        cached = self._triage_running
+        if cached is not None and self._clock() - cached[0] < TRIAGE_TTL_SECONDS:
+            running = cached[1]
+        else:
+            try:
+                running = triage.running()
+            except Exception:
+                running = False
+            # stamped after the probe: a slow (30 s) probe must not expire its own window
+            self._triage_running = (self._clock(), running)
         try:
             # pending() == request file present OR running — inlined so the
             # running half is the value already probed above.
-            paused = running or triage.load_request(self.state_dir) is not None
+            paused = triage.load_request(self.state_dir) is not None or running
         except Exception:
             paused = running
         return paused, running
@@ -414,7 +490,7 @@ class Sources:
             + list((root / "artifacts").glob("*/index.json"))
             + [root / "pass.json", mode])
         usage = digest(sorted((root / "usage").glob("*.json"))
-                       + [root / "budget-stalled", mode])
+                       + [root / "budget-stalled", root / "auth-dark", mode])
         failures = digest(
             (list((root / "failures").iterdir())
              if (root / "failures").exists() else [])

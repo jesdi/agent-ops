@@ -5,7 +5,7 @@ import { expect, test, type Locator, type Page } from '@playwright/test'
 // a task card fit at phone and desktop width, light and dark.
 
 test.beforeEach(async ({ request }) => {
-  await request.post('/__control__/reset-queue')
+  await request.post('/__control__/reset')
   await request.post('/__control__/seed-pinned')
 })
 

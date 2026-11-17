@@ -451,6 +451,82 @@ def test_pass_heartbeat_reads_and_degrades(src):
     assert src.pass_heartbeat() is None
 
 
+def test_quarantine_verdict_reads_pairs_from_a_matching_pass(src):
+    src.state_dir.mkdir(parents=True, exist_ok=True)
+    (src.state_dir / "quarantine-verdict.json").write_text(json.dumps({
+        "pass_started": "2026-11-15T10:00:00+00:00",
+        "skipped": [["alpha", 73], ["beta", 12]],
+    }))
+
+    assert src.quarantine_verdict({
+        "started_at": "2026-11-15T10:00:00+00:00"}) == frozenset({
+            ("alpha", 73), ("beta", 12)})
+
+
+def test_quarantine_verdict_is_empty_when_the_file_is_missing(src):
+    assert src.quarantine_verdict({
+        "started_at": "2026-11-15T10:00:00+00:00"}) == frozenset()
+
+
+def test_quarantine_verdict_is_empty_when_the_path_is_a_directory(src):
+    src.state_dir.mkdir(parents=True, exist_ok=True)
+    (src.state_dir / "quarantine-verdict.json").mkdir()
+
+    assert src.quarantine_verdict({
+        "started_at": "2026-11-15T10:00:00+00:00"}) == frozenset()
+
+
+@pytest.mark.parametrize(("payload", "case"), [
+    pytest.param(b"\xff\xfe torn", "invalid-utf8", id="invalid-utf8"),
+    pytest.param(b"{", "invalid-json", id="invalid-json"),
+    pytest.param(b"null", "non-object-null", id="non-object-null"),
+    pytest.param(b"[]", "non-object-array", id="non-object-array"),
+    pytest.param(b'{"pass_started":"2026-11-15T10:00:00+00:00",'
+                 b'"skipped":"alpha"}', "skipped-not-list",
+                 id="skipped-not-list"),
+])
+def test_quarantine_verdict_is_empty_for_invalid_payloads(src, payload, case):
+    src.state_dir.mkdir(parents=True, exist_ok=True)
+    (src.state_dir / "quarantine-verdict.json").write_bytes(payload)
+
+    assert src.quarantine_verdict({
+        "started_at": "2026-11-15T10:00:00+00:00"}) == frozenset(), case
+
+
+def test_quarantine_verdict_is_empty_for_a_stale_pass_stamp(src):
+    src.state_dir.mkdir(parents=True, exist_ok=True)
+    (src.state_dir / "quarantine-verdict.json").write_text(json.dumps({
+        "pass_started": "2026-11-15T09:50:00+00:00",
+        "skipped": [["alpha", 73]],
+    }))
+
+    assert src.quarantine_verdict({
+        "started_at": "2026-11-15T10:00:00+00:00"}) == frozenset()
+
+
+@pytest.mark.parametrize("heartbeat", [None, {}], ids=["none", "no-started-at"])
+def test_quarantine_verdict_is_empty_without_a_heartbeat_stamp(src, heartbeat):
+    src.state_dir.mkdir(parents=True, exist_ok=True)
+    (src.state_dir / "quarantine-verdict.json").write_text(json.dumps({
+        "pass_started": "2026-11-15T10:00:00+00:00",
+        "skipped": [["alpha", 73]],
+    }))
+
+    assert src.quarantine_verdict(heartbeat) == frozenset()
+
+
+def test_quarantine_verdict_drops_wrong_typed_entries_individually(src):
+    src.state_dir.mkdir(parents=True, exist_ok=True)
+    (src.state_dir / "quarantine-verdict.json").write_text(
+        '{"pass_started":"2026-11-15T10:00:00+00:00",'
+        '"skipped":[["alpha",73],["beta","12"],["gamma",true],'
+        '[1,2],["delta"],"x"]}')
+
+    assert src.quarantine_verdict({
+        "started_at": "2026-11-15T10:00:00+00:00"}) == frozenset({
+            ("alpha", 73)})
+
+
 def test_state_fingerprint_changes_when_pass_json_changes(tmp_path, src):
     f1 = json.loads(src.state_fingerprint())
     (tmp_path / "pass.json").write_text('{"interval_minutes": 10}')
@@ -508,20 +584,193 @@ def test_triage_state_running_pauses_claims_too(monkeypatch, src):
     assert src.triage_state() == (True, True)
 
 
+# --- triage probe cache -----------------------------------------------------
+
+def test_triage_state_unreadable_request_file_keeps_the_probed_value(tmp_path, monkeypatch):
+    """A request-file read error must not hide a running probe nor invent a pause."""
+    import dispatcher.triage as triage_mod
+
+    def boom(*_a, **_kw):
+        raise OSError("simulated unreadable request file")
+
+    monkeypatch.setattr(triage_mod, "load_request", boom)
+    for probed in (True, False):
+        monkeypatch.setattr(triage_mod, "running", lambda probed=probed: probed)
+        _, src = make_sources(tmp_path)
+        assert src.triage_state() == (probed, probed)
+
+
+def _triage_sources(tmp_path, monkeypatch, probe):
+    """Sources + clock + call counter around a monkeypatched triage.running."""
+    import dispatcher.triage as triage_mod
+    import web.sources as sources_mod
+    calls = []
+
+    def running():
+        calls.append(1)
+        return probe(len(calls))
+
+    monkeypatch.setattr(triage_mod, "running", running)
+    clock = FakeClock()
+    _, src = make_sources(tmp_path, clock=clock)
+    ttl = getattr(sources_mod, "TRIAGE_TTL_SECONDS", 5.0)
+    return src, clock, calls, ttl
+
+
+def test_triage_state_two_calls_within_ttl_probe_once(tmp_path, monkeypatch):
+    src, clock, calls, _ = _triage_sources(
+        tmp_path, monkeypatch, lambda n: False)
+    assert src.triage_state() == (False, False)
+    clock.t += 2
+    assert src.triage_state() == (False, False)
+    assert len(calls) == 1
+
+
+def test_triage_state_reprobes_after_ttl_and_reports_new_value(
+        tmp_path, monkeypatch):
+    src, clock, calls, ttl = _triage_sources(
+        tmp_path, monkeypatch, lambda n: n > 1)
+    assert src.triage_state() == (False, False)
+    clock.t += 2
+    assert src.triage_state() == (False, False)
+    clock.t += ttl + 1
+    assert src.triage_state() == (True, True)
+    assert len(calls) == 2
+
+
+def test_triage_state_reprobes_exactly_ttl_after_the_probe(
+        tmp_path, monkeypatch):
+    src, clock, calls, ttl = _triage_sources(
+        tmp_path, monkeypatch, lambda n: False)
+    src.triage_state()
+    clock.t += ttl - 0.1
+    src.triage_state()
+    assert len(calls) == 1
+    clock.t += 0.1  # now exactly ttl after the probe: strict < means re-probe
+    src.triage_state()
+    assert len(calls) == 2
+
+
+def test_triage_state_just_inside_ttl_reuses_the_cache(tmp_path, monkeypatch):
+    src, clock, calls, ttl = _triage_sources(
+        tmp_path, monkeypatch, lambda n: False)
+    src.triage_state()
+    clock.t += ttl - 0.1
+    src.triage_state()
+    assert len(calls) == 1
+
+
+def test_triage_state_failing_probe_degrades_and_is_cached(
+        tmp_path, monkeypatch):
+    def boom(n):
+        raise RuntimeError("simulated probe failure")
+
+    src, clock, calls, _ = _triage_sources(tmp_path, monkeypatch, boom)
+    assert src.triage_state() == (False, False)
+    clock.t += 1
+    assert src.triage_state() == (False, False)
+    assert len(calls) == 1
+
+
+def test_triage_state_failing_probe_is_retried_after_ttl(
+        tmp_path, monkeypatch):
+    def flaky(n):
+        if n == 1:
+            raise RuntimeError("simulated probe failure")
+        return True
+
+    src, clock, calls, ttl = _triage_sources(tmp_path, monkeypatch, flaky)
+    assert src.triage_state() == (False, False)
+    clock.t += 1
+    assert src.triage_state() == (False, False)
+    assert len(calls) == 1
+    clock.t += ttl + 1
+    assert src.triage_state() == (True, True)
+    assert len(calls) == 2
+
+
+def test_triage_state_new_request_file_shows_without_a_new_probe(
+        tmp_path, monkeypatch):
+    import dispatcher.triage as triage_mod
+    src, clock, calls, _ = _triage_sources(
+        tmp_path, monkeypatch, lambda n: False)
+    assert src.triage_state() == (False, False)
+    (tmp_path / triage_mod.REQUEST_FILE).write_text(
+        '{"requested_at": "2026-08-01T00:00:00+00:00"}')
+    clock.t += 1
+    assert src.triage_state() == (True, False)
+    assert len(calls) == 1
+
+
+def test_triage_state_removed_request_file_clears_pause_without_a_probe(
+        tmp_path, monkeypatch):
+    import dispatcher.triage as triage_mod
+    (tmp_path / triage_mod.REQUEST_FILE).write_text(
+        '{"requested_at": "2026-08-01T00:00:00+00:00"}')
+    src, clock, calls, _ = _triage_sources(
+        tmp_path, monkeypatch, lambda n: False)
+    assert src.triage_state() == (True, False)
+    triage_mod.clear_request(tmp_path)
+    clock.t += 1
+    assert src.triage_state() == (False, False)
+    assert len(calls) == 1
+
+
+def test_triage_state_cached_running_true_still_pauses_claims(
+        tmp_path, monkeypatch):
+    src, clock, calls, _ = _triage_sources(
+        tmp_path, monkeypatch, lambda n: True)
+    assert src.triage_state() == (True, True)
+    clock.t += 1
+    assert src.triage_state() == (True, True)
+    assert len(calls) == 1
+
+
+def test_triage_state_reads_request_file_on_every_call_when_running(
+        tmp_path, monkeypatch):
+    import dispatcher.triage as triage_mod
+    src, clock, calls, _ = _triage_sources(
+        tmp_path, monkeypatch, lambda n: True)
+    reads = []
+
+    def load_request(state_dir):
+        reads.append(state_dir)
+        return None
+
+    monkeypatch.setattr(triage_mod, "load_request", load_request)
+    assert src.triage_state() == (True, True)
+    clock.t += 1
+    assert src.triage_state() == (True, True)
+    assert len(calls) == 1
+    assert reads == [tmp_path, tmp_path]
+
+
+def test_triage_state_cache_follows_the_injected_clock(tmp_path, monkeypatch):
+    import time
+    src, clock, calls, ttl = _triage_sources(
+        tmp_path, monkeypatch, lambda n: False)
+    src.triage_state()
+    real_now = time.time()
+    monkeypatch.setattr(time, "time", lambda: real_now + 10 * ttl)
+    monkeypatch.setattr(time, "monotonic", lambda: real_now + 10 * ttl)
+    src.triage_state()
+    assert len(calls) == 1
+    clock.t += ttl
+    src.triage_state()
+    assert len(calls) == 2
+
+
 def _quarantine(tmp_path, name, **rec):
     d = tmp_path / "quarantine"
     d.mkdir(parents=True, exist_ok=True)
     (d / name).write_text(json.dumps(rec))
 
 
-def test_quarantine_entries_skip_an_unreadable_record(tmp_path, src):
-    """A torn write_text leaves invalid UTF-8, whose read_text raises
-    UnicodeDecodeError — a ValueError, NOT an OSError. The old
-    (JSONDecodeError, OSError) guard missed it and 500'd the route. Valid
-    JSON that is not an object (null, a list) has the same effect via
-    rec.get -> AttributeError. Neither may raise, and neither may reach
-    /api/failures: with no readable body every field would be blank and the
-    row would be indistinguishable from a real entry."""
+def test_quarantine_entries_list_an_unreadable_record_as_unreadable(tmp_path, src):
+    """A torn write (invalid UTF-8), JSON that is not an object (null, a
+    list) or text that is not JSON leaves a record nobody can read, and its
+    issue stays blocked: it is listed, keyed by its filename and marked
+    unreadable, never skipped and never raised."""
     d = tmp_path / "quarantine"
     d.mkdir(parents=True, exist_ok=True)
     (d / "alpha-73.json").write_bytes(b'{"blocker_issue": \xff\xfe}')
@@ -529,7 +778,10 @@ def test_quarantine_entries_skip_an_unreadable_record(tmp_path, src):
     (d / "alpha-75.json").write_text("[1, 2]")
     _quarantine(tmp_path, "alpha-76.json", task_issue=76, blocker_repo="r",
                 blocker_issue=1, fingerprint="f", created_at="c")
-    assert [e["task_issue"] for e in src.quarantine_entries()] == [76]
+    entries = sorted(src.quarantine_entries(), key=lambda e: e["task_issue"])
+    assert [(e["repository"], e["task_issue"], e["readable"])
+            for e in entries] == [("alpha", 73, False), ("alpha", 74, False),
+                                  ("alpha", 75, False), ("alpha", 76, True)]
 
 
 def test_quarantine_key_comes_from_the_filename_not_the_body(tmp_path, src):
@@ -560,28 +812,34 @@ _GOOD = dict(task_issue=0, blocker_repo="r", blocker_issue=1,
              fingerprint="f", created_at="c")
 
 
-def test_quarantine_entries_skip_wrong_typed_blocker_issue(tmp_path, src):
+def _rows(src):
+    return [(e["task_issue"], e["readable"], e["blocker_issue"])
+            for e in src.quarantine_entries()]
+
+
+def test_quarantine_entries_list_wrong_typed_blocker_issue_as_unreadable(tmp_path, src):
     for n, bad in enumerate(["abc", "5", True, 1.5, None, [1]], start=80):
         _quarantine(tmp_path, f"alpha-{n}.json",
                     **{**_GOOD, "task_issue": n, "blocker_issue": bad})
     _quarantine(tmp_path, "alpha-86.json",
                 **{**_GOOD, "task_issue": 86, "blocker_issue": 7})
-    entry, = src.quarantine_entries()
-    assert (entry["task_issue"], entry["blocker_issue"]) == (86, 7)
+    assert _rows(src) == [(n, False, 0) for n in range(80, 86)] + [(86, True, 7)]
 
 
-def test_quarantine_entries_skip_wrong_typed_task_issue_despite_filename(tmp_path, src):
+def test_quarantine_entries_list_wrong_typed_task_issue_as_unreadable(tmp_path, src):
     _quarantine(tmp_path, "alpha-90.json", **{**_GOOD, "task_issue": "x"})
-    assert [e["task_issue"] for e in src.quarantine_entries()] == []
+    assert _rows(src) == [(90, False, 0)]
 
 
-def test_quarantine_entries_skip_wrong_typed_string_fields(tmp_path, src):
+def test_quarantine_entries_list_wrong_typed_string_fields_as_unreadable(tmp_path, src):
     for n, key, bad in [(91, "blocker_repo", 5), (92, "fingerprint", None),
                         (93, "created_at", {"at": 1})]:
         _quarantine(tmp_path, f"alpha-{n}.json",
                     **{**_GOOD, "task_issue": n, key: bad})
     _quarantine(tmp_path, "alpha-94.json", **{**_GOOD, "task_issue": 94})
-    assert [e["task_issue"] for e in src.quarantine_entries()] == [94]
+    assert _rows(src) == [(91, False, 0), (92, False, 0), (93, False, 0),
+                          (94, True, 1)]
+    assert {e["fingerprint"] for e in src.quarantine_entries()} == {"", "f"}
 
 
 def test_quarantine_entries_keep_missing_fields_and_extra_keys(tmp_path, src):
@@ -592,15 +850,17 @@ def test_quarantine_entries_keep_missing_fields_and_extra_keys(tmp_path, src):
             entry["created_at"]) == ("alpha", 95, "r", 0, "", "")
 
 
-def test_quarantine_entries_existing_skips_still_hold(tmp_path, src):
+def test_quarantine_entries_type_check_leaves_unreadable_rows_listed(tmp_path, src):
     d = tmp_path / "quarantine"
     d.mkdir(parents=True, exist_ok=True)
     (d / "alpha-73.json").write_bytes(b"\xff\xfe\xfd")
     (d / "alpha-74.json").write_text("null")
     (d / "alpha-75.json").write_text("[1, 2]")
     _quarantine(tmp_path, "alpha-76.json", **{**_GOOD, "task_issue": 999})
-    entry, = src.quarantine_entries()
-    assert (entry["repository"], entry["task_issue"]) == ("alpha", 76)
+    assert [(e["repository"], e["task_issue"], e["readable"])
+            for e in src.quarantine_entries()] == [
+        ("alpha", 73, False), ("alpha", 74, False), ("alpha", 75, False),
+        ("alpha", 76, True)]
 
 
 # gh-backed caches: rank_rows and issue_description.
@@ -804,3 +1064,81 @@ def test_description_failure_does_not_overwrite_overlapping_success(
     assert first["title"] == "new" and first["error"] == ""
     assert src.issue_description(*key) == first
     assert gh.view_calls == 3
+
+
+# --- auth-dark marker (usage banner ticket 01) ---
+
+SINCE = "2026-11-05T10:00:00+00:00"
+MARKER_TS = 1_700_000_000.0
+MARKER_MTIME = "2023-11-14T22:13:20+00:00"  # MARKER_TS in UTC
+
+
+def _marker(tmp_path, body):
+    path = tmp_path / "auth-dark"
+    path.write_text(body if isinstance(body, str) else json.dumps(body))
+    return path
+
+
+def test_auth_dark_since_none_without_marker(tmp_path):
+    _, src = make_sources(tmp_path)
+    assert src.auth_dark_since() is None
+
+
+@pytest.mark.parametrize("marker", [
+    {"since": SINCE, "alerted": False},
+    {"since": SINCE, "alerted": True, "last_alert": "2026-11-05T18:30:00+00:00"},
+])
+def test_auth_dark_since_returns_since_as_written(tmp_path, marker):
+    _marker(tmp_path, marker)
+    _, src = make_sources(tmp_path)
+    assert src.auth_dark_since() == SINCE
+
+
+@pytest.mark.parametrize("body", ["not json", "[1, 2]", '{"alerted": true}'])
+def test_auth_dark_since_unreadable_marker_reports_mtime(tmp_path, body):
+    import os
+    from datetime import datetime
+    path = _marker(tmp_path, body)
+    os.utime(path, (MARKER_TS, MARKER_TS))
+    _, src = make_sources(tmp_path)
+    since = src.auth_dark_since()
+    assert datetime.fromisoformat(since)
+    assert since == MARKER_MTIME
+
+
+def test_auth_dark_since_marker_deleted_mid_read_is_none(tmp_path, monkeypatch):
+    import builtins
+    from pathlib import Path
+    _marker(tmp_path, {"since": SINCE, "alerted": False})
+    _, src = make_sources(tmp_path)
+
+    def vanish(real):
+        def read(target, *a, **kw):
+            if str(target).endswith("auth-dark"):
+                raise FileNotFoundError(target)
+            return real(target, *a, **kw)
+        return read
+
+    # whichever way the marker is read, the file is gone by then
+    monkeypatch.setattr(builtins, "open", vanish(builtins.open))
+    for name in ("open", "read_text", "read_bytes"):
+        monkeypatch.setattr(Path, name, vanish(getattr(Path, name)))
+    assert src.auth_dark_since() is None
+
+
+def test_usage_digest_follows_the_marker_life(tmp_path):
+    _, src = make_sources(tmp_path)
+
+    def usage_digest():
+        return json.loads(src.state_fingerprint())["usage"]
+
+    d0 = usage_digest()
+    path = _marker(tmp_path, {"since": SINCE, "alerted": False})
+    d1 = usage_digest()
+    path.write_text(json.dumps({"since": SINCE, "alerted": True,
+                                "last_alert": "2026-11-05T10:30:00+00:00"}))
+    d2 = usage_digest()
+    path.unlink()
+    d3 = usage_digest()
+    assert len({d0, d1, d2}) == 3
+    assert d3 == d0

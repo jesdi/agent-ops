@@ -3,7 +3,7 @@ import { expect, test } from '@playwright/test'
 for (const width of [390, 1280]) {
   test(`artifacts remain accessible across sessions at ${width}px`, async ({ page, request }) => {
     await page.setViewportSize({ width, height: 1000 })
-    await request.post('/__control__/reset-messages')
+    await request.post('/__control__/reset')
     let reviewing = true
     let published = true
     let expired = false

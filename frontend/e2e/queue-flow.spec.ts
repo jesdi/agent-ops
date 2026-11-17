@@ -5,7 +5,7 @@ import { showColumn, showHeader } from './phone.js'
 // across Playwright retries. The webServer is NOT restarted between retries
 // (reuseExistingServer:false applies only to fresh pnpm test:e2e invocations).
 test.beforeEach(async ({ request }) => {
-  await request.post('/__control__/reset-queue')
+  await request.post('/__control__/reset')
 })
 
 test('ghosts -> slim view -> description -> boost reorders', async ({ page }) => {

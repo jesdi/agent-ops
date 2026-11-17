@@ -177,7 +177,8 @@ def test_retry_validates_against_quarantine_not_tasks(tmp_path):
     # issue 12 has no task-12.json but IS quarantined -> allowed
     fake.quarantine = [{"repository": "alpha", "task_issue": 12,
                         "blocker_repo": "r", "blocker_issue": 1,
-                        "fingerprint": "f", "created_at": "c"}]
+                        "fingerprint": "f", "created_at": "c",
+                        "readable": True}]
     assert client.post("/api/task/alpha/12/retry", headers=HEADERS,
                        json={}).status_code == 202
     # issue 7 has a task but no quarantine record -> 404 for retry
@@ -284,3 +285,35 @@ def test_same_millisecond_actions_for_a_task_keep_submission_order(tmp_path):
 
     pending = client.get("/api/pending-intents", headers=HEADERS).json()["intents"]
     assert [item["action"] for item in pending] == ["reply", "park"]
+
+
+def _no_usage(routed=()):
+    raise AssertionError("this run must not fetch usage")
+
+
+def test_force_run_with_no_model_keeps_a_pending_override_s_effort(tmp_path):
+    fake, client = rig(tmp_path)
+    fake.execution_overrides[("alpha", 7)] = ("anthropic/claude-opus-5@high", False)
+    fake.usage = _no_usage
+    r = client.post("/api/task/alpha/7/run", headers=HEADERS, json={})
+    assert r.status_code == 200
+    assert fake.execution_overrides[("alpha", 7)] == (
+        "anthropic/claude-opus-5@high", False)
+
+
+def test_force_run_fetches_no_usage_when_a_pick_or_model_decides(tmp_path):
+    fake, client = rig(tmp_path)
+    fake.usage = _no_usage
+    fake.tasks_list = [make_task(
+        issue=7, picks={"implement": "anthropic/claude-opus-5@high"})]
+    assert client.post("/api/task/alpha/7/run", headers=HEADERS,
+                       json={}).status_code == 200
+    assert client.post("/api/task/alpha/7/run", headers=HEADERS,
+                       json={"model": "anthropic/claude-opus-5"}).status_code == 200
+    fake.tasks_list = []
+    fake.rank["alpha"] = ([{
+        "number": 9, "title": "Queued", "url": "u", "status": "Ready",
+        "labels": ["auto"], "blocked": False, "score": 2, "boost": 0,
+    }], "now", False)
+    assert client.post("/api/task/alpha/9/run", headers=HEADERS,
+                       json={}).status_code == 200

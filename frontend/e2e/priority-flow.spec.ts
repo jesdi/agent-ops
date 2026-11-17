@@ -3,7 +3,7 @@ import { expect, test } from '@playwright/test'
 import { showHeader } from './phone.js'
 
 test.beforeEach(async ({ request }) => {
-  await request.post('/__control__/reset-queue')
+  await request.post('/__control__/reset')
 })
 
 const control = (page: import('@playwright/test').Page) => page.getByRole('radiogroup', { name: /priority/i })

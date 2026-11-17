@@ -161,13 +161,16 @@ NO_MAKE_PARENT = {k: v for k, v in os.environ.items() if k not in ('MAKEFLAGS', 
 
 def test_explicit_makefile_draft_bypasses_default_precedence(tmp_path, box, monkeypatch):
     import subprocess
+    for var in ('MAKELEVEL', 'MAKEFLAGS', 'MFLAGS'):  # under `make test` a sub-make prints directory lines
+        monkeypatch.delenv(var, raising=False)
     command = 'make -f Makefile gate'
     rec = draft_for_repository(tmp_path, box, monkeypatch,
         {'Makefile': 'gate:\n\t@printf "verified\\n"\n', 'GNUmakefile': 'other:\n\t@true\n'},
         {'gate_cmd': {'value': command, 'reason': 'explicit Makefile target', 'evidence': 'Makefile'}})
     repository = rec.proposal['repositories'][0]
-    # Under `make test` the inherited MAKELEVEL turns on -w's directory lines.
-    monkeypatch.delenv('MAKELEVEL', raising=False)
+    # Under an outer `make test` the inherited MAKELEVEL adds Entering/Leaving directory lines.
+    for variable in ('MAKEFLAGS', 'MAKELEVEL', 'MFLAGS'):
+        monkeypatch.delenv(variable, raising=False)
     actual = subprocess.run(['make', '-f', 'Makefile', 'gate'], cwd=repository['clone_path'],
                             capture_output=True, text=True, timeout=10, env=NO_MAKE_PARENT)
     assert actual.returncode == 0

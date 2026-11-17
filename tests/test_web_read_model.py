@@ -97,7 +97,7 @@ def test_login_park_counts_towards_active_capacity():
     tasks = [make_task(issue=1, stage=Stage.IMPLEMENT, status=login(), slot=0),
              make_task(issue=2, stage=Stage.SPEC, status=human(), slot=1)]
     board = build_board(tasks, capacity=2, models={},
-                        events=[], heartbeat=None, now=NOW, gate=GATE_OK,
+                        events=[], heartbeat=None, now=NOW, usage=USAGE_OK,
                         queues=[], queue_stale=False,
                         claims_paused=False, triage_running=False,
                         projects=PROJECTS, last_claimed={})
@@ -117,7 +117,7 @@ def test_build_board_groups_and_counts():
     board = build_board(
         tasks, capacity=2,
         models={("alpha", 1): "a", ("alpha", 2): "b", ("alpha", 3): "c"},
-        events=[], heartbeat=None, now=NOW, gate=GATE_OK,
+        events=[], heartbeat=None, now=NOW, usage=USAGE_OK,
         queues=[], queue_stale=False,
         claims_paused=False, triage_running=False, projects=PROJECTS, last_claimed={})
     by_key = {c.key: c for c in board.columns}
@@ -147,7 +147,7 @@ def _scored_queue(*pairs):
 def test_task_cards_carry_their_backlog_score():
     tasks = [make_task(issue=1, stage=Stage.IMPLEMENT)]
     board = build_board(tasks, capacity=2, models={},
-                        events=[], heartbeat=None, now=NOW, gate=GATE_OK,
+                        events=[], heartbeat=None, now=NOW, usage=USAGE_OK,
                         queues=_scored_queue(("alpha", 1, 4.2)),
                         queue_stale=False, claims_paused=False,
                         triage_running=False, projects=PROJECTS, last_claimed={})
@@ -159,7 +159,7 @@ def test_task_card_score_is_none_when_not_in_ranking():
     """A claimed task that dropped off the backlog board has no score."""
     tasks = [make_task(issue=5, stage=Stage.QUEUED, status=DONE)]
     board = build_board(tasks, capacity=2, models={},
-                        events=[], heartbeat=None, now=NOW, gate=GATE_OK,
+                        events=[], heartbeat=None, now=NOW, usage=USAGE_OK,
                         queues=[], queue_stale=False,
                         claims_paused=False, triage_running=False,
                         projects=PROJECTS, last_claimed={})
@@ -175,7 +175,7 @@ def test_cards_sort_by_score_descending_nulls_last_within_a_column():
     ]
     board = build_board(
         tasks, capacity=9, models={}, events=[],
-        heartbeat=None, now=NOW, gate=GATE_OK,
+        heartbeat=None, now=NOW, usage=USAGE_OK,
         queues=_scored_queue(("alpha", 1, 2.0), ("alpha", 3, 9.0)),
         queue_stale=False, claims_paused=False, triage_running=False,
         projects=PROJECTS, last_claimed={})
@@ -198,7 +198,7 @@ def test_snapshot_columns_in_zone_order():
 
 def test_board_reuses_snapshot_zones():
     board = build_board([], capacity=2, models={},
-                        events=[], heartbeat=None, now=NOW, gate=GATE_OK,
+                        events=[], heartbeat=None, now=NOW, usage=USAGE_OK,
                         queues=[], queue_stale=False,
                         claims_paused=False, triage_running=False,
                         projects=PROJECTS, last_claimed={})
@@ -236,7 +236,7 @@ def test_gate_parked_tasks_hold_neither_capacity_nor_a_slot():
              make_task(issue=2, stage=Stage.PLAN, status=review(),
                        slot=NO_SLOT)]
     board = build_board(tasks, capacity=2, models={},
-                        events=[], heartbeat=None, now=NOW, gate=GATE_OK,
+                        events=[], heartbeat=None, now=NOW, usage=USAGE_OK,
                         queues=[], queue_stale=False,
                         claims_paused=False, triage_running=False,
                         projects=PROJECTS, last_claimed={})
@@ -282,7 +282,7 @@ def test_flagged_cards_reconcile_with_the_capacity_count():
         make_task(issue=7, stage=Stage.QUEUED),
     ]
     board = build_board(tasks, capacity=3, models={},
-                        events=[], heartbeat=None, now=NOW, gate=GATE_OK,
+                        events=[], heartbeat=None, now=NOW, usage=USAGE_OK,
                         queues=[], queue_stale=False,
                         claims_paused=False, triage_running=False,
                         projects=PROJECTS, last_claimed={})
@@ -495,8 +495,12 @@ def gate_for(usages, default_model=DEFAULT):
                       mode="auto", routed={"anthropic"}).gate
 
 
-GATE_OK = gate_for({"anthropic": session_usage(0.5, now=NOW)})
-GATE_NO = gate_for({"anthropic": session_usage(0.95, 130, now=NOW)})
+USAGE_OK = usage_view({"anthropic": session_usage(0.5, now=NOW)}, now=NOW,
+                       pace=PACE, default_model=DEFAULT, mode="auto", routed={"anthropic"})
+GATE_OK = USAGE_OK.gate
+USAGE_NO = usage_view({"anthropic": session_usage(0.95, 130, now=NOW)}, now=NOW,
+                       pace=PACE, default_model=DEFAULT, mode="auto", routed={"anthropic"})
+GATE_NO = USAGE_NO.gate
 
 
 def queue(name, rows):
@@ -718,7 +722,7 @@ def test_build_board_merges_ghosts_next_claim_and_durations():
     board = build_board(
         tasks, capacity=2,
         models={("alpha", 7): "opus", ("alpha", 9): "opus"},
-        events=events, heartbeat=HB, now=NOW, gate=GATE_OK,
+        events=events, heartbeat=HB, now=NOW, usage=USAGE_OK,
         queues=[queue("alpha", [row(7), row(73), row(74, blocked=True)])],
         queue_stale=False, claims_paused=False, triage_running=False,
         projects=PROJECTS, last_claimed={})
@@ -738,7 +742,7 @@ def test_build_board_merges_ghosts_next_claim_and_durations():
 def test_build_board_degrades_without_events_or_heartbeat():
     board = build_board(
         [make_task(issue=7)], capacity=2, models={},
-        events=[], heartbeat=None, now=NOW, gate=GATE_OK,
+        events=[], heartbeat=None, now=NOW, usage=USAGE_OK,
         queues=[queue("alpha", [])], queue_stale=True,
         claims_paused=False, triage_running=False, projects=PROJECTS, last_claimed={})
     assert board.next_claim.verdict == "unknown"
@@ -761,7 +765,7 @@ def test_build_board_cross_repository_ghost_not_suppressed():
     ]
     board = build_board(
         tasks, capacity=4, models={},
-        events=[], heartbeat=HB, now=NOW, gate=GATE_OK,
+        events=[], heartbeat=HB, now=NOW, usage=USAGE_OK,
         queues=queues, queue_stale=False,
         claims_paused=False, triage_running=False, projects=PROJECTS, last_claimed={})
     ghost_repositories = [(g.number, g.repository) for g in queued(board).ghosts]
@@ -777,7 +781,7 @@ def test_build_board_same_repository_still_excluded():
     tasks = [make_task(issue=73, repository="alpha", stage=Stage.IMPLEMENT)]
     board = build_board(
         tasks, capacity=4, models={},
-        events=[], heartbeat=HB, now=NOW, gate=GATE_OK,
+        events=[], heartbeat=HB, now=NOW, usage=USAGE_OK,
         queues=[queue("alpha", [row(73), row(74)])], queue_stale=False,
         claims_paused=False, triage_running=False, projects=PROJECTS, last_claimed={})
     assert [g.number for g in queued(board).ghosts] == [74]
@@ -955,7 +959,7 @@ def test_card_carries_undelivered_count_and_blocked_flag():
     board = build_board(tasks, capacity=2, models={},
                         events=[], heartbeat=None,
                         now=NOW,
-                        gate=GATE_OK, queues=[], queue_stale=False,
+                        usage=USAGE_OK, queues=[], queue_stale=False,
                         claims_paused=False, triage_running=False,
                         undelivered={("alpha", 7): 3},
                         wake_blocked={("alpha", 7)}, projects=PROJECTS, last_claimed={})
@@ -969,7 +973,7 @@ def test_capacity_view_reports_held_slots_and_derived_max():
     board = build_board(tasks, capacity=3, models={},
                         events=[], heartbeat=None,
                         now=NOW,
-                        gate=GATE_OK, queues=[], queue_stale=False,
+                        usage=USAGE_OK, queues=[], queue_stale=False,
                         claims_paused=False, triage_running=False,
                         projects=PROJECTS, last_claimed={})
     assert board.capacity.slots_held == [0, 2]
@@ -997,7 +1001,7 @@ def test_slots_used_never_disagrees_with_the_lit_segments():
     tasks = [make_task(issue=1, stage=Stage.IMPLEMENT, slot=0),
              make_task(issue=2, stage=Stage.SPEC, status=human(), slot=1)]
     board = build_board(tasks, capacity=2, models={},
-                        events=[], heartbeat=None, now=NOW, gate=GATE_OK,
+                        events=[], heartbeat=None, now=NOW, usage=USAGE_OK,
                         queues=[], queue_stale=False,
                         claims_paused=False, triage_running=False,
                         projects=PROJECTS, last_claimed={})
@@ -1118,3 +1122,24 @@ def test_next_claim_counts_and_caps_per_project():
                    queues=queues, projects=projects,
                    last_claimed={"gamma": "2026-08-01T09:00:00+00:00"})
     assert (v.verdict, v.next_repository, v.next_issue) == ("will-claim", "beta", 5)
+
+
+def test_usage_view_carries_auth_dark_since():
+    view = usage_view({"anthropic": session_usage(0.5, now=NOW)}, now=NOW,
+                      pace=PACE, default_model=DEFAULT, mode="auto",
+                      routed={"anthropic"},
+                      auth_dark_since="2026-11-05T10:00:00+00:00")
+    assert view.auth_dark.since == "2026-11-05T10:00:00+00:00"
+
+
+def test_usage_view_without_auth_dark_since_has_none():
+    view = usage_view({"anthropic": session_usage(0.5, now=NOW)}, now=NOW,
+                      pace=PACE, default_model=DEFAULT, mode="auto",
+                      routed={"anthropic"})
+    assert view.auth_dark is None
+
+
+def test_usage_model_defaults_to_no_auth_dark():
+    from web.read_model import UsageView
+    payload = USAGE_OK.model_dump(exclude={"auth_dark"})
+    assert UsageView.model_validate(payload).auth_dark is None

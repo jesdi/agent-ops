@@ -241,6 +241,7 @@ it('two provider groups render side by side; the spawn chip shows once, on the g
     // Sonnet draws on no Fable window, so the gate is open despite it
     gate: { model: 'claude-sonnet-4-6', provider: 'anthropic', admitted: true,
       note: 'anthropic: no usage windows reported', minutes_to_reset: 0, binding: null },
+    auth_dark: null,
   }
   server.use(http.get('/api/usage', () => HttpResponse.json(twoProviders)))
   renderWithProviders(<BoardPage />)
@@ -504,6 +505,25 @@ it('falls back to the full board if the snapshot fails', async () => {
   expect(await screen.findByText('Fix login redirect')).toBeInTheDocument()
 })
 
+it('shows the board error when both the live board and saved snapshot fail', async () => {
+  server.use(
+    http.get('/api/board', () => HttpResponse.json({ detail: 'live board failed' }, { status: 503 })),
+    http.get('/api/board/snapshot', () => HttpResponse.json({ detail: 'snapshot failed' }, { status: 503 })),
+  )
+  renderWithProviders(<BoardPage />)
+  expect(await screen.findByText('board unavailable: live board failed')).toBeInTheDocument()
+  expect(screen.queryByTestId('column-parked')).not.toBeInTheDocument()
+})
+
+it('shows the snapshot error if the live board returns no data', async () => {
+  server.use(
+    http.get('/api/board', () => HttpResponse.json(null)),
+    http.get('/api/board/snapshot', () => HttpResponse.json({ detail: 'snapshot failed' }, { status: 503 })),
+  )
+  renderWithProviders(<BoardPage />)
+  expect(await screen.findByText('board unavailable: snapshot failed')).toBeInTheDocument()
+})
+
 function Search() {
   return <output data-testid="search">{useLocation().search}</output>
 }
@@ -653,4 +673,26 @@ test('phone header: one summary line with capacity and the next-claim verdict', 
   expect(row).toContainElement(screen.getByTestId('next-claim'))
   await userEvent.click(summary)
   expect(summary).toHaveAttribute('aria-expanded', 'true')
+})
+
+describe('usage banner', () => {
+  const authDark: UsageView = { ...usageUnavailable, auth_dark: { since: '2026-11-05T10:00:00+00:00' } }
+
+  it('auth-dark-banner is the first child of the page column, before the board header', async () => {
+    server.use(http.get('/api/usage', () => HttpResponse.json(authDark)))
+    renderWithProviders(<BoardPage />)
+    const alert = await screen.findByTestId('auth-dark-banner')
+    expect(alert.parentElement!.firstElementChild).toBe(alert)
+    const header = await screen.findByTestId('next-claim')
+    expect(alert.compareDocumentPosition(header) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('the banner shares the header\'s usage query: /api/usage is requested once', async () => {
+    let requests = 0
+    server.use(http.get('/api/usage', () => { requests += 1; return HttpResponse.json(authDark) }))
+    renderWithProviders(<BoardPage />)
+    await screen.findByTestId('auth-dark-banner')
+    await screen.findByTestId('next-claim')
+    expect(requests).toBe(1)
+  })
 })

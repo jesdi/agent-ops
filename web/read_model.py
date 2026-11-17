@@ -9,14 +9,14 @@ from pathlib import Path
 
 from typing import Annotated, Collection, Literal, Mapping, NamedTuple
 
-from pydantic import BaseModel, Field, StrictBool, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr
 
 from dispatcher import messages as msgq
 from dispatcher import priority
 from dispatcher.claims import (claim_room, pick_project, project_counts,
                                project_last_claims)
 from dispatcher.config import Project, Repository
-from dispatcher.models import Entry
+from dispatcher.models import Entry, Order
 from dispatcher.usage import (PaceConfig, ProviderUsage, Reading, Source,
                               WindowKind, admits, minutes_to_reset, readings,
                               required_pace, verdict_note)
@@ -289,6 +289,7 @@ class BoardView(BoardSnapshot):
     # The ranking behind Queued's ghosts failed and a cached one is shown.
     queue_stale: bool
     next_claim: NextClaimView
+    usage: UsageView
 
 
 def task_card(t: TaskState, *, model: str,
@@ -421,10 +422,29 @@ def _capacity_view(tasks: list[TaskState], capacity: int,
         slots_held=slots_held)
 
 
+def _ghost_card(project: str, r: dict,
+                admissions: Mapping[tuple[str, int], TaskAdmissionView]) -> GhostCard:
+    return GhostCard(number=r["number"], repository=r["repository"],
+                     project=project, title=r.get("title", ""), url=r.get("url", ""),
+                     score=r.get("score"), boost=int(r.get("boost") or 0),
+                     admission=admissions.get((r["repository"], r["number"])))
+
+
+def _ghost_cards(tasks: list[TaskState], queues: list[tuple[str, list[dict]]],
+                 admissions: Mapping[tuple[str, int], TaskAdmissionView]) -> list[GhostCard]:
+    # Key on (repository, issue) so alpha#73 does not hide beta#73. Issue numbers
+    # are per-repo; bare numbers would wrongly suppress cross-repository candidates
+    # (cf. dispatcher/main.py:223 which acknowledges number collisions).
+    known = {(t.repository, t.issue) for t in tasks}
+    return [_ghost_card(project, r, admissions)
+            for project, rows in queues for r in rows
+            if _is_candidate(r) and (r["repository"], r["number"]) not in known]
+
+
 def build_board(tasks: list[TaskState], *, capacity: int,
                 models: dict[tuple[str, int], str],
                 events: list[dict], heartbeat: dict | None, now: datetime,
-                gate: GateView,
+                usage: UsageView,
                 queues: list[tuple[str, list[dict]]],
                 queue_stale: bool, claims_paused: bool,
                 triage_running: bool,
@@ -439,17 +459,7 @@ def build_board(tasks: list[TaskState], *, capacity: int,
                 quarantined: Collection[tuple[str, int]] | None = None,
                 pinned_tracks: dict[tuple[str, int], str] | None = None,
                 ) -> BoardView:
-    # Key on (repository, issue) so alpha#73 does not hide beta#73. Issue numbers
-    # are per-repo; bare numbers would wrongly suppress cross-repository candidates
-    # (cf. dispatcher/main.py:223 which acknowledges number collisions).
-    known = {(t.repository, t.issue) for t in tasks}
-    ghost_admissions = candidate_admissions or {}
-    ghosts = [GhostCard(number=r["number"], repository=r["repository"],
-                        project=project, title=r.get("title", ""), url=r.get("url", ""),
-                        score=r.get("score"), boost=int(r.get("boost") or 0),
-                        admission=ghost_admissions.get((r["repository"], r["number"])))
-              for project, rows in queues for r in rows
-              if _is_candidate(r) and (r["repository"], r["number"]) not in known]
+    ghosts = _ghost_cards(tasks, queues, candidate_admissions or {})
     snapshot = build_board_snapshot(
         tasks, capacity=capacity, models=models, events=events, queues=queues,
         undelivered=undelivered, wake_blocked=wake_blocked,
@@ -458,9 +468,9 @@ def build_board(tasks: list[TaskState], *, capacity: int,
     return BoardView(
         columns=snapshot.columns, capacity=snapshot.capacity,
         median_cycle_seconds=snapshot.median_cycle_seconds,
-        queue_stale=queue_stale,
+        queue_stale=queue_stale, usage=usage,
         next_claim=next_claim(heartbeat, now=now, tasks=tasks,
-                              capacity=max(0, capacity - onboarding_running), gate=gate,
+                              capacity=max(0, capacity - onboarding_running), gate=usage.gate,
                               queues=queues,
                               claims_paused=claims_paused,
                               triage_running=triage_running,
@@ -640,10 +650,17 @@ class PriorityView(BaseModel):
     pinned: list[str] = []  # the tracks the mode does not apply to, in policy order
 
 
+class AuthDarkView(BaseModel):
+    since: str  # ISO timestamp the login went dark
+
+
 class UsageView(BaseModel):
+    model_config = ConfigDict(json_schema_serialization_defaults_required=True)
+
     providers: list[ProviderUsageView]
     gate: GateView
     priority: PriorityView
+    auth_dark: AuthDarkView | None = None
 
 
 CLOSE_HEADROOM = 0.08
@@ -671,10 +688,43 @@ def model_admission_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
                               note=verdict_note(verdict, now))
 
 
+def _usage_provider_views(usages: Mapping[str, ProviderUsage], now: datetime,
+                          pace: PaceConfig) -> list[ProviderUsageView]:
+    return [ProviderUsageView(
+        provider=name, source=usages[name].source,
+        windows=[_window_view(r, now, pace)
+                 for r in readings(usages[name], now, pace)])
+        for name in sorted(usages)]
+
+
+def _usage_priority_view(usages: Mapping[str, ProviderUsage], now: datetime,
+                         pace: PaceConfig, mode: str, routed: Collection[str],
+                         pinned: Collection[str], order: Order | None
+                         ) -> PriorityView:
+    ordering = order or priority.order(mode, usages, now, pace)
+    ranked = ordering(tuple(
+        Entry(p, "") for p in sorted(routed, key=lambda p: (p != "anthropic", p))))
+    return PriorityView(
+        mode=mode, options=[priority.AUTO, *sorted(routed)],
+        first=ranked[0].provider if ranked else "",
+        pinned=list(pinned))
+
+
+def _usage_gate_view(verdict, default_model: str, now: datetime,
+                     pace: PaceConfig) -> GateView:
+    binding = _window_view(verdict.binding, now, pace) if verdict.binding else None
+    return GateView(model=default_model, provider=verdict.provider,
+                    admitted=verdict.admitted, note=verdict_note(verdict, now),
+                    minutes_to_reset=binding.minutes_to_reset if binding else 0.0,
+                    binding=binding, reason=verdict.reason)
+
+
 def usage_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
                pace: PaceConfig, default_model: str, mode: str,
                routed: Collection[str],
-               pinned: Collection[str] = ()) -> UsageView:
+               pinned: Collection[str] = (),
+               order: Order | None = None,
+               auth_dark_since: str | None = None) -> UsageView:
     """Every provider's windows, sorted by provider name, one gate (the
     verdict for the policy default model), and what the priority `mode` is
     doing over the `routed` providers, minus the `pinned` tracks it never
@@ -684,23 +734,12 @@ def usage_view(usages: Mapping[str, ProviderUsage], *, now: datetime,
     differ from the entry a task gets when a model has its own weekly window.
     anthropic is written first, so it wins a tie and the no-pace case."""
     verdict = admits(usages, default_model, now, pace)
-    ranked = priority.order(mode, usages, now, pace)(tuple(
-        Entry(p, "") for p in sorted(routed, key=lambda p: (p != "anthropic", p))))
-    binding = _window_view(verdict.binding, now, pace) if verdict.binding else None
     return UsageView(
-        providers=[ProviderUsageView(
-            provider=name, source=usages[name].source,
-            windows=[_window_view(r, now, pace)
-                     for r in readings(usages[name], now, pace)])
-            for name in sorted(usages)],
-        gate=GateView(model=default_model, provider=verdict.provider,
-                      admitted=verdict.admitted, note=verdict_note(verdict, now),
-                      minutes_to_reset=binding.minutes_to_reset if binding else 0.0,
-                      binding=binding, reason=verdict.reason),
-        priority=PriorityView(
-            mode=mode, options=[priority.AUTO, *sorted(routed)],
-            first=ranked[0].provider if ranked else "",
-            pinned=list(pinned)))
+        providers=_usage_provider_views(usages, now, pace),
+        gate=_usage_gate_view(verdict, default_model, now, pace),
+        priority=_usage_priority_view(usages, now, pace, mode, routed, pinned,
+                                      order),
+        auth_dark=None if auth_dark_since is None else AuthDarkView(since=auth_dark_since))
 
 
 class QuarantineEntry(BaseModel):
@@ -711,6 +750,7 @@ class QuarantineEntry(BaseModel):
     fingerprint: str
     created_at: str
     blocker_open: bool | None
+    readable: bool
 
 
 class FingerprintEntry(BaseModel):
@@ -934,6 +974,30 @@ def _pick(names: list[str], tasks: list[TaskState],
                         project_last_claims(last_claimed, project_of), caps)
 
 
+def _unpaused_head_names(heads: Mapping[str, list[tuple[str, int]]],
+                         projects: Mapping[str, Project]) -> list[str]:
+    paused = {p.name for p in projects.values() if p.paused}
+    return [name for name in heads if name not in paused]
+
+
+def _next_claim_from_heads(heads: dict[str, tuple[str, int]], *,
+                           blocker: Blocker | None, eta: str,
+                           tasks: list[TaskState],
+                           projects: Mapping[str, Project],
+                           last_claimed: Mapping[str, str]) -> NextClaimView:
+    if not heads:
+        return NextClaimView(verdict="no-candidates", next_pass_eta=eta)
+    names = _unpaused_head_names(heads, projects)
+    if not names:
+        return NextClaimView(verdict="projects-paused", next_pass_eta=eta)
+    name = _pick(names, tasks, projects, last_claimed) if blocker is None else None
+    if name is None:
+        return NextClaimView(verdict="capacity-full", next_pass_eta=eta)
+    repository, issue = heads[name]
+    return NextClaimView(verdict="will-claim", next_pass_eta=eta,
+                         next_issue=issue, next_repository=repository)
+
+
 def _early_verdict(blocker: Blocker | None, gate: GateView,
                    eta: str) -> NextClaimView | None:
     """The forecast when the shared gate alone decides it, else None."""
@@ -974,10 +1038,13 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
     routes to another model can be claimed while this says budget-blocked,
     or denied while this says will-claim.
 
+    Quarantine is modelled from the dispatcher's verdict as of the last
+    completed pass. A record written or a blocker closed after that pass shows
+    up one pass later. Unreached candidates are absent: a project that got no
+    turn because capacity ran out first, or whose board read failed, is not in
+    the set, so the forecast treats its candidates as claimable, as before.
+
     Gates it does NOT model, so `will-claim` can still be wrong:
-      * failures.check_quarantine's live blocker check — `quarantined` skips
-        every local record, so a record whose blocker already closed hides
-        its candidate until the dispatcher's next pass clears it.
       * slot exhaustion (the round stops when allocate_slot returns None)
         and a create_workspace failure — only knowable at claim time.
       * queue movement since the rank rows were cached (rank_rows has a TTL,
@@ -992,18 +1059,8 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
     if early:
         return early
     heads = _queue_heads(queues, tasks, quarantined)
-    if not heads:
-        return NextClaimView(verdict="no-candidates", next_pass_eta=eta)
-    paused = {p.name for p in projects.values() if p.paused}
-    names = [n for n in heads if n not in paused]
-    if not names:
-        return NextClaimView(verdict="projects-paused", next_pass_eta=eta)
-    name = _pick(names, tasks, projects, last_claimed) if blocker is None else None
-    if name is None:
-        return NextClaimView(verdict="capacity-full", next_pass_eta=eta)
-    repository, issue = heads[name]
-    return NextClaimView(verdict="will-claim", next_pass_eta=eta,
-                         next_issue=issue, next_repository=repository)
+    return _next_claim_from_heads(heads, blocker=blocker, eta=eta, tasks=tasks,
+                                  projects=projects, last_claimed=last_claimed)
 
 
 def _on_timeline(e: dict, repository: str, issue: int) -> bool:

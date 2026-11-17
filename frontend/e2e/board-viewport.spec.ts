@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test'
 import { routeLongBoard } from './long-board.js'
 
 test.beforeEach(async ({ request }) => {
-  await request.post('/__control__/reset-queue')
+  await request.post('/__control__/reset')
 })
 
 test('desktop board fits the viewport; columns scroll on their own', async ({ page, isMobile }) => {
