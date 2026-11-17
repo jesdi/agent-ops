@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, Mapping
+from typing import Callable, Literal, Mapping
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -149,8 +149,10 @@ class RequestReading:
 
     config: Config
     now: datetime
-    mode: str | None
-    order: Order | None
+    mode: str
+    order: Order
+    # None: not collected (the snapshot, a run a pick decides); {} is a
+    # collected reading with nothing available, which fails closed.
     usages: Mapping[str, ProviderUsage] | None
 
 
@@ -168,7 +170,9 @@ def launch_pinned_track(t: TaskState, policy: ModelPolicy, *,
 
 def create_app(boot: Config, sources, sse_interval: float = 1.0,
                heartbeat_seconds: float = HEARTBEAT_SECONDS,
-               frontend_dist: Path | None = None) -> FastAPI:
+               frontend_dist: Path | None = None,
+               config_loader: Callable[[], Config] | None = None,
+               clock: Callable[[], datetime] | None = None) -> FastAPI:
     app = FastAPI(title="agent-ops web console")
     app.add_middleware(TailscaleAuthMiddleware)
 
@@ -189,14 +193,10 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         """The config in force now: `boot` with the stored model settings
         read again, as each dispatcher pass does. No copy to keep in step."""
         # ponytail: one small file read per call; cache by revision if it shows in profiles.
-        loader = getattr(app.state, "config_loader", None)
-        if loader is not None:
-            return loader()
-        return apply_stored_models(boot)
+        return config_loader() if config_loader else apply_stored_models(boot)
 
     def _now() -> datetime:
-        clock = getattr(app.state, "clock_loader", None)
-        return clock() if clock is not None else datetime.now(timezone.utc)
+        return clock() if clock else datetime.now(timezone.utc)
 
     def _usages(live: Config):
         """Usage of every provider the config in force can launch on."""
@@ -205,21 +205,18 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
     def _mode(live: Config) -> str:
         return priority.load(live.state_dir, routed_providers(live))
 
-    def _reading(*, with_usage: bool = False,
-                 with_order: bool = True) -> RequestReading:
+    def _reading(*, with_usage: bool = False) -> RequestReading:
         """Capture this request's calculation inputs once at the route edge."""
         live = _cfg()
         now = _now()
-        mode = _mode(live) if with_order or with_usage else None
+        mode = _mode(live)
         usages = _usages(live) if with_usage else None
-        if with_order:
-            assert mode is not None
-            order = priority.order(mode, usages or {}, now, live.pace)
-        else:
-            order = None
+        order = priority.order(mode, usages or {}, now, live.pace)
         return RequestReading(live, now, mode, order, usages)
 
     def _policy(reading: RequestReading, repository_name: str):
+        # The reading's repositories, not the startup map: a project's own
+        # policy is part of the effective configuration.
         repository = next((r for r in reading.config.repositories
                            if r.name == repository_name), None)
         return policy_for(reading.config, repository)
@@ -241,7 +238,6 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
 
     def _choices(reading: RequestReading, t):
         """The ordered entries the dispatcher would walk for t's next launch."""
-        assert reading.order is not None
         return launch_entries(t, _policy(reading, t.repository), reading.order)
 
     def _preferred_task_model(t):
@@ -314,7 +310,6 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
     def _candidate_choices(reading: RequestReading, repository, row):
         policy = _policy(reading, repository.name)
         track = track_from_labels(list(row.get("labels") or []), policy)
-        assert reading.order is not None
         return [e.model_id for e in candidates(
             policy, track, "spec", order=reading.order)]
 
@@ -393,8 +388,6 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
 
     def _usage_view(reading: RequestReading) -> read_model.UsageView:
         assert reading.usages is not None
-        assert reading.mode is not None
-        assert reading.order is not None
         return read_model.usage_view(
             reading.usages, now=reading.now, pace=reading.config.pace,
             default_model=reading.config.models.gate_entry().model_id,
@@ -871,10 +864,8 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         return task, None
 
     def _run_reading(req: RunReq, task):
-        if req.model:
-            return _reading(with_order=False)
         # Usage only decides an unpicked task with no pending override.
-        return _reading(with_usage=task is not None
+        return _reading(with_usage=not req.model and task is not None
                         and not _preferred_task_model(task))
 
     def _validate_run_model(reading: RequestReading, repository: str,

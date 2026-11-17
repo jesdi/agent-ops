@@ -704,21 +704,15 @@ def _snapshot_models(*, pinned=(), order=("claude-opus-5", "openai/gpt-6-luna"))
     return parse_policy(raw)
 
 
-def _snapshot_client(startup_config, fake, config_loader, clock_loader=None):
-    """Build the route with a test-controlled effective-config loader.
-
-    The loader is injected on FastAPI app state so the route test can give
-    startup and request-effective configuration different values without
-    depending on a private reading/helper name.
-    """
-    app = create_app(startup_config, fake)
-    app.state.config_loader = config_loader
-    if clock_loader is not None:
-        app.state.clock_loader = clock_loader
-    return TestClient(app)
+def _reading_client(startup_config, fake, config_loader, clock_loader=None):
+    """A console whose effective configuration (and clock) the test controls,
+    so startup and effective values can differ."""
+    return TestClient(create_app(startup_config, fake,
+                                 config_loader=config_loader,
+                                 clock=clock_loader))
 
 
-def _snapshot_cards(body):
+def _board_cards(body):
     return {card["issue"]: card for column in body["columns"]
             for card in column["cards"]}
 
@@ -738,7 +732,7 @@ def test_snapshot_is_local_and_uses_one_request_ordering(tmp_path):
     config = replace(make_config(tmp_path), models=_snapshot_models())
     fake.tasks_list = [make_task(issue=7, stage=Stage.PLAN)]
     reads = []
-    client = _snapshot_client(config, fake, lambda: reads.append(config) or config)
+    client = _reading_client(config, fake, lambda: reads.append(config) or config)
 
     def forbidden(*args, **kwargs):
         raise AssertionError("snapshot requested a live source")
@@ -750,14 +744,14 @@ def test_snapshot_is_local_and_uses_one_request_ordering(tmp_path):
     automatic = client.get("/api/board/snapshot", headers=HEADERS)
     assert automatic.status_code == 200
     assert set(automatic.json()) == {"columns", "capacity", "median_cycle_seconds"}
-    assert _snapshot_cards(automatic.json())[7]["model"] == "anthropic/claude-opus-5"
+    assert _board_cards(automatic.json())[7]["model"] == "anthropic/claude-opus-5"
     assert len(reads) == 1
 
     priority.save(tmp_path, "openai", actor="test",
                   now=datetime(2026, 11, 15, tzinfo=timezone.utc))
     fixed = client.get("/api/board/snapshot", headers=HEADERS)
     assert fixed.status_code == 200
-    assert _snapshot_cards(fixed.json())[7]["model"] == "openai/gpt-6-luna"
+    assert _board_cards(fixed.json())[7]["model"] == "openai/gpt-6-luna"
     assert len(reads) == 2
 
 
@@ -774,11 +768,11 @@ def test_snapshot_uses_effective_policy_for_pins_picks_and_overrides(tmp_path):
         make_task(issue=9, stage=Stage.PLAN),
     ]
     fake.execution_overrides[("alpha", 9)] = ("openai/gpt-6-luna@high", False)
-    client = _snapshot_client(startup, fake, lambda: effective)
+    client = _reading_client(startup, fake, lambda: effective)
 
     automatic = client.get("/api/board/snapshot", headers=HEADERS)
     assert automatic.status_code == 200
-    automatic_cards = _snapshot_cards(automatic.json())
+    automatic_cards = _board_cards(automatic.json())
     assert automatic_cards[7]["model"] == "anthropic/claude-opus-5"
     assert automatic_cards[7]["pinned_track"] == "standard"
 
@@ -786,7 +780,7 @@ def test_snapshot_uses_effective_policy_for_pins_picks_and_overrides(tmp_path):
                   now=datetime(2026, 11, 15, tzinfo=timezone.utc))
     fixed = client.get("/api/board/snapshot", headers=HEADERS)
     assert fixed.status_code == 200
-    cards = _snapshot_cards(fixed.json())
+    cards = _board_cards(fixed.json())
     assert cards[7]["model"] == "anthropic/claude-opus-5"
     assert cards[7]["pinned_track"] == "standard"
     assert cards[8]["model"] == "openai/gpt-6-luna"
@@ -814,13 +808,13 @@ def test_snapshot_capacity_and_task_policy_use_effective_configuration(tmp_path)
     fake.tasks_list = [make_task(issue=7, stage=Stage.PLAN)]
     priority.save(tmp_path, "openai", actor="test",
                   now=datetime(2026, 11, 15, tzinfo=timezone.utc))
-    client = _snapshot_client(startup, fake, lambda: effective)
+    client = _reading_client(startup, fake, lambda: effective)
 
     response = client.get("/api/board/snapshot", headers=HEADERS)
     assert response.status_code == 200
     body = response.json()
     assert body["capacity"]["capacity"] == 4
-    card = _snapshot_cards(body)[7]
+    card = _board_cards(body)[7]
     assert card["model"] == "anthropic/claude-opus-5"
     assert card["pinned_track"] == "standard"
 
@@ -863,16 +857,16 @@ def test_snapshot_reads_new_stored_models_only_on_the_next_request(tmp_path):
         return datetime(2026, 11, 15, 12, tzinfo=timezone.utc) + timedelta(
             seconds=len(clock_reads))
 
-    client = _snapshot_client(startup, fake, load_effective_config, captured_time)
+    client = _reading_client(startup, fake, load_effective_config, captured_time)
     first_request = client.get("/api/board/snapshot", headers=HEADERS)
     assert first_request.status_code == 200
     assert changed_during_request == [7]
-    assert {issue: card["model"] for issue, card in _snapshot_cards(first_request.json()).items()} == {
+    assert {issue: card["model"] for issue, card in _board_cards(first_request.json()).items()} == {
         7: "anthropic/claude-opus-5", 8: "anthropic/claude-opus-5"}
 
     second_request = client.get("/api/board/snapshot", headers=HEADERS)
     assert second_request.status_code == 200
-    assert {issue: card["model"] for issue, card in _snapshot_cards(second_request.json()).items()} == {
+    assert {issue: card["model"] for issue, card in _board_cards(second_request.json()).items()} == {
         7: "openai/gpt-6-luna", 8: "openai/gpt-6-luna"}
     assert len(loads) == 2
     assert len(clock_reads) == 2
@@ -931,20 +925,6 @@ def test_board_and_retry_tolerate_a_malformed_record(tmp_path):
     assert client.get("/api/board", headers=HEADERS).status_code == 200
     r = client.post("/api/task/alpha/73/retry", headers=HEADERS, json={})
     assert r.status_code == 202, r.text
-
-
-def _full_board_client(startup_config, fake, config_loader, clock_loader=None):
-    """Give the full-board route the same controlled read seams as snapshot."""
-    app = create_app(startup_config, fake)
-    app.state.config_loader = config_loader
-    if clock_loader is not None:
-        app.state.clock_loader = clock_loader
-    return TestClient(app)
-
-
-def _full_board_cards(body):
-    return {card["issue"]: card for column in body["columns"]
-            for card in column["cards"]}
 
 
 def _full_board_candidate(number=73):
@@ -1070,17 +1050,17 @@ def test_full_board_observes_model_settings_on_the_next_request(
     real_usage = fake.usage
     fake.usage = lambda routed=(): usage_reads.append(1) or real_usage(routed)
 
-    client = _full_board_client(startup, fake, load_effective_config,
+    client = _reading_client(startup, fake, load_effective_config,
                                 clock_loader=load_clock)
     first_request = client.get("/api/board", headers=HEADERS)
     assert first_request.status_code == 200
     assert changed_during_request == [7]
     assert {issue: card["model"] for issue, card in
-            _full_board_cards(first_request.json()).items()} == {
+            _board_cards(first_request.json()).items()} == {
                 7: "anthropic/claude-opus-5",
                 8: "anthropic/claude-opus-5",
             }
-    first_cards = _full_board_cards(first_request.json())
+    first_cards = _board_cards(first_request.json())
     assert all(first_cards[issue]["admission"]["requested"]["admitted"]
                is False for issue in (7, 8))
     queued = next(column for column in first_request.json()["columns"]
@@ -1097,12 +1077,12 @@ def test_full_board_observes_model_settings_on_the_next_request(
     second_request = client.get("/api/board", headers=HEADERS)
     assert second_request.status_code == 200
     assert {issue: card["model"] for issue, card in
-            _full_board_cards(second_request.json()).items()} == {
+            _board_cards(second_request.json()).items()} == {
                 7: "anthropic/claude-fable-5-1",
                 8: "anthropic/claude-fable-5-1",
             }
     assert all(card["admission"] is None for card in
-               _full_board_cards(second_request.json()).values())
+               _board_cards(second_request.json()).values())
     second_queue = next(column for column in second_request.json()["columns"]
                         if column["key"] == "queued")
     assert second_queue["ghosts"][0]["admission"] is None
@@ -1151,11 +1131,11 @@ def test_full_board_preserves_policy_pick_override_pin_and_fallback_precedence(
     }
     priority.save(tmp_path, "openai", actor="test",
                   now=datetime(2026, 11, 15, tzinfo=timezone.utc))
-    client = _full_board_client(startup, fake, lambda: effective)
+    client = _reading_client(startup, fake, lambda: effective)
 
     response = client.get("/api/board", headers=HEADERS)
     assert response.status_code == 200
-    cards = _full_board_cards(response.json())
+    cards = _board_cards(response.json())
     assert cards[7]["admission"]["requested"]["model"] == (
         "anthropic/claude-opus-5")
     assert cards[7]["admission"]["requested"]["admitted"] is False
@@ -1177,7 +1157,7 @@ def test_full_board_preserves_policy_pick_override_pin_and_fallback_precedence(
     fake.usages = {}
     empty_usage_response = client.get("/api/board", headers=HEADERS)
     assert empty_usage_response.status_code == 200
-    empty_cards = _full_board_cards(empty_usage_response.json())
+    empty_cards = _board_cards(empty_usage_response.json())
     assert empty_cards[7]["admission"]["requested"]["model"] == (
         "anthropic/claude-opus-5")
     assert empty_cards[7]["admission"]["requested"]["admitted"] is False
@@ -1239,13 +1219,13 @@ def test_full_board_uses_effective_capacity_max_open_and_pace(tmp_path):
         now, anthropic_session=0.2, openai_session=0.2,
         anthropic_week=0.2, openai_week=0.05)
     priority.save(tmp_path, "auto", actor="test", now=now)
-    client = _full_board_client(startup, fake, lambda: effective,
+    client = _reading_client(startup, fake, lambda: effective,
                                 clock_loader=lambda: now)
 
     ordered_response = client.get("/api/board", headers=HEADERS)
     assert ordered_response.status_code == 200
     ordered_body = ordered_response.json()
-    ordered_cards = _full_board_cards(ordered_body)
+    ordered_cards = _board_cards(ordered_body)
     assert ordered_body["capacity"]["capacity"] == 4
     assert ordered_body["next_claim"]["verdict"] == "capacity-full"
     assert ordered_cards[7]["model"] == "anthropic/claude-opus-5"
@@ -1260,7 +1240,7 @@ def test_full_board_uses_effective_capacity_max_open_and_pace(tmp_path):
         now, anthropic_session=0.5, openai_session=0.2,
         anthropic_week=0.2, openai_week=0.05)
     blocked_models = client.get("/api/board", headers=HEADERS).json()
-    blocked_cards = _full_board_cards(blocked_models)
+    blocked_cards = _board_cards(blocked_models)
     assert blocked_cards[8]["admission"]["requested"]["model"] == (
         "anthropic/claude-opus-5")
     assert blocked_cards[8]["admission"]["requested"]["admitted"] is False
