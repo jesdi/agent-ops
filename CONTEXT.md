@@ -6,6 +6,12 @@ sessions to a finished PR.
 
 ## Language
 
+**Fake API reset**:
+`POST /__control__/reset` restores the Playwright fake API to its canonical
+startup seed, with zero occupied slots and a new six-minute next-pass ETA.
+It clears messages and intents and notifies board and usage on retained SSE
+connections. Serial tests await mutations before resetting (ADRs 0020–0025).
+
 **Atomic state write**:
 Whole-file replacement for dispatcher state and settings files through
 `dispatcher.state.write_atomic`, or `write_json_atomic` for JSON. It uses a

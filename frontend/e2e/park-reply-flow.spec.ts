@@ -4,7 +4,7 @@ import { showColumn } from './phone.js'
 test('park -> reply -> pending -> confirmed', async ({ page, request }) => {
   // Restore the seed so this spec is idempotent across Playwright retries and
   // across the message-queue-flow spec that runs before it alphabetically.
-  await request.post('/__control__/reset-messages')
+  await request.post('/__control__/reset')
   await page.goto('/')
 
   // A parked card is on the board.

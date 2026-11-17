@@ -56,11 +56,5 @@ frontend/coverage/
 .scratch/
 .agent/
 
-# Task 87 local architecture notes
-/docs/adr/0017-quarantine-readability-has-one-owner.md
-/docs/adr/0018-quarantine-read-results-have-three-states.md
-/docs/adr/0019-unreadable-quarantine-fails-closed.md
-/docs/adr/0020-unreadable-retry-clears-only-the-record.md
-/docs/adr/0021-quarantine-readability-is-required.md
-/docs/adr/0022-unreadable-quarantine-projection.md
-/docs/adr/0023-failurelist-unreadable-row.md
+# ADRs stay local
+/docs/adr/*.md
