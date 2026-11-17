@@ -790,7 +790,17 @@ def test_snapshot_uses_effective_policy_for_pins_picks_and_overrides(tmp_path):
     assert cards[7]["model"] == "anthropic/claude-opus-5"
     assert cards[7]["pinned_track"] == "standard"
     assert cards[8]["model"] == "openai/gpt-6-luna"
-    assert cards[9]["model"] == "openai/gpt-6-luna"
+    # A one-shot override is shown as written, effort included.
+    assert cards[9]["model"] == "openai/gpt-6-luna@high"
+
+
+def test_snapshot_tolerates_a_malformed_one_shot_override(tmp_path):
+    fake = FakeSources()
+    fake.tasks_list = [make_task(issue=7, stage=Stage.PLAN)]
+    fake.execution_overrides[("alpha", 7)] = ("bogus/x y", False)
+    client = TestClient(create_app(make_config(tmp_path), fake))
+    r = client.get("/api/board/snapshot", headers=HEADERS)
+    assert r.status_code == 200
 
 
 def test_snapshot_capacity_and_task_policy_use_effective_configuration(tmp_path):

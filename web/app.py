@@ -247,7 +247,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
     def _preferred_task_model(t):
         override = _one_shot(t)
         if override and override.model:
-            return parse_entry(override.model, "execution override").model_id
+            return override.model
         pick = stage_pick(t.picks, next_stage(t))
         if pick:
             return parse_entry(pick, "pick").model_id
@@ -873,7 +873,9 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
     def _run_reading(req: RunReq, task):
         if req.model:
             return _reading(with_order=False)
-        return _reading(with_usage=task is not None)
+        # Usage only decides an unpicked task with no pending override.
+        return _reading(with_usage=task is not None
+                        and not _preferred_task_model(task))
 
     def _validate_run_model(reading: RequestReading, repository: str,
                             configured_repository, req: RunReq):
