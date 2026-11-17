@@ -274,8 +274,13 @@ class Sources:
             return since if since is not None else _iso(path.stat().st_mtime)
         except FileNotFoundError:
             return None
-        except OSError:  # the marker is there but its metadata is not readable
-            return _iso(time.time())
+        except OSError:  # unreadable: still dark, by mtime, unless it vanished
+            try:
+                return _iso(path.stat().st_mtime)
+            except FileNotFoundError:
+                return None
+            except OSError:  # metadata unreadable too: dark, since now
+                return _iso(time.time())
 
     def quarantine_entries(self) -> list[dict]:
         """Every quarantine record, for /api/failures, the retry route's "is
