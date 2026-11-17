@@ -10,7 +10,7 @@ import { ProjectPanel, ProjectTabs } from '../components/ProjectTabs'
 import { useProjectBoard } from '../components/useProjectTab'
 import { useActiveColumn } from '../components/useActiveColumn'
 import type { ReactNode } from 'react'
-import type { BoardView, Column, GhostCard, NextClaimView, PendingIntent, Zone } from '../lib/api'
+import type { BoardSnapshot, BoardView, Column, GhostCard, NextClaimView, PendingIntent, Zone } from '../lib/api'
 import { useBoardSnapshot, usePendingIntents, useTasks } from '../hooks/useResources'
 import { useQueueActions } from '../hooks/useQueueActions'
 import { useWontDo } from '../hooks/useWontDo'
@@ -180,25 +180,20 @@ function columnViews(columns: Column[], degraded: QueueDegraded,
   }))
 }
 
-export function BoardPage() {
-  const boardQuery = useTasks()
-  const snapshotQuery = useBoardSnapshot(!boardQuery.data)
+/** The project, queue actions and columns belong to a board that has loaded. */
+function ReadyBoard({ board, liveBoard }: { board: BoardSnapshot; liveBoard: BoardView | undefined }) {
   const intentsQuery = usePendingIntents()
   const queue = useQueueActions()
   const wontDo = useWontDo()
 
-  const board = boardQuery.data ?? snapshotQuery.data
-  const project = useProjectBoard(board?.columns ?? [])
-  const views = columnViews(project.columns, queueDegraded(boardQuery.data, queue.queueError), wontDo.propose)
+  const project = useProjectBoard(board.columns)
+  const views = columnViews(project.columns, queueDegraded(liveBoard, queue.queueError), wontDo.propose)
   // Anything occupied stays in the row, so a card can never disappear into
   // the strip.
   const inRow = views.filter((v) => v.count > 0)
-  const tabs = useActiveColumn(inRow.map((v) => v.column.key), boardQuery.data !== undefined)
+  const tabs = useActiveColumn(inRow.map((v) => v.column.key), liveBoard !== undefined)
 
-  if (project.pending || (!board && (boardQuery.isPending || snapshotQuery.isPending))) return <p className="p-4 text-ink-muted">loading board…</p>
-  if (!board) {
-    return <p className="p-4 text-failed-fg">board unavailable: {boardQuery.error?.message ?? snapshotQuery.error?.message}</p>
-  }
+  if (project.pending) return <p className="p-4 text-ink-muted">loading board…</p>
 
   const pendingByKey = pendingIntentsByKey(intentsQuery.data?.intents ?? [])
 
@@ -223,7 +218,7 @@ export function BoardPage() {
         <BoardRow
           inRow={inRow} tabs={tabs} pendingByKey={pendingByKey}
           ghosts={(ghosts) => (
-            <Ghosts ghosts={ghosts} nextClaim={boardQuery.data?.next_claim} paused={project.paused} queue={queue} />
+            <Ghosts ghosts={ghosts} nextClaim={liveBoard?.next_claim} paused={project.paused} queue={queue} />
           )}
         />
       </ProjectPanel>
@@ -238,4 +233,16 @@ export function BoardPage() {
       )}
     </div>
   )
+}
+
+export function BoardPage() {
+  const boardQuery = useTasks()
+  const snapshotQuery = useBoardSnapshot(!boardQuery.data)
+  const board = boardQuery.data ?? snapshotQuery.data
+
+  if (!board && (boardQuery.isPending || snapshotQuery.isPending)) return <p className="p-4 text-ink-muted">loading board…</p>
+  if (!board) {
+    return <p className="p-4 text-failed-fg">board unavailable: {boardQuery.error?.message ?? snapshotQuery.error?.message}</p>
+  }
+  return <ReadyBoard board={board} liveBoard={boardQuery.data} />
 }
