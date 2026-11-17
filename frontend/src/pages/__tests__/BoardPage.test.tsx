@@ -505,6 +505,16 @@ it('falls back to the full board if the snapshot fails', async () => {
   expect(await screen.findByText('Fix login redirect')).toBeInTheDocument()
 })
 
+it('shows the board error when both the live board and saved snapshot fail', async () => {
+  server.use(
+    http.get('/api/board', () => HttpResponse.json({ detail: 'live board failed' }, { status: 503 })),
+    http.get('/api/board/snapshot', () => HttpResponse.json({ detail: 'snapshot failed' }, { status: 503 })),
+  )
+  renderWithProviders(<BoardPage />)
+  expect(await screen.findByText('board unavailable: live board failed')).toBeInTheDocument()
+  expect(screen.queryByTestId('column-parked')).not.toBeInTheDocument()
+})
+
 function Search() {
   return <output data-testid="search">{useLocation().search}</output>
 }
