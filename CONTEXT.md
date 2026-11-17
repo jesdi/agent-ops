@@ -48,6 +48,12 @@ The `last_alert` ISO-8601 UTC timestamp in the auth-dark marker, written after
 a successful send. An alerted marker without it is a legacy marker and uses
 the incident's `since` timestamp until its next alert.
 
+**Usage banner**:
+The alert above the loaded Board header. It shows an auth-dark incident when
+the dispatcher-owned marker exists; otherwise it shows an over-pace pause when
+the live usage gate is closed by a binding window. It disappears when neither
+condition applies and refreshes through the existing `usage` SSE key.
+
 **Frontend Node version**:
 Node 24 is the supported version for local frontend work and the `frontend` and
 `e2e` CI jobs. `frontend/.node-version` gives version managers the major version;
