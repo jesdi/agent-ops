@@ -515,6 +515,15 @@ it('shows the board error when both the live board and saved snapshot fail', asy
   expect(screen.queryByTestId('column-parked')).not.toBeInTheDocument()
 })
 
+it('shows the snapshot error if the live board returns no data', async () => {
+  server.use(
+    http.get('/api/board', () => HttpResponse.json(null)),
+    http.get('/api/board/snapshot', () => HttpResponse.json({ detail: 'snapshot failed' }, { status: 503 })),
+  )
+  renderWithProviders(<BoardPage />)
+  expect(await screen.findByText('board unavailable: snapshot failed')).toBeInTheDocument()
+})
+
 function Search() {
   return <output data-testid="search">{useLocation().search}</output>
 }
