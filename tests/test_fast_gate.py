@@ -177,7 +177,7 @@ def test_full_gate_runs_full_suites_even_with_missing_locked_paths(gate):
     result = gate.run("tests/test_missing.py", target="gate")
     assert result.returncode == 0, result.stderr
     calls = [call[:2] for call in gate.calls]
-    assert ["uv", ["run", "--locked", "python", "-m", "pytest", "-q"]] in calls
+    assert ["uv", ["run", "--locked", "python", "-m", "pytest", "-q", "-n", "auto"]] in calls
     assert ["pnpm", ["test"]] in calls
     assert ["uv", ["run", "--locked", "pnpm", "gen:api"]] in calls
     assert ["pnpm", ["build"]] in calls
