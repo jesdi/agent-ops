@@ -13,7 +13,8 @@ from dataclasses import replace as dc_replace
 
 import dispatcher.main as main
 from dispatcher.pr_poll import CIStatus
-from dispatcher.state import PARK_HUMAN, Stage, load
+from dispatcher.state import Stage, load
+from dispatcher.status import HumanReason, Kind
 from tests.test_containers import TOKENS
 from tests.test_main import (FakeGitHub, FakeNotifier, FakeSessions, cfg,
                              deps, make_task, patch_usage, payload,
@@ -145,6 +146,6 @@ def test_red_e2e_check_without_verify_cmd_parks_past_the_ci_cap(tmp_path, monkey
     main.run_pass(c, deps(gh, sess, notifier=notif))
 
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert (t.stage, t.park, t.feedback_pending) == (
-        Stage.PR_OPEN, PARK_HUMAN, False)
+    assert (t.stage, t.status.kind, t.status.reason) == (
+        Stage.PR_OPEN, Kind.PARKED_HUMAN, HumanReason.LOOP_CAP)
     assert "parked_question" in notif.sent and not sess.spawned

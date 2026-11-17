@@ -9,13 +9,14 @@ import pytest
 
 from dispatcher import tmux_migration
 from dispatcher.state import Stage, TaskState, save
+from tests.statuses import PR, RUNNING, ci, failed, login
 
 
-def _task(state_dir, issue, repository="acme", park="", stage=Stage.IMPLEMENT):
+def _task(state_dir, issue, repository="acme", status=RUNNING, stage=Stage.IMPLEMENT):
     ts = TaskState(issue=issue, repository=repository, stage=stage, slot=0,
                    worktree=f"/wt/task-{issue}", branch=f"agent/task-{issue}",
                    title=f"task {issue}", updated_at="2026-09-03T00:00:00Z",
-                   park=park)
+                   status=status)
     save(state_dir, ts)
     return ts
 
@@ -120,7 +121,7 @@ def test_a_login_parked_task_with_a_live_session_migrates_too(tmp_path, shell):
     migrated like any other in-flight task and the resumed claude
     re-prompts, so the stall/login path re-parks it."""
     state = tmp_path / "state"
-    _task(state, 7, park="parked-login")
+    _task(state, 7, status=login())
     sh = shell(sessions=["task-acme-7"], containers=["task-acme-7"])
 
     tmux_migration.migrate(state, sh.wake)
@@ -160,8 +161,8 @@ def test_a_live_session_the_dispatcher_would_not_drive_is_ended_not_woken(
     (and could push to it), and waking a FAILED tombstone would stand a
     container up outside capacity accounting. Both are ended only."""
     state = tmp_path / "state"
-    _task(state, 8, stage=Stage.PR_OPEN)
-    _task(state, 9, stage=Stage.FAILED)
+    _task(state, 8, stage=Stage.PR_OPEN, status=PR)
+    _task(state, 9, stage=Stage.QUEUED, status=failed("unknown"))
     sh = shell(sessions=["task-acme-8", "task-acme-9"],
                containers=["task-acme-8", "task-acme-9"])
 
@@ -173,8 +174,8 @@ def test_a_live_session_the_dispatcher_would_not_drive_is_ended_not_woken(
     assert "podman rm -f task-8" in sh.events
     assert "tmux kill-session -t =task-acme-9" in sh.events
     text = "\n".join(lines)
-    assert "ended task-acme-8 (not resumed: stage pr-open)" in text, text
-    assert "ended task-acme-9 (not resumed: stage failed)" in text, text
+    assert "ended task-acme-8 (not resumed: stage pr-open parked-pr)" in text, text
+    assert "ended task-acme-9 (not resumed: stage queued failed)" in text, text
 
 
 def test_a_gate_parked_task_with_a_live_session_is_ended_not_woken(
@@ -183,14 +184,14 @@ def test_a_gate_parked_task_with_a_live_session_is_ended_not_woken(
     still up, end it — the wake queue is for tasks the dispatcher drives,
     and the CI wake owns this one."""
     state = tmp_path / "state"
-    _task(state, 11, park="awaiting-ci")
+    _task(state, 11, status=ci(1))
     sh = shell(sessions=["task-acme-11"], containers=["task-acme-11"])
 
     lines = tmux_migration.migrate(state, sh.wake)
 
     assert [e for e in sh.events if e.startswith("wake ")] == []
     assert ("ended task-acme-11 (not resumed: stage implement "
-            "park awaiting-ci)") in "\n".join(lines)
+            "parked-ci)") in "\n".join(lines)
 
 
 def test_missing_tmux_binary_migrates_nothing(tmp_path, shell):

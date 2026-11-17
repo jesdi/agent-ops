@@ -4,9 +4,7 @@ import os
 
 import pytest
 
-from dispatcher.state import (SessionRecord, Stage, TaskState, has_waiting,
-                              mark_background, mark_waiting, read_background,
-                              read_session, save)
+from dispatcher.state import (SessionRecord, Stage, TaskState, has_waiting, mark_background, mark_waiting, read_background, read_session, save)
 from dispatcher.waitd import handle_ping
 
 REPOSITORY = "portfolio_eval"
@@ -91,7 +89,7 @@ def test_bad_task_state_keeps_prior_session_and_updates_turn_markers(
 
 @pytest.mark.parametrize("background_tasks", [None, [BACKGROUND_TASK]],
                          ids=["waiting", "background"])
-def test_malformed_operator_request_keeps_session_and_updates_turn_markers(
+def test_malformed_status_keeps_session_and_updates_turn_markers(
         tmp_path, capsys, background_tasks):
     _task(tmp_path)
     _ping(tmp_path, FIRST_ID)
@@ -99,7 +97,7 @@ def test_malformed_operator_request_keeps_session_and_updates_turn_markers(
     _prior_marker(tmp_path, background_tasks)
     task_path = tmp_path / "task-portfolio_eval-370.json"
     task_doc = json.loads(task_path.read_text())
-    task_doc["operator_request"] = []
+    task_doc["status"] = {"kind": "parked-human", "detail": []}
     task_path.write_text(json.dumps(task_doc))
 
     _ping(tmp_path, SECOND_ID, background_tasks)

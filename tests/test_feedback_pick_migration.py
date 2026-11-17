@@ -6,6 +6,7 @@ import pytest
 from dispatcher.models import override_refusal, pick_key, stage_pick
 from dispatcher.state import Stage, load, save
 from tests.pinned import old_shape
+from tests.statuses import failed
 
 SOL = "openai/gpt-sol@medium"
 FABLE = "anthropic/claude-fable-5-1@medium"
@@ -13,7 +14,7 @@ FABLE = "anthropic/claude-fable-5-1@medium"
 
 @pytest.mark.parametrize("stage,key", [
     ("address-review", "feedback"), ("implement", "implement"),
-    ("queued", "spec"), ("awaiting-plan-review", "plan"), ("review", "review")])
+    ("queued", "spec"), ("plan", "plan"), ("review", "review")])
 def test_pick_key_of_a_stage(stage, key):
     assert pick_key(stage) == key
 
@@ -49,14 +50,12 @@ def test_old_shape_in_implement_keeps_its_pick(tmp_path):
 
 
 def test_old_shape_crashed_in_address_review_moves_the_pick(tmp_path):
-    old_shape(tmp_path, Stage.FAILED, {"implement": SOL},
-              crashed_stage="address-review")
+    old_shape(tmp_path, Stage.ADDRESS_REVIEW, {"implement": SOL}, status=failed())
     assert load(tmp_path, "t", 42).picks == {"feedback": SOL}
 
 
 def test_old_shape_crashed_in_implement_keeps_its_pick(tmp_path):
-    old_shape(tmp_path, Stage.FAILED, {"implement": SOL},
-              crashed_stage="implement")
+    old_shape(tmp_path, Stage.IMPLEMENT, {"implement": SOL}, status=failed())
     assert load(tmp_path, "t", 42).picks == {"implement": SOL}
 
 

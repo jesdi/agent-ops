@@ -5,27 +5,20 @@ from pathlib import Path
 import pytest
 
 from dispatcher.state import (
-    IN_FLIGHT_STAGES,
     NO_SLOT,
-    PARK_CI,
-    PARK_HUMAN,
-    PARK_LOGIN,
-    PARK_REVIEW,
-    PARK_WAKE,
-    AnswersRequest,
-    PlanApprovalRequest,
     Stage,
     StageSignal,
     TaskState,
-    active,
     allocate_slot,
-    consumes_capacity,
     delete,
     load,
     load_all,
     read_stage_signal,
     save,
 )
+from dispatcher.status import Cause, FailReason, Kind, Status
+from tests.statuses import (CANCELED, DONE, PR, RUNNING, answers, ci, failed, held, human,
+                            login, review, waking)
 
 
 def make(issue=101, stage=Stage.SPEC, slot=0, **kw):
@@ -51,18 +44,6 @@ def test_save_load_roundtrip(tmp_path: Path):
     assert loaded.stage is Stage.SPEC
 
 
-@pytest.mark.parametrize("stage,continued", [
-    (Stage.AWAITING_PLAN_REVIEW, Stage.PLAN),
-    (Stage.SPEC, Stage.SPEC),
-    (Stage.PLAN, Stage.PLAN),
-    (Stage.IMPLEMENT, Stage.IMPLEMENT),
-    (Stage.REVIEW, Stage.REVIEW),
-    (Stage.ADDRESS_REVIEW, Stage.ADDRESS_REVIEW),
-])
-def test_continued_stage_preserves_conversation_stage(stage, continued):
-    assert make(stage=stage).continued_stage is continued
-
-
 def test_load_missing_returns_none(tmp_path: Path):
     assert load(tmp_path, "portfolio_eval", 999) is None
 
@@ -83,17 +64,10 @@ def test_allocate_slot_full_returns_none():
     assert allocate_slot(existing, max_slots=3) is None
 
 
-def test_terminal_stages_do_not_hold_slots():
-    # a FAILED task's slot is reusable
-    existing = [make(issue=1, slot=0, stage=Stage.FAILED)]
+def test_ended_tasks_do_not_hold_slots():
+    # a failed task's slot is reusable
+    existing = [make(issue=1, slot=0, status=failed())]
     assert allocate_slot(existing, max_slots=3) == 0
-
-
-def test_in_flight_stages():
-    assert Stage.SPEC in IN_FLIGHT_STAGES
-    assert Stage.AWAITING_PLAN_REVIEW in IN_FLIGHT_STAGES
-    assert Stage.PR_OPEN not in IN_FLIGHT_STAGES
-    assert Stage.FAILED not in IN_FLIGHT_STAGES
 
 
 def test_read_stage_signal(tmp_path: Path):
@@ -122,54 +96,19 @@ def test_read_stage_signal_missing_or_corrupt(tmp_path: Path):
     assert read_stage_signal(tmp_path) is None
 
 
-from dispatcher.state import (clear_turn_markers, has_waiting, mark_waiting,
-                              parked)
+from dispatcher.state import clear_turn_markers, has_waiting, mark_waiting
 
 
-def _task(issue=1, stage=Stage.IMPLEMENT, park=""):
-    return TaskState(issue=issue, repository="t", stage=stage, slot=0,
-                     worktree="/tmp/wt", branch=f"agent/task-{issue}",
-                     title="x", updated_at="2026-07-21T00:00:00+00:00",
-                     park=park)
-
-
-def test_old_state_file_without_park_fields_loads(tmp_path):
-    # Backward-readable across the deploy: pre-park JSON has no new keys.
+def test_a_state_file_without_the_optional_fields_loads(tmp_path):
     import json
     (tmp_path / "task-7.json").write_text(json.dumps({
         "issue": 7, "repository": "t", "stage": "implement", "slot": 0,
         "worktree": "/tmp/wt", "branch": "agent/task-7", "title": "x",
-        "updated_at": "2026-07-14T00:00:00+00:00"}))
+        "updated_at": "2026-07-14T00:00:00+00:00",
+        "status": {"kind": "running", "detail": {}}}))
     ts = load(tmp_path, "t", 7)
-    assert ts.park == "" and ts.ci_run_id == 0 and ts.park_msg_id == 0
+    assert ts.status == RUNNING and ts.park_msg_id == 0
     assert ts.hold_for_attach is False
-
-
-def test_park_fields_roundtrip(tmp_path):
-    save(tmp_path, _task(park=PARK_CI))
-    assert load(tmp_path, "t", 1).park == PARK_CI
-
-
-def test_active_excludes_parked_and_parked_releases_its_slot():
-    ts = [_task(issue=1, park=PARK_HUMAN), _task(issue=2)]
-    assert [t.issue for t in active(ts)] == [2]
-    assert [t.issue for t in parked(ts)] == [1]
-    from dispatcher.state import allocate_slot
-    assert allocate_slot(ts, max_slots=3) not in (0,)  # slot 0 still held by task 2
-
-
-def test_parked_helper_covers_all_park_values():
-    ts = [_task(issue=1, park=PARK_HUMAN), _task(issue=2, park=PARK_CI),
-          _task(issue=3, park=PARK_WAKE), _task(issue=4, park=PARK_LOGIN)]
-    assert len(parked(ts)) == 4
-
-
-def test_login_park_still_counts_as_active():
-    # PARK_LOGIN is the one park that keeps its container and tmux session
-    # alive, so it must keep consuming capacity too.
-    ts = [_task(issue=1, park=PARK_LOGIN), _task(issue=2, park=PARK_HUMAN)]
-    assert [t.issue for t in active(ts)] == [1]
-    assert [t.issue for t in parked(ts)] == [1, 2]
 
 
 def test_stage_signal_run_id(tmp_path):
@@ -280,8 +219,8 @@ def test_state_file_written_before_this_feature_still_loads(tmp_path: Path):
     (tmp_path / "task-55.json").write_text(json.dumps({
         "issue": 55, "repository": "portfolio_eval", "stage": "implement", "slot": 1,
         "worktree": "/wt", "branch": "agent/task-55", "title": "Old task",
-        "updated_at": "2026-07-01T00:00:00+00:00", "park": "", "ci_run_id": 0,
-        "park_msg_id": 0, "hold_for_attach": False,
+        "updated_at": "2026-07-01T00:00:00+00:00", "park_msg_id": 0,
+        "hold_for_attach": False, "status": {"kind": "running", "detail": {}},
     }))
     loaded = load(tmp_path, "portfolio_eval", 55)
     assert loaded.effort is None
@@ -290,140 +229,57 @@ def test_state_file_written_before_this_feature_still_loads(tmp_path: Path):
 
 def test_allocate_slot_ignores_slot_less_holders():
     # A gate-parked task holds no slot; slot 0 must stay allocatable.
-    existing = [make(issue=1, stage=Stage.AWAITING_PLAN_REVIEW, slot=NO_SLOT)]
+    existing = [make(issue=1, stage=Stage.PLAN, status=review(), slot=NO_SLOT)]
     assert allocate_slot(existing, max_slots=3) == 0
 
 
 def test_all_slots_free_when_every_holder_is_gate_parked():
-    existing = [make(issue=i, stage=Stage.AWAITING_PLAN_REVIEW, slot=NO_SLOT)
+    existing = [make(issue=i, stage=Stage.PLAN, status=review(), slot=NO_SLOT)
                 for i in range(5)]
     assert allocate_slot(existing, max_slots=3) == 0
 
 
-def test_review_park_frees_capacity_and_counts_as_parked():
-    ts = [_task(issue=1, park=PARK_REVIEW)]
-    from dispatcher.state import parked, active
-    assert parked(ts) == ts
-    assert active(ts) == []   # unlike PARK_LOGIN, it does NOT hold capacity
-
-
 def test_slot_less_state_round_trips(tmp_path):
-    ts = replace(make(issue=77, stage=Stage.AWAITING_PLAN_REVIEW, slot=NO_SLOT),
-                 park=PARK_REVIEW)
+    ts = make(issue=77, stage=Stage.PLAN, status=review(), slot=NO_SLOT)
     save(tmp_path, ts)
     assert load(tmp_path, "portfolio_eval", 77) == ts
 
 
-def test_park_note_roundtrips_and_defaults_empty(tmp_path):
-    t = TaskState(issue=9, repository="alpha", stage=Stage.IMPLEMENT, slot=0,
-                  worktree="/w", branch="b", title="t",
-                  updated_at="2026-07-30T00:00:00+00:00")
-    assert t.park_note == ""
-    save(tmp_path, replace(t, park_note="need a decision"))
-    assert load(tmp_path, "alpha", 9).park_note == "need a decision"
-
-
-def test_load_tolerates_state_files_without_park_note(tmp_path):
-    # Pre-feature task-<N>.json files have no park_note key.
-    t = TaskState(issue=9, repository="alpha", stage=Stage.IMPLEMENT, slot=0,
-                  worktree="/w", branch="b", title="t",
-                  updated_at="2026-07-30T00:00:00+00:00")
-    save(tmp_path, t)
-    p = tmp_path / "task-alpha-9.json"
-    d = json.loads(p.read_text())
-    del d["park_note"]
-    p.write_text(json.dumps(d))
-    assert load(tmp_path, "alpha", 9).park_note == ""
-
-
-def test_new_stages_exist_and_flight_membership():
-    assert Stage.ADDRESS_REVIEW.value == "address-review"
-    assert Stage.DONE.value == "done"
-    assert Stage.ADDRESS_REVIEW in IN_FLIGHT_STAGES
-    assert Stage.DONE not in IN_FLIGHT_STAGES
-    assert Stage.PR_OPEN not in IN_FLIGHT_STAGES
-
-
 def test_pr_fields_default_and_roundtrip(tmp_path):
-    ts = TaskState(issue=7, repository="t", stage=Stage.PR_OPEN, slot=0,
+    ts = TaskState(issue=7, repository="t", stage=Stage.PR_OPEN, status=PR, slot=NO_SLOT,
                    worktree="w", branch="b", title="x",
                    updated_at="2026-07-30T00:00:00+00:00")
-    assert (ts.pr_number, ts.feedback_cursor, ts.feedback_pending,
-            ts.done_at) == (0, "", False, "")
-    save(tmp_path, replace(ts, pr_number=12, feedback_pending=True,
+    assert (ts.pr_number, ts.feedback_cursor, ts.done_at) == (0, "", "")
+    save(tmp_path, replace(ts, pr_number=12, status=waking(PR, "attention(feedback)"),
                            feedback_cursor="2026-07-30T01:00:00+00:00",
                            done_at="2026-07-30T02:00:00+00:00"))
     got = load(tmp_path, "t", 7)
-    assert got.pr_number == 12 and got.feedback_pending is True
+    assert got.pr_number == 12 and got.status == waking(PR, "attention(feedback)")
     assert got.feedback_cursor == "2026-07-30T01:00:00+00:00"
     assert got.done_at == "2026-07-30T02:00:00+00:00"
 
 
 def test_old_state_file_without_pr_fields_loads(tmp_path):
-    ts = TaskState(issue=8, repository="t", stage=Stage.PR_OPEN, slot=0,
+    ts = TaskState(issue=8, repository="t", stage=Stage.PR_OPEN, status=PR, slot=NO_SLOT,
                    worktree="w", branch="b", title="x",
                    updated_at="2026-07-30T00:00:00+00:00")
     save(tmp_path, ts)
     p = tmp_path / "task-t-8.json"
     d = json.loads(p.read_text())
-    for k in ("pr_number", "feedback_cursor", "feedback_pending", "done_at"):
+    for k in ("pr_number", "feedback_cursor", "done_at"):
         d.pop(k)
     p.write_text(json.dumps(d))
     assert load(tmp_path, "t", 8).pr_number == 0
 
 
 def test_delete_removes_state_file_and_is_idempotent(tmp_path):
-    ts = TaskState(issue=9, repository="t", stage=Stage.DONE, slot=-1,
+    ts = TaskState(issue=9, repository="t", stage=Stage.PR_OPEN, status=DONE, slot=-1,
                    worktree="w", branch="b", title="x",
                    updated_at="2026-07-30T00:00:00+00:00")
     save(tmp_path, ts)
     delete(tmp_path, "t", 9)
     assert load(tmp_path, "t", 9) is None
     delete(tmp_path, "t", 9)  # no raise
-
-
-def test_consumes_capacity_unparked_in_flight_task():
-    assert consumes_capacity(make(stage=Stage.IMPLEMENT))
-
-
-@pytest.mark.parametrize("stage", sorted(IN_FLIGHT_STAGES, key=lambda s: s.value))
-def test_consumes_capacity_true_for_every_in_flight_stage(stage):
-    assert consumes_capacity(make(stage=stage))
-
-
-@pytest.mark.parametrize("stage", [s for s in Stage if s not in IN_FLIGHT_STAGES])
-def test_consumes_capacity_false_for_terminal_stages(stage):
-    assert not consumes_capacity(make(stage=stage))
-
-
-@pytest.mark.parametrize("park,expected", [
-    ("", True),
-    # the one park that keeps a live container: it must keep counting, or the
-    # dispatcher would claim fresh work during a box-wide auth expiry
-    (PARK_LOGIN, True),
-    (PARK_HUMAN, False),
-    (PARK_CI, False),
-    (PARK_WAKE, False),
-    (PARK_REVIEW, False),
-])
-def test_consumes_capacity_park_truth_table(park, expected):
-    t = replace(make(stage=Stage.IMPLEMENT), park=park)
-    assert consumes_capacity(t) is expected
-
-
-def test_active_is_exactly_the_predicate_over_a_mixed_fixture():
-    """The extraction must not let active() and the predicate drift apart."""
-    tasks = [
-        make(issue=1, stage=Stage.IMPLEMENT),
-        replace(make(issue=2, stage=Stage.SPEC), park=PARK_LOGIN),
-        replace(make(issue=3, stage=Stage.IMPLEMENT), park=PARK_CI),
-        replace(make(issue=4, stage=Stage.AWAITING_PLAN_REVIEW), park=PARK_REVIEW),
-        make(issue=5, stage=Stage.DONE),
-        make(issue=6, stage=Stage.FAILED),
-        make(issue=7, stage=Stage.QUEUED),
-    ]
-    assert active(tasks) == [t for t in tasks if consumes_capacity(t)]
-    assert [t.issue for t in active(tasks)] == [1, 2, 7]
 
 
 def test_task_state_has_no_pending_reply_field():
@@ -470,54 +326,9 @@ def test_allocate_slot_respects_the_passed_max():
     assert allocate_slot(existing, max_slots=4) == 2
 
 
-def test_holds_slot_only_for_live_and_login_parked():
-    from dispatcher.state import holds_slot
-    assert holds_slot(make(issue=1, slot=0, park="")) is True
-    assert holds_slot(make(issue=2, slot=0, park=PARK_LOGIN)) is True
-    for park in (PARK_HUMAN, PARK_CI, PARK_WAKE, PARK_REVIEW):
-        assert holds_slot(make(issue=3, slot=0, park=park)) is False
-
-
 def test_max_slots_constant_is_gone():
     import dispatcher.state as state
     assert not hasattr(state, "MAX_SLOTS")
-
-
-@pytest.mark.parametrize("stage", list(Stage))
-@pytest.mark.parametrize(
-    "park", ["", PARK_HUMAN, PARK_CI, PARK_WAKE, PARK_LOGIN, PARK_REVIEW])
-def test_slot_holders_are_exactly_the_capacity_consumers(stage, park):
-    """holds_slot and consumes_capacity are distinct CONCEPTS that currently
-    coincide, and the coincidence is load-bearing: because the slot-holder set
-    equals the capacity-consumer set, the capacity gate guarantees at most
-    capacity - 1 slots are held when allocate_slot runs, which is what makes a
-    ceiling of max_slots(capacity) == capacity + 2 sufficient — allocate_slot
-    can never return None.
-
-    Let the two diverge (e.g. give PARK_CI its slot back to holds_slot alone)
-    and the starvation this branch exists to kill returns silently: parked
-    tasks would pin every number while capacity still shows headroom, and no
-    other test would fail. Do NOT collapse the functions to satisfy this test;
-    the test is the pin.
-    """
-    from dispatcher.state import holds_slot
-    t = replace(make(stage=stage), park=park)
-    assert holds_slot(t) is consumes_capacity(t)
-
-
-def test_the_two_predicates_agree_over_the_mixed_fixture():
-    from dispatcher.state import holds_slot
-    tasks = [
-        make(issue=1, stage=Stage.IMPLEMENT),
-        replace(make(issue=2, stage=Stage.SPEC), park=PARK_LOGIN),
-        replace(make(issue=3, stage=Stage.IMPLEMENT), park=PARK_CI),
-        replace(make(issue=4, stage=Stage.AWAITING_PLAN_REVIEW), park=PARK_REVIEW),
-        make(issue=5, stage=Stage.DONE),
-        make(issue=6, stage=Stage.FAILED),
-        make(issue=7, stage=Stage.QUEUED),
-    ]
-    assert ([t.issue for t in tasks if holds_slot(t)]
-            == [t.issue for t in tasks if consumes_capacity(t)] == [1, 2, 7])
 
 
 # Tests for (repository, issue) keying with legacy fallback
@@ -588,12 +399,6 @@ def test_waiting_marker_repository_scoped_with_legacy_fallback(tmp_path):
     assert not (tmp_path / "waiting-6").exists()
 
 
-def test_review_stage_is_in_flight():
-    from dispatcher.state import IN_FLIGHT_STAGES, Stage
-    assert Stage.REVIEW.value == "review"
-    assert Stage.REVIEW in IN_FLIGHT_STAGES
-
-
 def test_loop_caps_defaults_match_the_spec():
     from dispatcher.state import LoopCaps
     assert LoopCaps() == LoopCaps(review=2, gate=2, e2e=3, ci=3)
@@ -622,7 +427,8 @@ def test_legacy_state_file_without_orchestration_fields_loads(tmp_path):
     (tmp_path / "task-t-9.json").write_text(json.dumps({
         "issue": 9, "repository": "t", "stage": "implement", "slot": 0,
         "worktree": "/wt", "branch": "b", "title": "t",
-        "updated_at": "2026-09-07T00:00:00+00:00"}))
+        "updated_at": "2026-09-07T00:00:00+00:00",
+        "status": {"kind": "running", "detail": {}}}))
     ts = load(tmp_path, "t", 9)
     assert ts.stage is Stage.IMPLEMENT and ts.ticket_count == 0
 
@@ -644,97 +450,6 @@ def test_read_stage_signal_parses_loop_and_round(tmp_path):
 # ---------------------------------------------------------------------------
 # Slice 3: operator_request field — decode-seam tests
 # ---------------------------------------------------------------------------
-
-def test_explicit_null_operator_request_suppresses_legacy_derivation(tmp_path):
-    """A record AT the gate with operator_request: null must load with no
-    request, even though a leftover artifact is present. The explicit null
-    wins; the legacy artifact must not resurrect a request."""
-    (tmp_path / "task-alpha-7.json").write_text(json.dumps({
-        "issue": 7, "repository": "alpha", "stage": "awaiting-plan-review",
-        "slot": -1, "worktree": "/wt", "branch": "b", "title": "t",
-        "updated_at": "2026-09-08T00:00:00+00:00",
-        "artifact": "/wt/docs/specs/x.md",
-        "operator_request": None,   # explicit null — new-format record
-    }))
-    ts = load(tmp_path, "alpha", 7)
-    assert ts.operator_request is None
-
-
-def test_a_gate_record_without_a_request_loads_with_none(tmp_path):
-    """No operator_request key at the gate: nothing is derived; the next pass
-    re-arms the request from the plan signal (machine.ArmPlanApproval)."""
-    (tmp_path / "task-alpha-8.json").write_text(json.dumps({
-        "issue": 8, "repository": "alpha", "stage": "awaiting-plan-review",
-        "slot": -1, "worktree": "/wt", "branch": "b", "title": "t",
-        "updated_at": "2026-09-08T00:00:00+00:00",
-    }))
-    assert load(tmp_path, "alpha", 8).operator_request is None
-
-
-@pytest.mark.parametrize("field, value", [
-    ("stage", "awaiting-spec-review"),
-    ("operator_request", {"kind": "spec-approval"}),
-    ("operator_request", {"kind": "plan-approval"}),          # no path
-    ("operator_request", {"kind": "plan-approval", "path": ""}),
-])
-def test_old_gate_stage_and_request_are_no_longer_valid(tmp_path, field, value):
-    """The spec gate's stage and request kind are gone (the migration rewrites
-    old files), and a plan-approval request needs its summary path."""
-    doc = {"issue": 8, "repository": "alpha", "stage": "awaiting-plan-review",
-           "slot": -1, "worktree": "/wt", "branch": "b", "title": "t",
-           "updated_at": "2026-09-08T00:00:00+00:00", field: value}
-    (tmp_path / "task-alpha-8.json").write_text(json.dumps(doc))
-    with pytest.raises(ValueError):
-        load(tmp_path, "alpha", 8)
-    assert load_all(tmp_path) == []
-
-
-def test_legacy_record_not_at_gate_derives_none(tmp_path):
-    """A legacy record in any stage other than AWAITING_PLAN_REVIEW must
-    derive operator_request=None (no request)."""
-    (tmp_path / "task-alpha-9.json").write_text(json.dumps({
-        "issue": 9, "repository": "alpha", "stage": "implement",
-        "slot": 0, "worktree": "/wt", "branch": "b", "title": "t",
-        "updated_at": "2026-09-08T00:00:00+00:00",
-        # NO operator_request key — legacy record, non-gate stage
-    }))
-    ts = load(tmp_path, "alpha", 9)
-    assert ts.operator_request is None
-
-
-def test_operator_request_and_loop_counters_survive_roundtrip(tmp_path):
-    """All four loop counters survive a raw JSON record that includes
-    operator_request plus non-zero counters (covers new-format load path)."""
-    (tmp_path / "task-alpha-10.json").write_text(json.dumps({
-        "issue": 10, "repository": "alpha", "stage": "awaiting-plan-review",
-        "slot": -1, "worktree": "/wt", "branch": "b", "title": "t",
-        "updated_at": "2026-09-08T00:00:00+00:00",
-        "review_rounds": 1, "gate_rounds": 2, "e2e_rounds": 3, "ci_rounds": 4,
-        "operator_request": {"kind": "plan-approval", "path": ".agent/review.html"},
-    }))
-    got = load(tmp_path, "alpha", 10)
-    assert (got.review_rounds, got.gate_rounds,
-            got.e2e_rounds, got.ci_rounds) == (1, 2, 3, 4)
-    assert got.operator_request == PlanApprovalRequest(".agent/review.html")
-    assert got.operator_request.fingerprint == "", "a request from before the field loads"
-    save(tmp_path, replace(got, operator_request=PlanApprovalRequest("p.md", fingerprint="abc")))
-    assert load(tmp_path, "alpha", 10).operator_request.fingerprint == "abc"
-
-
-def test_answers_request_and_counters_survive_save_load_roundtrip(tmp_path):
-    """M1: save() -> load() round-trip preserves answers operator_request + counters."""
-    ts = TaskState(
-        issue=20, repository="alpha", stage=Stage.SPEC, slot=-1,
-        worktree=str(tmp_path), branch="b", title="t",
-        updated_at="2026-09-08T00:00:00+00:00",
-        review_rounds=1, gate_rounds=2, e2e_rounds=3, ci_rounds=4,
-        operator_request=AnswersRequest(path=".agent/questionnaire.md"),
-    )
-    save(tmp_path, ts)
-    got = load(tmp_path, "alpha", 20)
-    assert got.operator_request == AnswersRequest(path=".agent/questionnaire.md")
-    assert (got.review_rounds, got.gate_rounds, got.e2e_rounds, got.ci_rounds) == (1, 2, 3, 4)
-
 
 def test_track_and_picks_round_trip(tmp_path: Path):
     ts = make(track="security", picks={"spec": "anthropic/claude-fable-5-1@high"},
@@ -770,8 +485,9 @@ def test_read_stage_signal_carries_track(tmp_path: Path):
 
 def test_next_stage_wakes_a_pr_open_task_into_address_review():
     from dispatcher.state import next_stage
-    assert next_stage(_task(stage=Stage.PR_OPEN)) == "address-review"
-    assert next_stage(_task(stage=Stage.IMPLEMENT)) == "implement"
+    assert next_stage(make(stage=Stage.PR_OPEN, status=PR)) == "address-review"
+    assert next_stage(make(stage=Stage.IMPLEMENT)) == "implement"
+    assert next_stage(make(stage=Stage.REVIEW, status=failed())) == "review"
 
 
 def test_implement_providers_round_trip(tmp_path: Path):
@@ -814,3 +530,173 @@ def test_state_lock_flocks_the_named_file_under_state_dir(tmp_path):
                 pass
     with state_lock(tmp_path / "s", "onboarding.lock", timeout=0.2):
         pass
+
+
+# ---------------------------------------------------------------------------
+# #132 ticket 06: stage and status are the two stored fields
+# ---------------------------------------------------------------------------
+
+RETIRED_KEYS = {"park", "park_reason", "park_note", "ci_run_id", "crashed_stage",
+                "unlaunched", "operator_request"}
+
+
+def _file(tmp_path, issue=101) -> dict:
+    return json.loads((tmp_path / f"task-portfolio_eval-{issue}.json").read_text())
+
+
+def test_a_written_file_has_stage_and_status_and_no_park_field(tmp_path):
+    save(tmp_path, make(stage=Stage.SPEC, status=answers(".agent/q.html", "which db?"),
+                        slot=NO_SLOT))
+    d = _file(tmp_path)
+    assert d["stage"] == "spec"
+    assert d["status"] == {"kind": "parked-answers",
+                           "detail": {"path": ".agent/q.html", "fingerprint": "",
+                                      "note": "which db?"}}
+    assert not RETIRED_KEYS & set(d)
+
+
+@pytest.mark.parametrize("status", [failed("task-crash"), CANCELED, DONE])
+def test_an_ended_task_keeps_its_stage_and_round_trips_its_status(tmp_path, status):
+    save(tmp_path, make(stage=Stage.IMPLEMENT, status=status))
+    got = load(tmp_path, "portfolio_eval", 101)
+    assert (got.stage, got.status, got.slot) == (Stage.IMPLEMENT, status, NO_SLOT)
+
+
+def test_a_waking_status_round_trips_with_its_origin(tmp_path):
+    status = waking(review(".agent/review.html", "plan ready"), "reply")
+    save(tmp_path, make(stage=Stage.PLAN, status=status))
+    assert _file(tmp_path)["status"] == {"kind": "waking", "detail": {
+        "from": {"kind": "parked-review", "detail": {
+            "page": ".agent/review.html", "fingerprint": "", "note": "plan ready"}},
+        "cause": "reply"}}
+    assert load(tmp_path, "portfolio_eval", 101).status == status
+
+
+@pytest.mark.parametrize("stage", ["awaiting-plan-review", "failed", "done", "canceled",
+                                   "blocked", "stalled-on-budget"])
+def test_a_retired_stage_is_not_converted_on_load(tmp_path, stage):
+    save(tmp_path, make())
+    d = _file(tmp_path)
+    d["stage"] = stage
+    (tmp_path / "task-portfolio_eval-101.json").write_text(json.dumps(d))
+    with pytest.raises(ValueError):
+        load(tmp_path, "portfolio_eval", 101)
+
+
+def test_a_file_with_no_status_is_not_loaded(tmp_path):
+    save(tmp_path, make())
+    d = _file(tmp_path)
+    del d["status"]
+    (tmp_path / "task-portfolio_eval-101.json").write_text(json.dumps(d))
+    with pytest.raises(KeyError):
+        load(tmp_path, "portfolio_eval", 101)
+
+
+def test_a_retired_field_on_a_new_shape_file_is_dropped(tmp_path):
+    save(tmp_path, make())
+    d = _file(tmp_path)
+    d.update(park="parked", park_reason="decision", park_note="q", ci_run_id=9,
+             crashed_stage="spec", unlaunched=True, feedback_pending=True,
+             operator_request={"kind": "answers", "path": "q.html"})
+    (tmp_path / "task-portfolio_eval-101.json").write_text(json.dumps(d))
+    assert load(tmp_path, "portfolio_eval", 101) == make()
+
+
+@pytest.mark.parametrize("stage, status", [
+    (Stage.SPEC, answers("")),
+    (Stage.PLAN, review("")),
+    (Stage.PLAN, held("")),
+    (Stage.IMPLEMENT, ci(0)),
+    (Stage.IMPLEMENT, ci(-3)),
+    (Stage.IMPLEMENT, Status(Kind.PARKED_HUMAN, reason=FailReason.KILLED)),
+    (Stage.IMPLEMENT, Status(Kind.FAILED)),
+    (Stage.IMPLEMENT, Status(Kind.WAKING, origin=waking(), cause=Cause.REPLY)),
+    (Stage.IMPLEMENT, Status(Kind.WAKING, origin=DONE, cause=Cause.REPLY)),
+    (Stage.IMPLEMENT, Status(Kind.WAKING, origin=CANCELED, cause=Cause.REPLY)),
+    (Stage.IMPLEMENT, Status(Kind.WAKING, cause=Cause.REPLY)),
+    (Stage.QUEUED, Status(Kind.WAKING, origin=human(), cause=Cause.LAUNCH)),
+    (Stage.IMPLEMENT, Status(Kind.WAKING, origin=human())),
+    (Stage.IMPLEMENT, held()),
+    (Stage.SPEC, review()),
+    (Stage.SPEC, PR),
+    (Stage.SPEC, waking(cause="launch")),
+    (Stage.IMPLEMENT, waking(cause="next-stage")),
+    (Stage.IMPLEMENT, waking(review(), "reply")),
+])
+def test_the_save_refuses_a_status_that_breaks_a_constraint(tmp_path, stage, status):
+    with pytest.raises(ValueError):
+        save(tmp_path, make(stage=stage, status=status))
+    assert not (tmp_path / "task-portfolio_eval-101.json").exists()
+
+
+def test_an_unknown_status_kind_is_not_loaded(tmp_path):
+    save(tmp_path, make())
+    d = _file(tmp_path)
+    d["status"] = {"kind": "parked-forever", "detail": {}}
+    (tmp_path / "task-portfolio_eval-101.json").write_text(json.dumps(d))
+    with pytest.raises(ValueError):
+        load(tmp_path, "portfolio_eval", 101)
+
+
+def test_the_save_refuses_an_occupying_status_with_no_slot(tmp_path):
+    with pytest.raises(ValueError):
+        save(tmp_path, make(status=login(), slot=NO_SLOT))
+
+
+@pytest.mark.parametrize("status", [human(), waking(), waking(cause="next-stage"), failed(),
+                                    CANCELED, DONE, ci(4), review()])
+def test_a_status_that_does_not_occupy_holds_no_slot_after_its_save(tmp_path, status):
+    stage = {Kind.PARKED_REVIEW: Stage.PLAN}.get(status.kind, Stage.REVIEW)
+    save(tmp_path, make(stage=stage, status=status, slot=2))
+    assert load(tmp_path, "portfolio_eval", 101).slot == NO_SLOT
+
+
+def test_occupies_decides_capacity():
+    """capacity=2: two running tasks and one held at a login prompt count as
+    three; parked, waking and ended tasks count as none."""
+    from dispatcher.claims import box_free
+    tasks = [make(issue=1, slot=0), make(issue=2, slot=1),
+             make(issue=3, slot=2, status=login()),
+             make(issue=4, status=human()), make(issue=5, stage=Stage.REVIEW,
+                                                status=waking(cause="next-stage")),
+             make(issue=6, status=failed()), make(issue=7, status=CANCELED),
+             make(issue=8, status=DONE)]
+    assert box_free(2, tasks, triage_running=False) == -1
+    assert allocate_slot(tasks, max_slots=4) == 3
+
+
+def test_terminal_at_is_stamped_at_the_first_ended_status_and_cleared_after(tmp_path):
+    save(tmp_path, replace(make(status=failed()), updated_at="2026-07-01T00:00:00+00:00"))
+    save(tmp_path, replace(load(tmp_path, "portfolio_eval", 101), status=failed("killed"),
+                           updated_at="2026-07-02T00:00:00+00:00"))
+    assert load(tmp_path, "portfolio_eval", 101).terminal_at == "2026-07-01T00:00:00+00:00"
+    save(tmp_path, make(status=waking(failed(), "resume")))
+    assert load(tmp_path, "portfolio_eval", 101).terminal_at == ""
+
+
+def test_scan_names_a_task_file_it_cannot_read(tmp_path):
+    from dispatcher.state import scan
+    save(tmp_path, make(issue=1))
+    (tmp_path / "task-portfolio_eval-2.json").write_text(json.dumps(
+        {"issue": 2, "repository": "portfolio_eval", "stage": "awaiting-plan-review"}))
+    tasks, unreadable = scan(tmp_path)
+    assert [t.issue for t in tasks] == [1]
+    assert [p.name for p in unreadable] == ["task-portfolio_eval-2.json"]
+    assert [t.issue for t in load_all(tmp_path)] == [1]
+
+
+def test_scan_skips_a_task_file_deleted_between_the_glob_and_the_read(tmp_path, monkeypatch):
+    from dispatcher import state
+    state.save(tmp_path, _ts(1, "agent_ops"))
+    state.save(tmp_path, _ts(2, "agent_ops"))
+    real_read = state._read
+
+    def read_after_delete(p):
+        if p.name == "task-agent_ops-1.json":
+            p.unlink()
+        return real_read(p)
+
+    monkeypatch.setattr(state, "_read", read_after_delete)
+    tasks, unreadable = state.scan(tmp_path)
+    assert [t.issue for t in tasks] == [2]
+    assert unreadable == []

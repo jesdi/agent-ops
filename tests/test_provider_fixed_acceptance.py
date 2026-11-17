@@ -15,12 +15,14 @@ from fastapi.testclient import TestClient
 from dispatcher import eventlog, execution_overrides, intents as intents_mod
 from dispatcher.config import Board, Config, Project, Repository
 from dispatcher.models import parse_policy
-from dispatcher.state import PARK_HUMAN, Stage, TaskState, save
+from dispatcher.state import Stage, TaskState, save
 import dispatcher.main as main
 from tests.test_main import EveryRepoApp
 from tests.webfakes import HEADERS, FakeSources, make_task
 from tests.usagefakes import session_usage
 from web.app import create_app
+from tests.statuses import human
+from dispatcher.status import Kind
 
 MULTI_PROVIDER_POLICY = parse_policy({
     "triage": ["claude-opus-5"],
@@ -112,7 +114,7 @@ def test_resume_on_a_parked_pr_open_task_is_checked_against_the_feedback_pick(
         tmp_path):
     fake, client = rig(tmp_path)
     fake.tasks_list = [make_task(
-        issue=7, stage=Stage.PR_OPEN, park=PARK_HUMAN,
+        issue=7, stage=Stage.PR_OPEN, status=human(),
         picks={"feedback": "anthropic/claude-opus-5"})]
     r = client.post("/api/task/alpha/7/resume", headers=HEADERS,
                     json={"model": "openai/gpt-5-codex"})
@@ -131,10 +133,9 @@ def test_dispatcher_drops_a_cross_provider_resume_intent_and_records_an_event(
     wt = tmp_path / "worktrees" / "alpha" / "task-7"
     (wt / ".agent").mkdir(parents=True, exist_ok=True)
     task = TaskState(
-        issue=7, repository="alpha", stage=Stage.IMPLEMENT, slot=0,
+        issue=7, repository="alpha", stage=Stage.IMPLEMENT, status=human(), slot=0,
         worktree=str(wt), branch="agent/task-7", title="t",
-        updated_at="2026-07-25T00:00:00+00:00", track="standard",
-        park=PARK_HUMAN, park_msg_id=55,
+        updated_at="2026-07-25T00:00:00+00:00", track="standard", park_msg_id=55,
         picks={"implement": "anthropic/claude-opus-5"})
     save(c.state_dir, task)
     intents_mod.write_intent(c.state_dir, "resume", "alpha", 7,
@@ -147,7 +148,7 @@ def test_dispatcher_drops_a_cross_provider_resume_intent_and_records_an_event(
 
     from dispatcher.state import load
     reloaded = load(c.state_dir, "alpha", 7)
-    assert reloaded.park == PARK_HUMAN, "the task must stay parked"
+    assert reloaded.status.kind is Kind.PARKED_HUMAN, "the task must stay parked"
 
     events = [e for e in eventlog.read_tail(c.state_dir) if e["issue"] == 7]
     assert len(events) == 1, f"expected one drop event, got {events}"

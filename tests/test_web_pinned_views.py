@@ -6,11 +6,12 @@ from datetime import datetime, timezone
 from fastapi.testclient import TestClient
 
 from dispatcher.models import parse_policy
-from dispatcher.state import PARK_WAKE, Stage
+from dispatcher.state import Stage
 from tests.pinned import anthropic, openai, rig, web_policy
 from tests.webfakes import FakeSources, HEADERS, make_config, make_task, tracks_policy
 from web import read_model
 from web.app import create_app, launch_pinned_track
+from tests.statuses import CANCELED, DONE, failed, waking
 
 
 def policy(pinned=("frontend",)):
@@ -36,8 +37,8 @@ def test_a_track_the_policy_does_not_know_gives_no_pinned_track():
 
 
 def test_a_task_with_no_next_launch_gives_no_pinned_track():
-    for stage in (Stage.DONE, Stage.FAILED, Stage.CANCELED):
-        assert launch_pinned_track(make_task(track="frontend", stage=stage), policy()) == ""
+    for status in (DONE, failed(), CANCELED):
+        assert launch_pinned_track(make_task(track="frontend", status=status), policy()) == ""
 
 
 def test_a_one_shot_override_unpins_the_next_launch_but_a_pick_does_not():
@@ -69,8 +70,8 @@ def test_the_snapshot_marks_a_pinned_card_and_leaves_an_unpinned_one_empty(tmp_p
 
 def test_a_done_task_and_an_overridden_task_carry_no_pin_on_the_board(tmp_path):
     fake, c = client(tmp_path, [
-        make_task(issue=7, track="frontend", stage=Stage.DONE),
-        make_task(issue=8, track="frontend", park=PARK_WAKE,
+        make_task(issue=7, track="frontend", stage=Stage.QUEUED, status=DONE),
+        make_task(issue=8, track="frontend", status=waking(),
                   resume_model_override="openai/gpt-astra"),
         make_task(issue=9, track="frontend")])
     fake.set_execution_override("alpha", 9, model="openai/gpt-astra", bypass_usage=False)
@@ -87,7 +88,7 @@ def test_a_task_with_no_track_shows_the_untracked_tracks_model_and_pin(tmp_path)
     mode `openai` would put first."""
     fake, c = rig(tmp_path, {"anthropic": anthropic(), "openai": openai()},
                   models=web_policy(pinned=("standard",)))
-    fake.tasks_list = [make_task(issue=7, track="", park=PARK_WAKE)]
+    fake.tasks_list = [make_task(issue=7, track="", status=waking())]
     for route in ("/api/board", "/api/board/snapshot"):
         card = by_issue(c.get(route, headers=HEADERS).json())[7]
         assert card["model"] == "anthropic/claude-sonnet-5", route

@@ -5,13 +5,14 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
 
-from dispatcher.state import PARK_HUMAN, PARK_LOGIN, Stage
+from dispatcher.state import Stage
 from tests.configfakes import make_project
 from tests.usagefakes import session_usage
 from tests.webfakes import FakeSources, HEADERS, make_config, make_task
 from web.app import create_app
 from web.read_model import next_claim, usage_view
 from dispatcher.usage import PaceConfig, unavailable
+from tests.statuses import human, login as login_hold
 
 NOW = datetime(2026, 11, 6, 12, 0, tzinfo=timezone.utc)
 PACE = PaceConfig(0.8, 30, 0.95, 0.10, 1.0, "UTC")
@@ -201,8 +202,8 @@ def test_console_verdict_matches_the_commands_blocker_for_every_local_state():
     paused = {n: make_project(n, paused=True) for n in ("alpha", "beta")}
     one_paused = {"alpha": make_project("alpha"),
                   "beta": make_project("beta", paused=True)}
-    parked = _inflight(2, park=PARK_HUMAN) + [make_task(issue=9)]
-    login = _inflight(2) + [make_task(issue=9, park=PARK_LOGIN)]
+    parked = _inflight(2, status=human()) + [make_task(issue=9)]
+    login = _inflight(2) + [make_task(issue=9, status=login_hold())]
     cases = {
         "stale": (forecast(stale), "unknown"),
         "missing": (forecast(None), "unknown"),

@@ -7,12 +7,13 @@ import pytest
 import dispatcher.main as main
 from dispatcher import messages, runtimes
 from dispatcher.sessions import Sessions
-from dispatcher.state import PARK_WAKE, Stage, load, read_session
+from dispatcher.state import (Stage, load, read_session)
 from tests.test_main import (REVIEW_PAGE_STUB, FakeGitHub, deps, gate_signal,
                              make_task, valid_spec)
 from tests.test_session_resume_acceptance import (
     CLAUDE_MODEL, CODEX_ID, CODEX_MODEL, RecordingSessions, _config, _tab_fake, _task,
 )
+from tests.statuses import RUNNING, waking
 
 
 OPTION_SHAPED_IDS = [
@@ -36,7 +37,7 @@ def test_operator_wake_passes_option_shaped_id_literally_to_the_tab(
         tmp_path, monkeypatch, model, session_id, expected_args):
     c = _config(tmp_path, monkeypatch, model)
     _task(c, 384, Stage.REVIEW, model=model, session_id=session_id,
-          park=PARK_WAKE, slot=0)
+          status=waking(), slot=0)
     calls = []
     _tab_fake(monkeypatch, calls, repository="portfolio_eval", issue=384)
     messages.append(c.state_dir, "portfolio_eval", 384,
@@ -65,7 +66,7 @@ def test_crash_repro_passes_option_shaped_id_literally(
         tmp_path, monkeypatch, model, session_id, expected_args):
     c = _config(tmp_path, monkeypatch, model)
     wt = _task(c, 384, Stage.IMPLEMENT, model=model, session_id=session_id,
-               park="", slot=0)
+               status=RUNNING, slot=0)
     github = FakeGitHub()
     main.run_pass(c, deps(gh=github, sess=RecordingSessions(c.state_dir)))
     report = github.created_issues[0][2]
@@ -99,7 +100,7 @@ def test_runtime_quotes_the_recorded_identifier_as_one_shell_word(runtime):
 @pytest.mark.parametrize("stage", [Stage.PLAN, Stage.SPEC])
 def test_stage_retry_continues_its_valid_record(tmp_path, monkeypatch, model, stage):
     c = _config(tmp_path, monkeypatch, model)
-    wt = _task(c, 384, stage, model=model, park="", slot=0, track="standard")
+    wt = _task(c, 384, stage, model=model, status=RUNNING, slot=0, track="standard")
     if stage is Stage.PLAN:
         tickets = wt / ".agent" / "tickets"
         tickets.mkdir()

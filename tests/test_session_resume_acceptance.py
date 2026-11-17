@@ -14,10 +14,7 @@ import dispatcher.main as main
 from dispatcher import eventlog, herdr, intents, messages, runtimes
 from dispatcher.models import parse_policy
 from dispatcher.sessions import Sessions
-from dispatcher.state import (
-    NO_SLOT, PARK_HUMAN, SessionRecord, Stage, load, read_session,
-    write_session,
-)
+from dispatcher.state import (NO_SLOT, SessionRecord, Stage, load, read_session, write_session)
 from tests.test_containers import TOKENS, make_worktree
 from tests.test_main import (
     FakeGitHub, FakeSessions, cfg, deps, make_task, write_tickets,
@@ -25,6 +22,8 @@ from tests.test_main import (
 from tests.test_sessions import _fake_podman, herdr_fake_creating
 from tests.usagefakes import session_usage
 from telegram.inbound import Command
+from tests.statuses import DONE, RUNNING, human, review
+from dispatcher.status import Kind
 
 
 CODEX_ID = "01a0fc74-9f0c-75f3-8b77-a5b5e6dfb884"
@@ -78,10 +77,10 @@ def _config(tmp_path, monkeypatch, model=CODEX_MODEL):
     return c
 
 
-def _task(c, issue, stage, *, session_id=CODEX_ID, park=PARK_HUMAN,
+def _task(c, issue, stage, *, session_id=CODEX_ID, status=None,
           slot=NO_SLOT, model=CODEX_MODEL, **kw):
-    continued_stage = "plan" if stage is Stage.AWAITING_PLAN_REVIEW else stage.value
-    wt = make_task(c, issue=issue, stage=stage, park=park, slot=slot,
+    continued_stage = stage.value
+    wt = make_task(c, issue=issue, stage=stage, status=status or human(), slot=slot,
                    picks={continued_stage: model}, **kw)
     (wt / ".git").write_text(
         f"gitdir: {c.repositories[0].clone_path}/.git/worktrees/task-{issue}\n")
@@ -154,7 +153,7 @@ def test_claude_tab_command_names_the_recorded_id_and_quotes_the_message(
 def test_operator_approval_resumes_the_recorded_plan_in_its_worktree(
         tmp_path, monkeypatch):
     c = _config(tmp_path, monkeypatch)
-    wt = _task(c, 384, Stage.AWAITING_PLAN_REVIEW)
+    wt = _task(c, 384, Stage.PLAN, status=review(".agent/review.html"), gated=True)
     _reply(c, 384, "Approved, go on")
     sessions = RecordingSessions(c.state_dir)
     main.run_pass(c, deps(sess=sessions))
@@ -212,7 +211,7 @@ def test_interleaved_codex_tasks_keep_their_own_id_worktree_and_reply(
 def test_resume_leaves_a_live_codex_sibling_and_its_record_untouched(
         tmp_path, monkeypatch):
     c = _config(tmp_path, monkeypatch)
-    _task(c, 370, Stage.REVIEW, session_id=LIVE_ID, park="", slot=0,
+    _task(c, 370, Stage.REVIEW, session_id=LIVE_ID, status=RUNNING, slot=0,
           updated_at=(datetime.now(timezone.utc) - timedelta(seconds=11)).isoformat())
     before = read_session(c.state_dir, REPOSITORY, 370)
     wt = _task(c, 384, Stage.REVIEW)
@@ -259,7 +258,7 @@ def test_resume_by_id_retains_its_record_and_logs_an_empty_detail(
 def test_plan_fresh_launch_clears_the_spec_record_before_the_tab_starts(
         tmp_path, monkeypatch):
     c = _config(tmp_path, monkeypatch)
-    wt = _task(c, 384, Stage.SPEC, park="", slot=0)
+    wt = _task(c, 384, Stage.SPEC, status=RUNNING, slot=0)
     (wt / "spec.md").write_text("# t — design\n\n## Problem\n\n" + "x " * 400
                                + "\n\n## Decisions\n\n" + "y " * 400)
     (wt / ".agent" / "stage.json").write_text(json.dumps({
@@ -279,7 +278,7 @@ def test_plan_fresh_launch_clears_the_spec_record_before_the_tab_starts(
 def test_review_fresh_launch_clears_the_implement_record_before_the_tab_starts(
         tmp_path, monkeypatch):
     c = _config(tmp_path, monkeypatch)
-    wt = _task(c, 370, Stage.IMPLEMENT, park="", slot=0, ticket_count=4)
+    wt = _task(c, 370, Stage.IMPLEMENT, status=RUNNING, slot=0, ticket_count=4)
     write_tickets(wt, 4)
     (wt / ".agent" / "stage.json").write_text(json.dumps({
         "stage": "implement", "status": "done", "note": "4/4 tickets merged",
@@ -297,13 +296,13 @@ def test_review_fresh_launch_clears_the_implement_record_before_the_tab_starts(
 
 def test_parking_keeps_the_session_record(tmp_path, monkeypatch):
     c = _config(tmp_path, monkeypatch)
-    wt = _task(c, 384, Stage.REVIEW, park="", slot=0)
+    wt = _task(c, 384, Stage.REVIEW, status=RUNNING, slot=0)
     before = read_session(c.state_dir, REPOSITORY, 384)
     (wt / ".agent" / "stage.json").write_text(json.dumps({
         "stage": "review", "status": "blocked", "note": "need a token",
     }))
     main.run_pass(c, deps(sess=RecordingSessions(c.state_dir, alive={384})))
-    assert load(c.state_dir, REPOSITORY, 384).park == PARK_HUMAN
+    assert load(c.state_dir, REPOSITORY, 384).status.kind is Kind.PARKED_HUMAN
     assert read_session(c.state_dir, REPOSITORY, 384) == before
 
 
@@ -318,7 +317,7 @@ def test_session_end_keeps_the_session_record(tmp_path, monkeypatch):
 
 def test_flushing_a_task_removes_its_session_record(tmp_path, monkeypatch):
     c = _config(tmp_path, monkeypatch)
-    _task(c, 384, Stage.DONE, park="", done_at="2000-01-01T00:00:00+00:00")
+    _task(c, 384, Stage.REVIEW, status=DONE, done_at="2000-01-01T00:00:00+00:00")
     main.run_pass(c, deps(sess=RecordingSessions(c.state_dir)))
     assert load(c.state_dir, REPOSITORY, 384) is None
     assert read_session(c.state_dir, REPOSITORY, 384) is None
@@ -332,7 +331,7 @@ def test_crash_repro_names_the_recorded_conversation(
         tmp_path, monkeypatch, model, session_id, prefix):
     c = _config(tmp_path, monkeypatch, model)
     wt = _task(c, 384, Stage.IMPLEMENT, model=model, session_id=session_id,
-               park="", slot=0)
+               status=RUNNING, slot=0)
     github = FakeGitHub()
     main.run_pass(c, deps(gh=github, sess=RecordingSessions(c.state_dir)))
     ((repo, _, report),) = github.created_issues

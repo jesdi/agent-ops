@@ -9,12 +9,13 @@ from fastapi.testclient import TestClient
 
 from dispatcher import priority
 from dispatcher.models import parse_policy
-from dispatcher.state import PARK_WAKE, Stage
+from dispatcher.state import Stage
 from dispatcher.usage import ProviderUsage, Window, WindowKind
 from tests.usagefakes import session_usage
 from tests.webfakes import (FakeSources, HEADERS, make_config, make_task,
                             tracks_policy)
 from web.app import create_app
+from tests.statuses import waking
 
 
 def _stages(spec, plan, implement, review):
@@ -121,7 +122,7 @@ def test_task_detail_shows_the_same_pin(tmp_path):
 def denied_frontend(tmp_path):
     fake, client = rig(tmp_path, {"anthropic": anthropic("Fable", "Opus"),
                                   "openai": openai()})
-    fake.tasks_list = [make_task(issue=7, track="frontend", park=PARK_WAKE)]
+    fake.tasks_list = [make_task(issue=7, track="frontend", status=waking())]
     return client
 
 
@@ -149,7 +150,7 @@ def test_a_pinned_wait_offers_every_model_of_the_policy_with_verdicts(tmp_path):
 def test_an_unpinned_wait_offers_only_its_own_list_and_no_pin(tmp_path):
     fake, client = rig(tmp_path, {"anthropic": anthropic("Sonnet"),
                                   "openai": openai(0.95)})
-    fake.tasks_list = [make_task(issue=7, track="standard", park=PARK_WAKE)]
+    fake.tasks_list = [make_task(issue=7, track="standard", status=waking())]
     admission = detail(client, 7)["card"]["admission"]
     assert {m.split("/", 1)[-1] for m in models(admission)} == {
         "claude-sonnet-5", "gpt-sol"}
@@ -163,7 +164,7 @@ def parked_with_pick(tmp_path):
     fake, client = rig(tmp_path, {"anthropic": anthropic("Opus"),
                                   "openai": openai()})
     fake.tasks_list = [make_task(
-        issue=7, track="frontend", park=PARK_WAKE,
+        issue=7, track="frontend", status=waking(),
         picks={"implement": "anthropic/claude-opus-5@medium"})]
     return fake, client
 

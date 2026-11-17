@@ -296,6 +296,18 @@ prepares credentials and then executes its arguments. Without it, sessions call
 Podman directly. Use `AGENT_OPS_SESSION_IMAGE` to select your session image.
 Never put credentials in a targets file; supply them through your secret manager.
 
+### Migrating task files
+
+Task files written before `(stage, status)` must be rewritten once with
+`agent-ops migrate-tasks`. Until then the dispatcher exits before its pass and
+names the command. The command rewrites every task file, archived snapshots
+under `artifacts/` included, all or nothing, and is safe to run twice. By hand
+it takes the pass lock without waiting and exits non-zero with "dispatcher is
+running" while a pass holds it. The box's updater runs
+`agent-ops migrate-tasks --lock-held` inside the lock it already holds; that
+call came with [jesdi/agent-ops-infra#119](https://github.com/jesdi/agent-ops-infra/pull/119),
+which merges before the agent-ops change that adds the guard.
+
 ### Onboarding a project
 
 On the box, as `agent`, run:

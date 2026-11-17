@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import Callable, Iterable, TypedDict
 
 from dispatcher import intents
-from dispatcher.state import (PARK_HUMAN, PARK_REVIEW, TaskState, at_gate,
-                              read_regular)
+from dispatcher.state import TaskState, operator_request, read_regular
+from dispatcher.status import Kind
 from dispatcher.workspace import remove_worktree_file, write_worktree_file
 
 # The answers file of each operator request kind, and the stage it answers.
@@ -86,7 +86,7 @@ def approval(task: TaskState, intent: intents.Intent) -> str:
     plan-approval request, "" for a change request. A submission to another
     kind of request leaves the record as it is. The answers file carries the
     selections to the session, never the approval: the session writes it."""
-    if task.operator_request.kind != "plan-approval":
+    if operator_request(task).kind != "plan-approval":
         return task.plan_approval
     submit = intent.payload.get("submit")
     return intent.payload.get("revision", "") if submit == "approve" else ""
@@ -108,9 +108,13 @@ def select(pending: Iterable[intents.Intent],
         i.payload.get("submit") is not None, i.created_at, i.path.name))
 
 
+_WAITS_FOR_OPERATOR = frozenset({Kind.PARKED_HUMAN, Kind.PARKED_ANSWERS, Kind.PARKED_ACCESS,
+                                 Kind.PARKED_REVIEW, Kind.HELD_PLAN_APPROVAL})
+
+
 def waits_for_operator(task: TaskState) -> bool:
-    """Parked for input or review, or at the gate before the grace park."""
-    return task.park in (PARK_HUMAN, PARK_REVIEW) or at_gate(task)
+    """Parked for input or review, or held at the gate before the grace park."""
+    return task.status.kind in _WAITS_FOR_OPERATOR
 
 
 def disk_revision(task: TaskState | None) -> str:
@@ -118,7 +122,7 @@ def disk_revision(task: TaskState | None) -> str:
     when there is no request or the revision cannot be told."""
     # Imported here: artifacts reads QUESTION_ID from this module.
     from dispatcher.artifacts import page_revision, plan_revision
-    req = task.operator_request if task is not None else None
+    req = operator_request(task) if task is not None else None
     if req is None:
         return ""
     if req.kind == "plan-approval":
@@ -135,9 +139,16 @@ def request_reason(task: TaskState | None, intent: intents.Intent,
     submit = intent.payload.get("submit")
     if submit not in (None, *SUBMITS):
         return f"unknown submit {submit!r}"
-    if task is None or task.operator_request is None:
+    request = operator_request(task) if task is not None else None
+    if request is None:
         return "no open request"
-    revision = task.operator_request.fingerprint
+    return _revision_reason(task, intent, request.fingerprint, on_disk)
+
+
+def _revision_reason(task: TaskState, intent: intents.Intent, revision: str,
+                     on_disk: str | None) -> str | None:
+    """"stale revision" unless the intent was made on the request's
+    revision and the page on disk is still that revision; None when it is."""
     if not _valid(intent, revision):
         return "stale revision"
     # ponytail: a page that cannot be read now ("") is no evidence of a new
@@ -151,7 +162,7 @@ def _submitted(task: TaskState, revision: object) -> bool:
     """The file on disk is a submission a draft must not overwrite: one made
     on this revision, or one with no revision (a session wrote it from a
     text answer). Garbage on disk is no submission."""
-    doc = read(task.worktree, task.operator_request.kind) or {}
+    doc = read(task.worktree, operator_request(task).kind) or {}
     return (doc.get("submitted") is not None
             and doc.get("revision") in (None, revision))
 
@@ -177,7 +188,7 @@ def record(task: TaskState, intent: intents.Intent) -> str | None:
     """Write the intent as the answers file of the task's open request.
     Returns the message that wakes the session for a submission, None for a
     draft."""
-    kind = task.operator_request.kind
+    kind = operator_request(task).kind
     name, stage = ANSWERS_FILES[kind]
     submit = intent.payload.get("submit")
     write(task.worktree, kind, {
@@ -199,16 +210,27 @@ def _superseded(group: list[intents.Intent],
         task = task_for(group[0])
     except Exception:
         return []
-    on_disk = disk_revision(task)
-    competing = [i for i in group if request_reason(task, i, on_disk) is None]
+    competing = _answering(task, group)
     if not competing:
         return []
-    win = select(competing, task.operator_request.fingerprint)
-    for i in competing:
-        if i is not win:
-            print(f"[info] intent {i.path.name} superseded by {win.path.name}",
-                  file=sys.stderr)
-    return [i for i in competing if i is not win]
+    return _losers(competing, select(competing, operator_request(task).fingerprint))
+
+
+def _answering(task: TaskState | None, group: list[intents.Intent]
+               ) -> list[intents.Intent]:
+    """The intents of the group that answer the task's open request."""
+    on_disk = disk_revision(task)
+    return [i for i in group if request_reason(task, i, on_disk) is None]
+
+
+def _losers(competing: list[intents.Intent], win: intents.Intent
+            ) -> list[intents.Intent]:
+    """The competing intents other than `win`, each logged as superseded."""
+    losers = [i for i in competing if i is not win]
+    for i in losers:
+        print(f"[info] intent {i.path.name} superseded by {win.path.name}",
+              file=sys.stderr)
+    return losers
 
 
 def without_superseded(pending: list[intents.Intent],

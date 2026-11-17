@@ -6,6 +6,7 @@ from dispatcher.config import Config
 from tests.webfakes import (FakeSources, HEADERS, make_config, make_repository,
                            make_task, tracks_policy)
 from web.app import create_app
+from tests.statuses import DONE, human, failed
 
 
 def rig(tmp_path):
@@ -92,9 +93,8 @@ def test_force_run_arms_an_active_task_without_resuming_it(tmp_path):
 
 def test_force_run_resumes_a_parked_task(tmp_path):
     from dataclasses import replace
-    from dispatcher.state import PARK_HUMAN
     fake, client = rig(tmp_path)
-    fake.tasks_list = [replace(fake.tasks_list[0], park=PARK_HUMAN)]
+    fake.tasks_list = [replace(fake.tasks_list[0], status=human())]
     r = client.post("/api/task/alpha/7/run", headers=HEADERS,
                     json={"model": "anthropic/claude-opus-5",
                           "bypass_usage": True})
@@ -149,7 +149,7 @@ def test_force_run_rejects_unknown_or_terminal_work(tmp_path):
     fake, client = rig(tmp_path)
     assert client.post("/api/task/alpha/7/run", headers=HEADERS,
                        json={"model": "unknown/model"}).status_code == 422
-    fake.tasks_list = [replace(fake.tasks_list[0], stage=Stage.DONE)]
+    fake.tasks_list = [replace(fake.tasks_list[0], stage=Stage.QUEUED, status=DONE)]
     assert client.post("/api/task/alpha/7/run", headers=HEADERS,
                        json={}).status_code == 422
 
@@ -220,8 +220,7 @@ def test_intent_roundtrip_through_real_sources(tmp_path):
 
 def test_resume_of_a_crashed_task_is_accepted(tmp_path):
     fake, client = rig(tmp_path)
-    fake.tasks_list = [make_task(issue=7, stage=Stage.FAILED,
-                                 crashed_stage="implement")]
+    fake.tasks_list = [make_task(issue=7, stage=Stage.IMPLEMENT, status=failed())]
     assert client.post("/api/task/alpha/7/resume", headers=HEADERS,
                        json={}).status_code == 202
 
@@ -233,8 +232,7 @@ def test_resume_of_a_crashed_task_is_checked_against_the_crashed_stage_pick(
                  models=tracks_policy(implement=["claude-opus-5",
                                                  "openai/gpt-5-codex"]))
     fake = FakeSources()
-    fake.tasks_list = [make_task(issue=7, stage=Stage.FAILED,
-                                 crashed_stage="implement",
+    fake.tasks_list = [make_task(issue=7, stage=Stage.IMPLEMENT, status=failed(),
                                  picks={"implement": "anthropic/claude-opus-5"})]
     r = TestClient(create_app(cfg, fake)).post(
         "/api/task/alpha/7/resume", headers=HEADERS,
@@ -247,7 +245,7 @@ def test_resume_of_a_crashed_task_is_checked_against_the_crashed_stage_pick(
 def test_resume_of_an_unresumable_terminal_task_is_refused(tmp_path):
     # The dispatcher would drop it; the console must not look like it took it.
     fake, client = rig(tmp_path)
-    fake.tasks_list = [make_task(issue=7, stage=Stage.FAILED)]
+    fake.tasks_list = [make_task(issue=7, stage=Stage.QUEUED, status=failed("unknown"))]
     r = client.post("/api/task/alpha/7/resume", headers=HEADERS, json={})
     assert r.status_code == 409
     assert fake.intents == []

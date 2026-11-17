@@ -7,10 +7,10 @@ from datetime import timedelta
 
 import pytest
 
-from dispatcher.state import PARK_HUMAN, WHY_STALLED
 from tests.test_box_status_acceptance import NOW, SERVICE, Box, row, verdict
 from web import box_status
 from web.box_status import Unit, parse_journal, parse_units, system_probes
+from tests.statuses import human
 
 SHOW = """Id=agent-ops-dispatcher.timer
 ActiveState=active
@@ -85,8 +85,8 @@ def test_an_unusable_pass_json_is_not_reported_as_missing(tmp_path, monkeypatch,
 
 def test_a_human_park_shows_its_reason_after_a_slash(tmp_path, monkeypatch):
     box = Box(tmp_path, monkeypatch)
-    box.task(55, park=PARK_HUMAN, park_reason=WHY_STALLED)
-    assert f"agent-ops#55  implement  {PARK_HUMAN}/{WHY_STALLED}" in box.report()[1]
+    box.task(55, status=human("stalled"))
+    assert "agent-ops#55  implement  parked/stalled" in box.report()[1]
 
 
 def test_an_unparked_task_without_its_tab_has_no_session(tmp_path, monkeypatch):

@@ -9,12 +9,13 @@ from dataclasses import replace as dc_replace
 
 import dispatcher.main as main
 from dispatcher.github import Candidate
-from dispatcher.state import PARK_WAKE, SessionRecord, Stage, load, write_session
+from dispatcher.state import SessionRecord, Stage, load, write_session
 
 from tests.configfakes import with_project
 from tests.test_main import (FakeGitHub, FakeSessions, cfg, deps, make_task,
                              patch_usage, patch_workspace)
 from tests.test_multi_project_capacity import mk_task, two_repository_cfg
+from tests.statuses import waking
 
 
 def shared_cfg(tmp_path, capacity=4, **pe):
@@ -86,7 +87,7 @@ def test_paused_project_claims_nothing_while_its_task_still_resumes(tmp_path, mo
     c = cfg(tmp_path)
     c = dc_replace(c, repositories=[with_project(c.repositories[0], paused=True)])
     write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "plan"))
-    make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW, park=PARK_WAKE)
+    make_task(c, issue=42, stage=Stage.PLAN, status=waking())
     gh = FakeGitHub([Candidate(10, "Ready", "u10")])
     sess = FakeSessions()
     main.run_pass(c, deps(gh, sess))

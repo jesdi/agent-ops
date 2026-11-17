@@ -7,11 +7,11 @@ from pathlib import Path
 import pytest
 
 from dispatcher import state
-from dispatcher.state import (PARK_HUMAN, PARK_CI, PARK_REVIEW, WHY_DECISION,
-                              WHY_STALLED, AnswersRequest, PlanApprovalRequest, Stage)
+from dispatcher.state import (AnswersRequest, PlanApprovalRequest, Stage)
 from tests.test_box_status_acceptance import NOW, Box, verdict
 from web import box_status
 from web.box_status import Probes
+from tests.statuses import human, answers, review, ci
 
 URL = "https://box.example.ts.net"
 NOTE = "Which currency should the invoice default to when the customer has none set?"
@@ -42,12 +42,11 @@ def console(box, url=URL):
 
 
 def plan_request(box, issue=281):
-    box.task(issue, stage=Stage.AWAITING_PLAN_REVIEW, park=PARK_REVIEW,
-             operator_request=PlanApprovalRequest(path=".agent/review.html"))
+    box.task(issue, stage=Stage.PLAN, status=review(PlanApprovalRequest(path=".agent/review.html")))
 
 
 def test_tasks_row_lists_parked_and_live_tasks_and_slots_count(box):
-    box.task(270, stage=Stage.REVIEW, park=PARK_CI)
+    box.task(270, stage=Stage.REVIEW, status=ci(7))
     box.task(281)
     box.tabs = {"task-agent-ops-281"}
     code, text = box.report()
@@ -66,8 +65,7 @@ def test_legacy_task_file_is_still_listed(box):
 def test_questions_row_lists_plan_approval_and_decision_with_console_links(box):
     console(box)
     plan_request(box)
-    box.task(12, repository="billing", park=PARK_HUMAN, park_reason=WHY_DECISION,
-             park_note=NOTE, updated_at="2026-11-06T08:00:00+00:00")
+    box.task(12, repository="billing", status=human("decision", NOTE), updated_at="2026-11-06T08:00:00+00:00")
     questions = section(box.report()[1], "questions")
     assert ("agent-ops#281  plan approval  .agent/review.html  2h  "
             f"{URL}/task/agent-ops/281/review") in questions
@@ -76,8 +74,7 @@ def test_questions_row_lists_plan_approval_and_decision_with_console_links(box):
 
 
 def test_answers_request_is_listed_as_answers(box):
-    box.task(31, stage=Stage.SPEC, park=PARK_HUMAN, park_reason=WHY_DECISION,
-             operator_request=AnswersRequest(path=".agent/questions.html"))
+    box.task(31, stage=Stage.SPEC, status=answers(AnswersRequest(path=".agent/questions.html")))
     assert "agent-ops#31  answers  .agent/questions.html  2h" in section(
         box.report()[1], "questions")
 
@@ -91,13 +88,12 @@ def test_questions_without_console_url_have_no_link(box):
 
 def test_repository_with_a_dot_round_trips_into_the_console_link(box):
     console(box)
-    box.task(12, repository="my.repo", park=PARK_HUMAN, park_reason=WHY_DECISION,
-             park_note="ok?")
+    box.task(12, repository="my.repo", status=human("decision", "ok?"))
     assert f"{URL}/task/my.repo/12" in section(box.report()[1], "questions")
 
 
 def test_stalled_human_park_is_a_task_not_a_question(box):
-    box.task(55, park=PARK_HUMAN, park_reason=WHY_STALLED)
+    box.task(55, status=human("stalled"))
     code, text = box.report()
     assert "agent-ops#55" in section(text, "tasks")
     assert "agent-ops#55" not in section(text, "questions")

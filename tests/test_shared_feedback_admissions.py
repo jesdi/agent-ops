@@ -11,17 +11,21 @@ import pytest
 
 import dispatcher.main as main
 from dispatcher import execution_overrides
-from dispatcher.state import NO_SLOT, PARK_WAKE, Stage, load
+from dispatcher.state import NO_SLOT, Stage, load
+from dispatcher.status import Kind
 from tests.test_main import (ADMIT_ALL, DENY_ALL, FakeSessions, cfg, deps,
                              patch_usage, patch_workspace)
 from tests.test_multi_project_capacity import (mk_task, two_repository_cfg,
                                                wake_blocked_events)
+from tests.statuses import PR, waking
+
+FEEDBACK = waking(PR, "attention(feedback)")
 
 
 def pending(c, repository, issue, slot=NO_SLOT,
             updated_at="2026-07-21T00:00:00+00:00", **kw):
     """A pr-open task whose PR got feedback, waiting for its round."""
-    mk_task(c, repository, issue, stage=Stage.PR_OPEN, feedback_pending=True,
+    mk_task(c, repository, issue, stage=Stage.PR_OPEN, status=FEEDBACK,
             pr_number=issue + 100, slot=slot, updated_at=updated_at, **kw)
 
 
@@ -43,7 +47,7 @@ def test_equal_updated_at_breaks_ties_in_repository_order(tmp_path):
 
     assert spawned(d) == [("portfolio_eval", 7)]
     assert load(c.state_dir, "portfolio_eval", 7).stage is Stage.ADDRESS_REVIEW
-    assert load(c.state_dir, "factorial", 5).feedback_pending
+    assert load(c.state_dir, "factorial", 5).status == FEEDBACK
     assert details(c, "factorial", 5) == ["capacity full"]
 
 
@@ -54,9 +58,9 @@ def test_a_full_box_marks_every_refused_wake_and_feedback(tmp_path, monkeypatch)
     mk_task(c, "portfolio_eval", 1, slot=0)
     mk_task(c, "portfolio_eval", 2, slot=1)
     mk_task(c, "factorial", 9, slot=2)
-    mk_task(c, "portfolio_eval", 3, park=PARK_WAKE, slot=NO_SLOT,
+    mk_task(c, "portfolio_eval", 3, status=waking(), slot=NO_SLOT,
             updated_at="2026-07-21T10:00:00+00:00")
-    mk_task(c, "factorial", 42, park=PARK_WAKE, slot=NO_SLOT,
+    mk_task(c, "factorial", 42, status=waking(), slot=NO_SLOT,
             updated_at="2026-07-21T10:05:00+00:00")
     pending(c, "portfolio_eval", 4, updated_at="2026-07-21T10:10:00+00:00")
     pending(c, "factorial", 43, updated_at="2026-07-21T10:15:00+00:00")
@@ -78,18 +82,6 @@ def test_a_recorded_slot_another_task_holds_is_replaced(tmp_path):
 
     assert spawned(d) == [("factorial", 5)]
     assert load(c.state_dir, "factorial", 5).slot == 1
-
-
-def test_a_recorded_slot_nobody_holds_is_kept(tmp_path):
-    c = cfg(tmp_path)   # capacity 3
-    mk_task(c, "portfolio_eval", 1, slot=0)
-    pending(c, "portfolio_eval", 5, slot=2)
-    d = deps()
-
-    main._spawn_feedback(c, d, admit=ADMIT_ALL, order=tuple)
-
-    assert spawned(d) == [("portfolio_eval", 5)]
-    assert load(c.state_dir, "portfolio_eval", 5).slot == 2
 
 
 def test_a_stranded_launch_parks_the_feedback_and_spawns_nothing(tmp_path, monkeypatch):
@@ -122,7 +114,7 @@ def test_a_denied_launch_waits_without_a_mark(tmp_path):
     main._spawn_feedback(c, d, admit=DENY_ALL, order=tuple)
 
     assert spawned(d) == []
-    assert load(c.state_dir, "portfolio_eval", 5).feedback_pending
+    assert load(c.state_dir, "portfolio_eval", 5).status == FEEDBACK
     assert details(c, "portfolio_eval", 5) == []
 
 
@@ -135,7 +127,7 @@ def test_a_failed_task_token_skips_without_a_mark(tmp_path, monkeypatch):
     main._spawn_feedback(c, d, admit=ADMIT_ALL, order=tuple)
 
     assert spawned(d) == []
-    assert load(c.state_dir, "portfolio_eval", 5).feedback_pending
+    assert load(c.state_dir, "portfolio_eval", 5).status == FEEDBACK
     assert details(c, "portfolio_eval", 5) == []
 
 
@@ -164,7 +156,7 @@ def test_a_feedback_spawn_starts_a_fresh_round(tmp_path):
     assert log == [("end", "portfolio_eval", 5), ("spawn", "portfolio_eval", 5)]
     t = load(c.state_dir, "portfolio_eval", 5)
     assert t.stage is Stage.ADDRESS_REVIEW
-    assert t.feedback_pending is False
+    assert t.status.kind is Kind.RUNNING
     assert datetime.fromisoformat(t.feedback_cursor).microsecond == 0
     assert not main._wake_blocked_path(c, "portfolio_eval", 5).exists()
     assert execution_overrides.load(c.state_dir, "portfolio_eval", 5) is None
@@ -180,8 +172,8 @@ def test_a_spawn_crash_leaves_the_call_and_spawns_no_later_task(tmp_path):
         main._spawn_feedback(c, d, admit=ADMIT_ALL, order=tuple)
 
     assert spawned(d) == []
-    assert load(c.state_dir, "portfolio_eval", 5).stage is not Stage.FAILED
-    assert load(c.state_dir, "portfolio_eval", 6).feedback_pending
+    assert load(c.state_dir, "portfolio_eval", 5).status.kind is not Kind.FAILED
+    assert load(c.state_dir, "portfolio_eval", 6).status == FEEDBACK
 
 
 def test_spawn_feedback_leaves_admission_to_the_shared_loop():

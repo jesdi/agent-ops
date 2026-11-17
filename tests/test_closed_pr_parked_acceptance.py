@@ -11,16 +11,16 @@ from fastapi.testclient import TestClient
 
 import dispatcher.main as main
 from dispatcher import intents, messages
-from dispatcher.state import PARK_HUMAN, PARK_WAKE, WHY_LOOP_CAP, Stage, _path, load
+from dispatcher.state import Stage, _path, load
 from tests.test_main import (FakeGitHub, FakeNotifier, FakeSessions, cfg, deps,
                              make_task, patch_teardown, patch_usage, payload,
                              pr_open_task)
 from tests.webfakes import HEADERS
 from web.app import create_app
 from web.sources import Sources
+from tests.statuses import failed, human
 
-PARKED = dict(park=PARK_HUMAN, park_msg_id=55, park_reason=WHY_LOOP_CAP,
-              park_note="ci loop hit its cap")
+PARKED = dict(status=human("loop-cap", "ci loop hit its cap"), park_msg_id=55)
 
 
 def _card(c, issue):
@@ -66,13 +66,12 @@ def test_closed_pr_ends_a_parked_task_failed_and_in_the_failed_column(
     run()
     run()
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert (t.stage, t.park) == (Stage.FAILED, "")
+    assert (t.stage, t.status) == (Stage.PR_OPEN, failed("pr-closed"))
     on_disk = json.loads(_path(c.state_dir, "portfolio_eval", 42).read_text())
-    assert on_disk["park"] == ""
+    assert on_disk["status"] == {"kind": "failed", "detail": {"reason": "pr-closed"}}
+    assert on_disk["park_msg_id"] == 0
     assert 42 in sess.ended
     assert notif.sent.count("pr_closed") == 1
-    assert (on_disk["park_note"], on_disk["park_reason"], on_disk["park_msg_id"]) == (
-        "", "", 0)
     _failed_card_asks_nothing(c, 42)
 
 
@@ -82,21 +81,21 @@ def test_a_reply_after_the_close_is_queued_and_wakes_nothing(
     run()
     _reply(c, run)
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert (t.stage, t.park) == (Stage.FAILED, "")
+    assert (t.stage, t.status) == (Stage.PR_OPEN, failed("pr-closed"))
     assert [m.text for m in messages.undelivered(c.state_dir, "portfolio_eval", 42)] == [
         "please retry"]
 
 
-@pytest.mark.parametrize("park", [PARK_HUMAN, PARK_WAKE])
-def test_a_task_saved_failed_and_parked_by_the_old_code_is_not_woken(
-        tmp_path, monkeypatch, park):
-    """PARK_WAKE: the old code already woke it, and it sits in Resuming."""
+@pytest.mark.parametrize("reason", ["pr-closed", "unknown"])
+def test_a_reply_to_a_failed_task_wakes_nothing(tmp_path, monkeypatch, reason):
+    """A failed task is never parked: a reply leaves it failed, never
+    Resuming (#316; a file the old code saved failed and parked is
+    migrated to failed)."""
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
-    make_task(c, stage=Stage.FAILED, pr_number=88,
-              updated_at=datetime.now(timezone.utc).isoformat(),
-              **{**PARKED, "park": park})
+    make_task(c, stage=Stage.PR_OPEN, status=failed(reason), pr_number=88,
+              updated_at=datetime.now(timezone.utc).isoformat())
     _reply(c, lambda: main.run_pass(c, deps()))
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert (t.stage, t.park) == (Stage.FAILED, "")
+    assert (t.stage, t.status) == (Stage.PR_OPEN, failed(reason))
     _failed_card_asks_nothing(c, 42)

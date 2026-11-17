@@ -12,7 +12,7 @@ from dispatcher import main, model_settings
 from dispatcher.config import apply_stored_models, load_config
 from dispatcher.convergence import pass_lock
 from dispatcher.models import Entry
-from dispatcher.state import PARK_HUMAN, PARK_LOGIN, PARK_WAKE, WHY_CONFIG, Stage, load
+from dispatcher.state import (Stage, load)
 from tests.test_config import SAMPLE
 from tests.test_main import (ADMIT_ALL, DENY_ALL, LOGIN_TAIL, FakeSessions, cfg, deps, patch_usage,
                              patch_workspace)
@@ -20,6 +20,8 @@ from tests.test_main import make_task as make_saved_task
 from tests.webfakes import HEADERS, FakeSources, make_task, tracks_policy
 from web import app as web_app
 from web.app import create_app
+from tests.statuses import PR, DONE, waking
+from dispatcher.status import HumanReason, Kind
 
 BLOCK = {"triage": ["claude-sonnet-5"], "untracked": "fast",
          "tracks": {"fast": {"when": "Small work.", "spec": ["claude-sonnet-5@low"],
@@ -187,7 +189,7 @@ def test_an_invalid_block_is_refused_and_nothing_is_stored(tmp_path, change, why
 
 def test_a_block_that_drops_a_track_in_use_is_refused(tmp_path):
     busy = make_task(issue=9, repository="portfolio_eval", track="standard")
-    done = make_task(issue=10, repository="portfolio_eval", track="standard", stage=Stage.DONE)
+    done = make_task(issue=10, repository="portfolio_eval", track="standard", stage=Stage.QUEUED, status=DONE)
     _, _, client = rig(tmp_path, [busy, done])
     r = client.put("/api/settings/models", headers=HEADERS, json=save(BODY))
     assert r.status_code == 422
@@ -269,27 +271,27 @@ def test_the_dispatcher_parks_a_launch_picked_on_a_provider_no_entry_names(tmp_p
                      load(c.state_dir, "portfolio_eval", 42), ANTHROPIC_ONLY, tuple)
 
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert (t.park, t.park_reason) == (PARK_HUMAN, WHY_CONFIG)
-    assert "its review stage runs on openai, which no model entry names" in t.park_note
+    assert (t.status.kind, t.status.reason) == (Kind.PARKED_HUMAN, HumanReason.CONFIG)
+    assert "its review stage runs on openai, which no model entry names" in t.status.note
 
 
 def test_a_wake_picked_on_a_provider_no_entry_names_parks_again(tmp_path):
     c = replace(cfg(tmp_path), models=tracks_policy())   # every entry is anthropic
-    make_saved_task(c, issue=42, stage=Stage.IMPLEMENT, park=PARK_WAKE,
+    make_saved_task(c, issue=42, stage=Stage.IMPLEMENT, status=waking(),
                     picks={"implement": "openai/gpt-luna@high"})
 
     main._resume_woken(c, deps(), ANTHROPIC_ONLY, tuple)
 
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert (t.park, t.park_reason) == (PARK_HUMAN, WHY_CONFIG)
-    assert "its implement stage runs on openai" in t.park_note
+    assert (t.status.kind, t.status.reason) == (Kind.PARKED_HUMAN, HumanReason.CONFIG)
+    assert "its implement stage runs on openai" in t.status.note
 
 
 def test_a_feedback_round_picked_on_a_provider_no_entry_names_parks(tmp_path):
-    """Parked once, with its feedback kept for the wake that starts the
-    round: a parked task is not spawned, nor parked again."""
+    """Parked once; the operator's wake starts the round (an address-review
+    round at pr-open): a parked task is not spawned, nor parked again."""
     c = replace(cfg(tmp_path), models=tracks_policy())   # every entry is anthropic
-    make_saved_task(c, issue=42, stage=Stage.PR_OPEN, feedback_pending=True,
+    make_saved_task(c, issue=42, stage=Stage.PR_OPEN, status=waking(PR, "attention(feedback)"),
                     picks={"feedback": "openai/gpt-luna@high"})
     d = deps()
 
@@ -297,42 +299,37 @@ def test_a_feedback_round_picked_on_a_provider_no_entry_names_parks(tmp_path):
     main._spawn_feedback(c, d, ANTHROPIC_ONLY, tuple)
 
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert (t.park, t.park_reason, t.feedback_pending) == (PARK_HUMAN, WHY_CONFIG, True)
-    assert "runs on openai, which no model entry names" in t.park_note
+    assert (t.status.kind, t.status.reason) == (Kind.PARKED_HUMAN, HumanReason.CONFIG)
+    assert "runs on openai, which no model entry names" in t.status.note
     assert [k for k, _ in d.notifier.calls] == ["parked_question"]
 
 
-def test_a_login_park_keeps_the_feedback_for_after_the_code(tmp_path):
-    """The code un-parks the task without a wake: its pending feedback (a
-    failed check whose cursor already moved on) must still be there."""
+def test_a_stranded_feedback_round_at_a_login_prompt_parks_for_the_config(tmp_path):
+    """A woken task holds no slot, and held(login) occupies one: a feedback
+    round the config strands parks for the operator even with a login prompt
+    in the pane, once; the operator's wake starts the round."""
     c = replace(cfg(tmp_path), models=tracks_policy())   # every entry is anthropic
-    make_saved_task(c, issue=42, stage=Stage.PR_OPEN, feedback_pending=True,
+    make_saved_task(c, issue=42, stage=Stage.PR_OPEN, status=waking(PR, "attention(feedback)"),
                     picks={"feedback": "openai/gpt-luna@high"})
     d = deps(sess=FakeSessions(alive=[42], tail=LOGIN_TAIL))
 
     main._spawn_feedback(c, d, ANTHROPIC_ONLY, tuple)
     main._spawn_feedback(c, d, ANTHROPIC_ONLY, tuple)   # parked: left alone
-    assert load(c.state_dir, "portfolio_eval", 42).park == PARK_LOGIN
-    assert [k for k, _ in d.notifier.calls] == ["needs_relogin"]
-    main._inject_login_code(c, d, load(c.state_dir, "portfolio_eval", 42), "code")
-    assert load(c.state_dir, "portfolio_eval", 42).feedback_pending
 
-    # The next pass takes the round up again: still stranded, it parks for that.
-    d.sessions.tail = "…pane tail…"
-    main._spawn_feedback(c, d, ANTHROPIC_ONLY, tuple)
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert (t.park, t.park_reason, t.feedback_pending) == (PARK_HUMAN, WHY_CONFIG, True)
+    assert (t.status.kind, t.status.reason) == (Kind.PARKED_HUMAN, HumanReason.CONFIG)
+    assert [k for k, _ in d.notifier.calls] == ["parked_question"]
 
 
 def test_a_feedback_round_denied_for_headroom_only_waits(tmp_path):
     c = replace(cfg(tmp_path), models=tracks_policy())
-    make_saved_task(c, issue=42, stage=Stage.PR_OPEN, feedback_pending=True,
+    make_saved_task(c, issue=42, stage=Stage.PR_OPEN, status=waking(PR, "attention(feedback)"),
                     picks={"feedback": "anthropic/claude-sonnet-5"})
 
     main._spawn_feedback(c, deps(), DENY_ALL, tuple)
 
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert (t.park, t.feedback_pending) == ("", True)
+    assert t.status == waking(PR, "attention(feedback)")
 
 
 def test_a_done_stage_on_a_dropped_provider_still_moves_on(tmp_path, monkeypatch):
@@ -350,7 +347,7 @@ def test_a_done_stage_on_a_dropped_provider_still_moves_on(tmp_path, monkeypatch
     main.run_pass(c, deps(sess=sess))
 
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert (t.park, t.stage) == ("", Stage.REVIEW)
+    assert (t.status.kind, t.stage) == (Kind.RUNNING, Stage.REVIEW)
     assert [s[:2] for s in sess.spawned] == [(42, "review")]
 
 

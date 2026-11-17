@@ -17,18 +17,18 @@ import pytest
 import dispatcher.main as main
 from dispatcher import intents as intents_mod
 from dispatcher.models import parse_policy
-from dispatcher.state import (PARK_HUMAN, PlanApprovalRequest, Stage, TaskState,
-                              load, load_all, save)
+from dispatcher.state import (PlanApprovalRequest, Stage, TaskState, load, load_all, save)
+from tests.statuses import failed, held
 
 from tests.test_main import (FakeGitHub, FakeSessions, approve_plan, cfg, deps, make_task,
                              patch_usage, patch_workspace, record_session,
                              write_tickets)
+from dispatcher.status import Kind
 
 ISSUE = 412
 BRANCH = "agent/412-csv-export"
 SPEC = "specs/2026-10-12-csv-export/spec.md"
 SUMMARY = ".agent/review.html"
-GATE = "awaiting-plan-review"
 TICKETS = 4
 
 
@@ -53,8 +53,8 @@ def _task(c, issue=ISSUE):
 
 def _approved(c, issue=ISSUE):
     """Issue 412 at the plan gate; the plan session reports done."""
-    wt = make_task(c, issue=issue, stage=Stage(GATE), spec_path=SPEC,
-                   operator_request=PlanApprovalRequest(SUMMARY))
+    wt = make_task(c, issue=issue, stage=Stage.PLAN, spec_path=SPEC,
+                   status=held(PlanApprovalRequest(SUMMARY)))
     save(c.state_dir, dc_replace(_task(c, issue), branch=BRANCH,
                                  title="Export a portfolio as CSV"))
     write_tickets(wt, TICKETS)
@@ -134,7 +134,7 @@ def test_running_implement_session_is_not_stopped_when_the_entry_is_denied_later
     main.run_pass(c, deps(sess=sess))
 
     t = _task(c)
-    assert t.stage is Stage.IMPLEMENT and t.park == ""
+    assert t.stage is Stage.IMPLEMENT and t.status.kind is Kind.RUNNING
     assert sess.ended == []
     assert [s[0] for s in _implements(sess)] == [ISSUE]   # 413 was not admitted
 
@@ -152,7 +152,7 @@ def test_working_report_naming_a_gate_round_does_not_park(tmp_path, monkeypatch,
     main.run_pass(c, d)
 
     t = _task(c)
-    assert t.park == "" and t.stage is Stage.IMPLEMENT
+    assert t.status.kind is Kind.RUNNING and t.stage is Stage.IMPLEMENT
     assert sess.ended == []
     assert "parked_question" not in d.notifier.sent
     assert "last_round" not in d.notifier.sent   # the gate cap is not for implement
@@ -217,8 +217,8 @@ def test_blocked_report_parks_the_task_with_the_reason(tmp_path, monkeypatch):
     main.run_pass(c, deps(sess=sess))
 
     t = _task(c)
-    assert t.park == PARK_HUMAN and t.stage is Stage.IMPLEMENT
-    assert "isolated subagent" in t.park_note
+    assert t.status.kind is Kind.PARKED_HUMAN and t.stage is Stage.IMPLEMENT
+    assert "isolated subagent" in t.status.note
 
 
 def test_prompt_keeps_ledger_and_notes_and_reports_merged_counts(tmp_path, monkeypatch):
@@ -249,7 +249,7 @@ def test_silent_live_implement_session_parks_and_does_not_fail(tmp_path, monkeyp
     main.run_pass(c, deps(sess=sess))
 
     t = _task(c)
-    assert t.park == PARK_HUMAN and t.stage is Stage.IMPLEMENT
+    assert t.status.kind is Kind.PARKED_HUMAN and t.stage is Stage.IMPLEMENT
 
 
 def _dead_after_two_merges(tmp_path, monkeypatch):
@@ -266,7 +266,7 @@ def test_dead_implement_session_fails_the_task_as_resumable(tmp_path, monkeypatc
     c, wt, d = _dead_after_two_merges(tmp_path, monkeypatch)
 
     t = _task(c)
-    assert t.stage is Stage.FAILED and t.crashed_stage == "implement"
+    assert (t.stage, t.status) == (Stage.IMPLEMENT, failed())
     assert "session_crashed" in d.notifier.sent
     assert (wt / ".agent" / "ledger.md").exists()
     assert d.sessions.spawned == []     # no automatic respawn
@@ -311,7 +311,7 @@ def test_parked_implement_task_resumes_its_session_and_keeps_its_progress(
     _signal(wt, stage="implement", status="working", note="2/4 tickets merged")
     sess = LiveUntilEnded(alive={ISSUE}, idle={ISSUE: 999999.0})
     main.run_pass(c, deps(sess=sess))               # silent live session: parked
-    assert _task(c).park == PARK_HUMAN and sess.ended == [ISSUE]
+    assert _task(c).status.kind is Kind.PARKED_HUMAN and sess.ended == [ISSUE]
     assert _progress_shown(c) == "2/4 tickets merged"
 
     sess.idle = {}
@@ -321,7 +321,7 @@ def test_parked_implement_task_resumes_its_session_and_keeps_its_progress(
     main.run_pass(c, deps(sess=sess))               # and nothing else happens
 
     t = _task(c)
-    assert (t.stage, t.park) == (Stage.IMPLEMENT, "")
+    assert (t.stage, t.status.kind) == (Stage.IMPLEMENT, Kind.RUNNING)
     assert [r[0] for r in sess.resumed] == [ISSUE], "one resume of the same session"
     assert "the quota is back, continue" in sess.resumed[0][1]
     assert _implements(sess) == [], "no second implement session"

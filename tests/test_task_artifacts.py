@@ -10,6 +10,8 @@ from dispatcher import spec_publish, task_artifacts as artifacts
 from dispatcher.state import Stage, load, save, load_archived
 from tests.webfakes import FakeSources, HEADERS, make_config, make_task
 from web.app import create_app
+from tests.statuses import DONE, RUNNING, failed, human
+from dispatcher.status import Kind
 
 NOW = datetime(2026, 9, 13, tzinfo=timezone.utc)
 
@@ -61,7 +63,7 @@ def test_publication_failure_retry_and_pin(tmp_path, monkeypatch):
 def test_retention_terminal_transition_reopen_and_archive(tmp_path):
     state, task = setup(tmp_path)
     save(state, task)
-    done = replace(task, stage=Stage.DONE)
+    done = replace(task, stage=Stage.QUEUED, status=DONE)
     save(state, done)
     done = load(state, task.repository, task.issue)
     artifacts.collect(state, done, '', publish=False, now=NOW)
@@ -70,28 +72,28 @@ def test_retention_terminal_transition_reopen_and_archive(tmp_path):
     assert load(state, task.repository, task.issue).terminal_at == NOW.isoformat()
     artifacts.cleanup(state, now=NOW + timedelta(days=6))
     assert artifacts.content_path(state, task.repository, task.issue, 'prototype')
-    save(state, replace(done, stage=Stage.IMPLEMENT))
+    save(state, replace(done, stage=Stage.IMPLEMENT, status=RUNNING, slot=0))
     reopened = load(state, task.repository, task.issue)
     assert reopened.terminal_at == ''
     artifacts.collect(state, reopened, '', publish=False)
     artifacts.cleanup(state, now=NOW + timedelta(days=31))
     assert artifacts.content_path(state, task.repository, task.issue, 'prototype')
     ended = NOW + timedelta(days=40)
-    save(state, replace(reopened, stage=Stage.FAILED, updated_at=ended.isoformat()))
-    failed = load(state, task.repository, task.issue)
-    artifacts.collect(state, failed, '', publish=False, now=ended)
+    save(state, replace(reopened, stage=Stage.QUEUED, status=failed("unknown"), updated_at=ended.isoformat()))
+    lost = load(state, task.repository, task.issue)
+    artifacts.collect(state, lost, '', publish=False, now=ended)
     artifacts.cleanup(state, now=ended + timedelta(days=7))
     assert artifacts.content_path(state, task.repository, task.issue, 'prototype') is None
     assert artifacts.read(state, task.repository, task.issue).expired
-    artifacts.collect(state, failed, '', publish=False, now=ended + timedelta(days=8))
+    artifacts.collect(state, lost, '', publish=False, now=ended + timedelta(days=8))
     assert artifacts.content_path(state, task.repository, task.issue, 'prototype') is None
-    assert load_archived(state, task.repository, task.issue).stage == Stage.FAILED
+    assert load_archived(state, task.repository, task.issue).status.kind is Kind.FAILED
     assert Path(task.worktree).exists()  # autopsy worktree is never deleted
 
 
 def test_paused_pr_open_and_same_issue_on_other_repository_never_expire(tmp_path):
     state, task = setup(tmp_path)
-    paused = replace(task, stage=Stage.PR_OPEN, park='parked', updated_at='2020-01-01T00:00:00+00:00')
+    paused = replace(task, stage=Stage.PR_OPEN, status=human(), updated_at='2020-01-01T00:00:00+00:00')
     artifacts.collect(state, paused, '', publish=False)
     artifacts.cleanup(state, now=NOW)
     assert artifacts.content_path(state, task.repository, task.issue, 'prototype')
@@ -120,7 +122,7 @@ def test_rejects_traversal_and_symlink_manifest_and_files(tmp_path):
 
 def test_routes_survive_teardown_and_flush_with_isolated_html(tmp_path):
     state, task = setup(tmp_path)
-    terminal = replace(task, stage=Stage.DONE, terminal_at=NOW.isoformat())
+    terminal = replace(task, stage=Stage.QUEUED, status=DONE, terminal_at=NOW.isoformat())
     artifacts.collect(state, terminal, '', publish=False, now=NOW)
     shutil.rmtree(task.worktree)
     fake = FakeSources(state)  # no task state remains after normal done-card flush
@@ -147,7 +149,7 @@ def test_github_redirect_remains_after_cleanup(tmp_path, monkeypatch):
     monkeypatch.setattr(spec_publish.ArtifactPublisher, 'reference', lambda *a: spec_publish.PublishedReference('https://github.com/o/r/blob/task/7/spec.md', 'abc123'))
     from subprocess import CompletedProcess
     monkeypatch.setattr(spec_publish, '_git', lambda *a: CompletedProcess(a, 0, 'abc123\n', ''))
-    done = replace(task, stage=Stage.DONE, terminal_at=NOW.isoformat())
+    done = replace(task, stage=Stage.QUEUED, status=DONE, terminal_at=NOW.isoformat())
     artifacts.collect(state, done, 'o/r', now=NOW)
     artifacts.pin_published(state, done, 'o/r')
     artifacts.cleanup(state, now=NOW + timedelta(days=7))
@@ -182,7 +184,7 @@ def test_dispatcher_archives_before_workspace_teardown_and_done_flush(tmp_path, 
     main._sync_artifacts(cfg)
     main._flush_finished(cfg)
     assert load(state, task.repository, task.issue) is None
-    assert load_archived(state, task.repository, task.issue).stage == Stage.DONE
+    assert load_archived(state, task.repository, task.issue).status.kind is Kind.DONE
     assert artifacts.content_path(state, task.repository, task.issue, 'prototype')
 
 
@@ -210,7 +212,7 @@ def test_invalid_manifest_keeps_automatic_spec(tmp_path):
 
 def test_missing_content_and_unknown_artifact_are_explicit(tmp_path):
     state, task = setup(tmp_path)
-    artifacts.collect(state, replace(task, stage=Stage.DONE, terminal_at=NOW.isoformat()), '', publish=False)
+    artifacts.collect(state, replace(task, stage=Stage.QUEUED, status=DONE, terminal_at=NOW.isoformat()), '', publish=False)
     artifacts.content_path(state, task.repository, task.issue, 'prototype').unlink()
     client = TestClient(create_app(make_config(state), FakeSources(state)))
     base = '/api/task/alpha/7/artifacts'
@@ -224,7 +226,7 @@ def test_missing_content_and_unknown_artifact_are_explicit(tmp_path):
 def test_legacy_terminal_state_retention_uses_original_completion(tmp_path):
     from dispatcher import state as task_state
     state, task = setup(tmp_path)
-    save(state, replace(task, stage=Stage.DONE, done_at=NOW.isoformat()))
+    save(state, replace(task, stage=Stage.QUEUED, status=DONE, done_at=NOW.isoformat()))
     path = state / 'task-alpha-7.json'
     raw = json.loads(path.read_text())
     raw.pop('terminal_at')
@@ -260,7 +262,7 @@ def test_local_markdown_attachment_and_removal_during_open(tmp_path):
     (worktree / '.agent/artifacts.json').write_text(json.dumps([
         {'id': 'data', 'name': 'Data', 'path': 'data.bin'},
     ]))
-    done = replace(task, stage=Stage.DONE, terminal_at=NOW.isoformat())
+    done = replace(task, stage=Stage.QUEUED, status=DONE, terminal_at=NOW.isoformat())
     artifacts.collect(state, done, '', publish=False)
     fake = FakeSources(state)
     client = TestClient(create_app(make_config(state), fake))

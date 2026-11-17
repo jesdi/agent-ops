@@ -29,13 +29,14 @@ import pytest
 import dispatcher.main as main
 from dispatcher import containers, github, github_app
 from dispatcher.sessions import session_name
-from dispatcher.state import (NO_SLOT, PARK_HUMAN, PARK_WAKE, WHY_OPERATOR, Stage, TaskState,
-                              load_all, save, task_key, write_session, SessionRecord)
+from dispatcher.state import (NO_SLOT, Stage, TaskState, load_all, save, task_key, write_session, SessionRecord)
 
 from tests.test_host_installation_tokens_acceptance import (INSTALL, TASK_PERMISSIONS, FakeApp,
                                                             World)
 from tests.test_main import FakeNotifier, FakeSessions
 from tests.test_task_container_tokens_acceptance import PollWorld, home  # noqa: F401  (fixture)
+from tests.statuses import DONE, human, waking
+from dispatcher.status import Kind
 
 T0 = datetime(2026, 11, 4, 10, 0, 0, tzinfo=timezone.utc)
 BOTH = ("jesdi/analytics", "jesdi/portfolio_eval")
@@ -197,7 +198,7 @@ def test_a_refresh_that_fails_with_an_app_error_keeps_the_current_file_and_retri
     box.run()
     assert box.hosts("analytics") == old
     assert os.listdir(box.dir("analytics")) == ["hosts.yml"]     # no temp file left behind
-    assert box.task("analytics").park == ""
+    assert box.task("analytics").status.kind is Kind.RUNNING
     box.app.fail.clear()
     box.run()
     assert box.hosts("analytics") != old
@@ -211,7 +212,7 @@ def test_the_token_dir_goes_with_a_terminal_task_and_no_mint_is_made_for_it(
     box = Box(tmp_path, monkeypatch, lifetime={"jesdi/analytics": 58}, ready=("analytics",))
     box.spawn_all(("analytics",))
     assert box.dir("analytics").is_dir()
-    save(box.cfg.state_dir, replace(box.task("analytics"), stage=Stage.DONE, slot=NO_SLOT))
+    save(box.cfg.state_dir, replace(box.task("analytics"), stage=Stage.QUEUED, status=DONE, slot=NO_SLOT))
     box.sessions.alive_set.clear()
     minted = len(box.app.task_mints())
     box.clock.advance(minutes=39)                                # its token would be due
@@ -226,14 +227,14 @@ def test_a_parked_task_loses_its_token_dir_and_gets_a_fresh_token_when_respawned
     box.spawn_all(("analytics",))
     old = box.hosts("analytics")
     minted = len(box.app.task_mints())
-    save(box.cfg.state_dir, replace(box.task("analytics"), park=PARK_HUMAN, park_reason=WHY_OPERATOR,
+    save(box.cfg.state_dir, replace(box.task("analytics"), status=human(),
                                     slot=NO_SLOT))
     box.sessions.alive_set.clear()
     box.clock.advance(minutes=45)                                # its token would be due
     box.run()
     assert not box.dir("analytics").exists()
     assert len(box.app.task_mints()) == minted                   # none for a parked task
-    save(box.cfg.state_dir, replace(box.task("analytics"), park=PARK_WAKE))
+    save(box.cfg.state_dir, replace(box.task("analytics"), status=waking()))
     box.run()
     last = box.sessions.launches[-1]
     assert len(box.sessions.launches) == 2 and last["repository"] == "analytics"
@@ -281,11 +282,11 @@ def test_a_woken_session_resumes_with_a_token_minted_at_resume(tmp_path, monkeyp
     box.spawn_all(("analytics",))
     old = box.hosts("analytics")
     write_session(box.cfg.state_dir, "analytics", 7, SessionRecord("recorded-session", "spec"))
-    save(box.cfg.state_dir, replace(box.task("analytics"), park=PARK_HUMAN, park_reason=WHY_OPERATOR,
+    save(box.cfg.state_dir, replace(box.task("analytics"), status=human(),
                                     slot=NO_SLOT))
     box.sessions.alive_set.clear()
     box.run()                                                    # the dir is pruned
-    save(box.cfg.state_dir, replace(box.task("analytics"), park=PARK_WAKE))
+    save(box.cfg.state_dir, replace(box.task("analytics"), status=waking()))
     box.run()
     assert box.sessions.resumed
     last = box.sessions.launches[-1]
@@ -318,11 +319,11 @@ def test_the_real_sessions_resume_mounts_the_task_token_dir_and_never_the_host_g
             repository, issue, worktree, message, model, effort, second,
             session_id=session_id, gh_config=gh_config)
     write_session(box.cfg.state_dir, "analytics", 7, SessionRecord("recorded-session", "spec"))
-    save(box.cfg.state_dir, replace(box.task("analytics"), park=PARK_HUMAN, park_reason=WHY_OPERATOR,
+    save(box.cfg.state_dir, replace(box.task("analytics"), status=human(),
                                     slot=NO_SLOT))
     box.sessions.alive_set.clear()
     box.run()                                                    # the dir is pruned
-    save(box.cfg.state_dir, replace(box.task("analytics"), park=PARK_WAKE))
+    save(box.cfg.state_dir, replace(box.task("analytics"), status=waking()))
     box.run()
     [cmd] = typed
     assert f"-v {box.dir('analytics')}:/root/.config/gh:ro" in cmd

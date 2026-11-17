@@ -11,12 +11,13 @@ import dispatcher.main as main
 from dispatcher import eventlog
 from dispatcher.board import BoardError
 from dispatcher.github import Candidate
-from dispatcher.state import (IN_FLIGHT_STAGES, PARK_LOGIN, PARK_WAKE, Stage,
-                              TaskState, active, load, load_all, save)
+from dispatcher.state import (Stage, TaskState, load, load_all, save)
 
 from tests.configfakes import with_board
 from tests.test_main import (FakeGitHub, FakeSessions, cfg, deps,
                              patch_usage, patch_workspace)
+from tests.statuses import PR, login, waking
+from dispatcher.status import Kind, occupies
 
 
 def two_repository_cfg(tmp_path):
@@ -81,8 +82,7 @@ def test_capacity_boundary_claims_exactly_one_and_fills_box(tmp_path, monkeypatc
     main.run_pass(c, deps(gh, FakeSessions(alive={1, 2})))
     assert gh.claimed == [20]
     assert load(c.state_dir, "factorial", 20) is not None
-    box_active = [t for t in load_all(c.state_dir) if t.stage in IN_FLIGHT_STAGES]
-    assert len(active(box_active)) == 3
+    assert sum(occupies(t.status) for t in load_all(c.state_dir)) == 3
 
 
 # --- checkbox: a login-parked task still counts box-wide ------------------
@@ -93,7 +93,7 @@ def test_login_parked_task_counts_box_wide(tmp_path, monkeypatch):
     c = two_repository_cfg(tmp_path)
     mk_task(c, "portfolio_eval", 1, slot=0)
     mk_task(c, "portfolio_eval", 2, slot=1)
-    mk_task(c, "factorial", 3, slot=2, park=PARK_LOGIN)
+    mk_task(c, "factorial", 3, slot=2, status=login())
     gh = FakeGitHub(cands_by_repository={
         "portfolio_eval": [Candidate(10, "PE candidate", "u10")],
         "factorial": [Candidate(20, "F candidate", "u20")],
@@ -111,11 +111,11 @@ def test_woken_task_refused_when_box_is_full(tmp_path, monkeypatch):
     mk_task(c, "portfolio_eval", 1, slot=0)
     mk_task(c, "portfolio_eval", 2, slot=1)
     mk_task(c, "portfolio_eval", 3, slot=2)
-    mk_task(c, "factorial", 42, stage=Stage.IMPLEMENT, park=PARK_WAKE, slot=3)
+    mk_task(c, "factorial", 42, stage=Stage.IMPLEMENT, status=waking(), slot=3)
     sess = FakeSessions(alive={1, 2, 3})
     main.run_pass(c, deps(sess=sess))
     saved = load(c.state_dir, "factorial", 42)
-    assert saved.park == PARK_WAKE
+    assert saved.status.kind is Kind.WAKING
     assert (42 not in [r[0] for r in sess.resumed])
     assert wake_blocked_events(c, "factorial", 42) != []
     assert wake_blocked_events(c, "factorial", 42)[-1]["detail"] == "capacity full"
@@ -128,12 +128,12 @@ def test_feedback_pending_pr_refused_when_box_is_full(tmp_path, monkeypatch):
     mk_task(c, "portfolio_eval", 1, slot=0)
     mk_task(c, "portfolio_eval", 2, slot=1)
     mk_task(c, "portfolio_eval", 3, slot=2)
-    mk_task(c, "factorial", 42, stage=Stage.PR_OPEN, feedback_pending=True,
+    mk_task(c, "factorial", 42, stage=Stage.PR_OPEN, status=waking(PR, "attention(feedback)"),
            pr_number=7, slot=3)
     sess = FakeSessions(alive={1, 2, 3})
     main.run_pass(c, deps(sess=sess))
     saved = load(c.state_dir, "factorial", 42)
-    assert saved.feedback_pending is True
+    assert saved.status == waking(PR, "attention(feedback)")
     assert (42 not in [s[0] for s in sess.spawned])
     assert wake_blocked_events(c, "factorial", 42) != []
     assert wake_blocked_events(c, "factorial", 42)[-1]["detail"] == "capacity full"

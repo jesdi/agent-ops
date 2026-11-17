@@ -8,19 +8,7 @@ import json
 
 import pytest
 
-from dispatcher.state import (
-    SessionRecord,
-    Stage,
-    TaskState,
-    clear_session,
-    clear_turn_markers,
-    has_waiting,
-    mark_background,
-    mark_waiting,
-    read_background,
-    read_session,
-    save,
-)
+from dispatcher.state import (SessionRecord, Stage, TaskState, clear_session, clear_turn_markers, has_waiting, mark_background, mark_waiting, read_background, read_session, save)
 from dispatcher.waitd import handle_ping
 
 
@@ -67,8 +55,8 @@ def test_turn_end_records_the_session_id_and_current_stage(tmp_path):
     assert read_session(tmp_path, REPOSITORY, ISSUE) == SessionRecord(FIRST_ID, "implement")
 
 
-def test_awaiting_spec_review_records_the_continued_spec_stage(tmp_path):
-    _task(tmp_path, stage=Stage.AWAITING_PLAN_REVIEW)
+def test_a_plan_session_records_the_plan_stage(tmp_path):
+    _task(tmp_path, stage=Stage.PLAN)
 
     _ping(tmp_path, session_id=FIRST_ID)
 
@@ -113,7 +101,7 @@ def test_turn_end_for_a_task_without_state_creates_no_record(tmp_path):
 
 @pytest.mark.parametrize("fields,stage", [
     pytest.param({"session_id": FIRST_ID}, Stage.IMPLEMENT, id="implement"),
-    pytest.param({"session_id": FIRST_ID}, Stage.AWAITING_PLAN_REVIEW, id="plan-review"),
+    pytest.param({"session_id": FIRST_ID}, Stage.PLAN, id="plan-review"),
     pytest.param({"session_id": SECOND_ID}, Stage.IMPLEMENT, id="later-id"),
     *[pytest.param(p.values[0], Stage.IMPLEMENT, id=p.id) for p in INVALID_PINGS],
     pytest.param({"session_id": FIRST_ID}, None, id="missing-state"),
@@ -156,7 +144,7 @@ def test_session_identity_keeps_existing_turn_marker_behavior(
 
     if (expects_background and stage is not None
             and isinstance(fields.get("session_id"), str) and fields["session_id"]):
-        recorded_stage = "plan" if stage is Stage.AWAITING_PLAN_REVIEW else "implement"
+        recorded_stage = stage.value
         assert read_session(with_identity, REPOSITORY, ISSUE) == SessionRecord(
             fields["session_id"], recorded_stage)
 

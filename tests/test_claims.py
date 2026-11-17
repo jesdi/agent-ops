@@ -8,6 +8,7 @@ from dispatcher.claims import (last_claims, pick_project, project_counts,
                                project_last_claims)
 from dispatcher.state import Stage
 from tests.webfakes import make_task
+from tests.statuses import CANCELED, DONE, PR, review
 
 NONE = {"a": None, "b": None}
 
@@ -81,14 +82,14 @@ def test_last_claims_skips_non_row_lines_that_mention_claimed(tmp_path):
 
 def test_claim_room_counts_parked_and_pr_open_tasks_against_max_open():
     from dispatcher.claims import claim_room
-    from dispatcher.state import NO_SLOT, PARK_REVIEW, Stage, TaskState
+    from dispatcher.state import (NO_SLOT, Stage, TaskState)
 
-    def task(issue, stage, park=""):
+    def task(issue, stage, status):
         return TaskState(issue=issue, repository="a", stage=stage, slot=NO_SLOT,
-                         worktree="", branch="", title="", updated_at="", park=park)
+                         worktree="", branch="", title="", updated_at="", status=status)
 
-    tasks = [task(1, Stage.SPEC, PARK_REVIEW), task(2, Stage.PR_OPEN),
-             task(3, Stage.DONE), task(4, Stage.CANCELED)]
+    tasks = [task(1, Stage.PLAN, review()), task(2, Stage.PR_OPEN, PR),
+             task(3, Stage.PR_OPEN, DONE), task(4, Stage.QUEUED, CANCELED)]
     # none consumes capacity, two are unfinished
     assert claim_room(3, 10, tasks, triage_running=False) == 3
     assert claim_room(3, 2, tasks, triage_running=False) == 0
@@ -99,7 +100,7 @@ def test_project_counts_sum_active_tasks_over_a_projects_repositories():
     tasks = [make_task(issue=1, repository="a1", stage=Stage.IMPLEMENT),
              make_task(issue=1, repository="a2", stage=Stage.IMPLEMENT),
              make_task(issue=2, repository="gone", stage=Stage.IMPLEMENT),
-             make_task(issue=3, repository="a1", stage=Stage.DONE)]
+             make_task(issue=3, repository="a1", stage=Stage.QUEUED, status=DONE)]
     project_of = {"a1": "a", "a2": "a", "b1": "b"}
     assert project_counts(["a", "b"], tasks, project_of) == {"a": 2, "b": 0}
 

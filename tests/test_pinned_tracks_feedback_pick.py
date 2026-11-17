@@ -11,11 +11,14 @@ import pytest
 
 import dispatcher.main as main
 from dispatcher import state
-from dispatcher.state import NO_SLOT, PARK_WAKE, Stage, load
+from dispatcher.state import NO_SLOT, Stage, load
 from tests.test_main import (FakeGitHub, FakeSessions, cfg, deps, make_task,
                              patch_usage, patch_workspace)
 from tests.test_pinned_tracks_order import (ASTRA, FABLE, SOL, SONNET, ahead,
                                             deny, launched, make_cfg)
+from tests.statuses import PR, waking
+
+FEEDBACK = waking(PR, "attention(feedback)")
 
 BOTH = ["openai", "anthropic"]
 FABLE_PICK = f"anthropic/{FABLE}@medium"
@@ -29,8 +32,8 @@ def saved(c, issue=42):
 
 def feedback_round(c, issue=42, **kw):
     """A task at pr-open with PR feedback queued; one pass."""
-    make_task(c, issue=issue, stage=Stage.PR_OPEN, slot=NO_SLOT, pr_number=12,
-              feedback_pending=True, **kw)
+    make_task(c, issue=issue, stage=Stage.PR_OPEN, status=FEEDBACK, slot=NO_SLOT,
+              pr_number=12, **kw)
     sess = FakeSessions()
     main.run_pass(c, deps(FakeGitHub(), sess))
     return sess
@@ -84,7 +87,7 @@ def test_feedback_waits_when_its_pick_is_denied(tmp_path, monkeypatch):
                           implement_providers=BOTH)
     assert sess.spawned == []
     got = saved(c)
-    assert got.stage is Stage.PR_OPEN and got.feedback_pending is True
+    assert got.stage is Stage.PR_OPEN and got.status == FEEDBACK
     assert got.picks["feedback"] == FABLE_PICK
 
 
@@ -111,8 +114,8 @@ def test_feedback_adds_no_implement_pick_to_a_task_without_one(
 
 def old_shape(c, pick, **raw_over):
     """A pr-open state file as before this change: the implement pick only."""
-    make_task(c, issue=42, stage=Stage.PR_OPEN, slot=NO_SLOT, pr_number=12,
-              feedback_pending=True, track="standard", picks={"implement": pick})
+    make_task(c, issue=42, stage=Stage.PR_OPEN, status=FEEDBACK, slot=NO_SLOT,
+              pr_number=12, track="standard", picks={"implement": pick})
     p = state._path(c.state_dir, "portfolio_eval", 42)
     raw = json.loads(p.read_text())
     raw.pop("implement_providers", None)
@@ -158,8 +161,8 @@ def test_crashed_address_review_is_reported_with_the_feedback_runtime(
 
 def test_resumed_address_review_keeps_the_feedback_key(tmp_path, monkeypatch):
     c = make_cfg(tmp_path, monkeypatch, ahead(), mode="anthropic")
-    make_task(c, issue=42, stage=Stage.ADDRESS_REVIEW, pr_number=12,
-              track="architecture", park=PARK_WAKE,
+    make_task(c, issue=42, stage=Stage.ADDRESS_REVIEW, status=waking(), pr_number=12,
+              track="architecture",
               picks={"feedback": FABLE_PICK}, implement_providers=BOTH)
     sess = FakeSessions(alive={42})
     main.run_pass(c, deps(FakeGitHub(), sess))

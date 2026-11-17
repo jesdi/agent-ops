@@ -8,9 +8,10 @@ from fastapi.testclient import TestClient
 from dispatcher import messages as msgq
 from dataclasses import replace
 
-from dispatcher.state import PARK_HUMAN, PARK_WAKE, Stage
+from dispatcher.state import Stage
 from tests.webfakes import (FakeSources, HEADERS, make_config, make_task)
 from web.app import create_app
+from tests.statuses import ci, human, waking, failed
 
 
 def _fresh_heartbeat(interval_minutes: int = 10) -> dict:
@@ -33,8 +34,7 @@ def rig(tmp_path):
 def test_board_resolves_model_and_columns(tmp_path):
     fake, client = rig(tmp_path)
     fake.tasks_list = [make_task(issue=7, stage=Stage.IMPLEMENT),
-                       make_task(issue=8, stage=Stage.SPEC,
-                                 park=PARK_HUMAN)]
+                       make_task(issue=8, stage=Stage.SPEC, status=human())]
     body = client.get("/api/board", headers=HEADERS).json()
     cols = {c["key"]: c for c in body["columns"]}
     card7 = cols["in-progress"]["cards"][0]
@@ -63,7 +63,8 @@ def _intent(action, issue, text, iid="i1"):
 
 def test_task_detail_and_404(tmp_path):
     fake, client = rig(tmp_path)
-    fake.tasks_list = [make_task(issue=7, ci_run_id=42, effort=3,
+    # The run id is the CI park's: a task parked on run 42.
+    fake.tasks_list = [make_task(issue=7, status=ci(42), effort=3,
                                  labels=("auto",))]
     fake.pane_tails[7] = "$ pytest -q\n3 passed"
     fake.alive.add(7)
@@ -88,9 +89,7 @@ def test_task_detail_and_404(tmp_path):
         ("and rebase", "queued"),
         ("one more thing", "sending")]
     assert body["card"]["undelivered_messages"] == 1
-    assert body["delivery_contract"] == (
-        "will deliver at the next session boundary — this session is still "
-        "running")
+    assert body["delivery_contract"] == "will deliver when the session resumes"
     assert client.get("/api/task/alpha/999", headers=HEADERS).status_code == 404
 
 
@@ -128,7 +127,7 @@ def test_task_detail_unknown_repository_is_404(tmp_path):
 
 def test_task_detail_reports_a_starved_wake(tmp_path):
     fake, client = rig(tmp_path)
-    fake.tasks_list = [make_task(issue=7, park=PARK_HUMAN)]
+    fake.tasks_list = [make_task(issue=7, status=human())]
     fake.blocked_wakes.add(("alpha", 7))
     body = client.get("/api/task/alpha/7", headers=HEADERS).json()
     assert body["card"]["wake_blocked"] is True
@@ -142,7 +141,7 @@ def test_wake_blocked_by_model_exposes_reason_and_alternatives(tmp_path):
     cfg = replace(make_config(tmp_path), models=tracks_policy(
         plan=["claude-fable-5-1@high", "claude-opus-5"]))
     client = TestClient(create_app(cfg, fake))
-    fake.tasks_list = [make_task(issue=7, stage=Stage.AWAITING_PLAN_REVIEW, park=PARK_WAKE,
+    fake.tasks_list = [make_task(issue=7, stage=Stage.PLAN, status=waking(),
                                  picks={"plan": "anthropic/claude-fable-5-1@high"})]
     from tests.usagefakes import session_usage
     fake.usages = {"anthropic": session_usage(0.2, fable=0.9)}
@@ -169,7 +168,7 @@ def test_a_picked_stage_offers_no_cross_provider_alternative(tmp_path):
     cfg = replace(make_config(tmp_path), models=tracks_policy(implement=[
         "claude-fable-5-1", "openai/gpt-5-codex", "claude-opus-5"]))
     client = TestClient(create_app(cfg, fake))
-    fake.tasks_list = [make_task(issue=7, park=PARK_WAKE,
+    fake.tasks_list = [make_task(issue=7, status=waking(),
                                  picks={"implement": "anthropic/claude-fable-5-1"})]
     fake.usages = {"anthropic": session_usage(0.2, fable=0.9),
                    "openai": session_usage(0.2)}
@@ -206,8 +205,7 @@ def test_task_admission_is_none_when_track_is_unconfigured(tmp_path):
     fake = FakeSources()
     cfg = replace(make_config(tmp_path), models=tracks_policy())
     client = TestClient(create_app(cfg, fake))
-    fake.tasks_list = [make_task(issue=7, stage=Stage.AWAITING_PLAN_REVIEW,
-                                 park=PARK_WAKE, track="removed")]
+    fake.tasks_list = [make_task(issue=7, stage=Stage.PLAN, status=waking(), track="removed")]
     fake.usages = {"anthropic": session_usage(0.99)}
     body = client.get("/api/task/alpha/7", headers=HEADERS).json()
     assert body["card"]["model"] == ""
@@ -621,7 +619,7 @@ def test_terminal_websocket_route_is_gone(tmp_path):
 def test_board_snapshot_never_waits_for_live_sources(tmp_path, monkeypatch):
     fake, client = rig(tmp_path)
     fake.tasks_list = [make_task(issue=7, stage=Stage.IMPLEMENT),
-                       make_task(issue=8, stage=Stage.SPEC, park=PARK_HUMAN)]
+                       make_task(issue=8, stage=Stage.SPEC, status=human())]
     full = client.get("/api/board", headers=HEADERS).json()
 
     def unavailable(*args, **kwargs):
@@ -640,8 +638,7 @@ def test_crashed_task_view_shows_the_crashed_stage_pick(tmp_path):
     # A crashed Codex implement task: the console keys the Remote Control
     # link off the model, so the view must name the openai pick, not "".
     fake, client = rig(tmp_path)
-    fake.tasks_list = [make_task(issue=7, stage=Stage.FAILED,
-                                 crashed_stage="implement",
+    fake.tasks_list = [make_task(issue=7, stage=Stage.IMPLEMENT, status=failed(),
                                  picks={"implement": "openai/gpt-5-codex@high"})]
     body = client.get("/api/task/alpha/7", headers=HEADERS).json()
     assert body["card"]["model"] == "openai/gpt-5-codex"
@@ -1114,12 +1111,12 @@ def test_full_board_preserves_policy_pick_override_pin_and_fallback_precedence(
         repositories=[with_project(repository, models=effective_project)])
     fake = FakeSources()
     fake.tasks_list = [
-        make_task(issue=7, stage=Stage.PLAN, park=PARK_WAKE),
-        make_task(issue=8, stage=Stage.PLAN, park=PARK_WAKE,
+        make_task(issue=7, stage=Stage.PLAN, status=waking()),
+        make_task(issue=8, stage=Stage.PLAN, status=waking(),
                   picks={"plan": "openai/gpt-6-luna@high"}),
-        make_task(issue=9, stage=Stage.PLAN, park=PARK_WAKE),
+        make_task(issue=9, stage=Stage.PLAN, status=waking()),
         make_task(issue=10, repository="removed", stage=Stage.PLAN,
-                  park=PARK_WAKE),
+                  status=waking()),
     ]
     fake.rank["alpha"] = ([_full_board_candidate()], "now", False)
     fake.execution_overrides[("alpha", 9)] = (
@@ -1209,10 +1206,10 @@ def test_full_board_uses_effective_capacity_max_open_and_pace(tmp_path):
     fake = FakeSources()
     fake.heartbeat = _fresh_heartbeat()
     fake.tasks_list = [
-        make_task(issue=7, stage=Stage.PLAN, park=PARK_WAKE, track="flex"),
-        make_task(issue=8, stage=Stage.PLAN, park=PARK_WAKE),
-        make_task(issue=9, stage=Stage.PLAN, park=PARK_WAKE),
-        make_task(issue=10, stage=Stage.PLAN, park=PARK_WAKE),
+        make_task(issue=7, stage=Stage.PLAN, status=waking(), track="flex"),
+        make_task(issue=8, stage=Stage.PLAN, status=waking()),
+        make_task(issue=9, stage=Stage.PLAN, status=waking()),
+        make_task(issue=10, stage=Stage.PLAN, status=waking()),
     ]
     fake.rank["alpha"] = ([_full_board_candidate()], "now", False)
     fake.usages = _full_board_usage(

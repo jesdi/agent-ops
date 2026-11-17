@@ -6,11 +6,13 @@ resulting claims/resumes/spawns and wake-blocked markers — never on
 main.py internals.
 """
 from dispatcher.github import Candidate
-from dispatcher.state import PARK_WAKE, Stage, SessionRecord, write_session
+from dispatcher.state import Stage, SessionRecord, write_session
 
 from tests.test_main import FakeGitHub, FakeSessions, deps, patch_usage, patch_workspace
 from tests.test_multi_project_capacity import (mk_task, two_repository_cfg,
                                                wake_blocked_events)
+from tests.statuses import PR, waking
+from dispatcher.status import Kind
 
 
 # --- checkbox: woken work goes before new claims across repositories -----------
@@ -22,7 +24,7 @@ def test_woken_task_resumes_before_other_repository_claims(tmp_path, monkeypatch
     write_session(c.state_dir, "factorial", 42, SessionRecord("factorial-42", "implement"))
     mk_task(c, "portfolio_eval", 1, slot=0)
     mk_task(c, "portfolio_eval", 2, slot=1)
-    mk_task(c, "factorial", 42, stage=Stage.IMPLEMENT, park=PARK_WAKE, slot=2)
+    mk_task(c, "factorial", 42, stage=Stage.IMPLEMENT, status=waking(), slot=2)
     gh = FakeGitHub(cands_by_repository={
         "portfolio_eval": [Candidate(10, "PE candidate", "u10")],
     })
@@ -47,9 +49,9 @@ def test_woken_tasks_resume_in_wake_order_across_repositories(tmp_path, monkeypa
     write_session(c.state_dir, "portfolio_eval", 3, SessionRecord("portfolio-3", "implement"))
     mk_task(c, "portfolio_eval", 1, slot=0)
     mk_task(c, "portfolio_eval", 2, slot=1)
-    mk_task(c, "portfolio_eval", 3, stage=Stage.IMPLEMENT, park=PARK_WAKE, slot=2,
+    mk_task(c, "portfolio_eval", 3, stage=Stage.IMPLEMENT, status=waking(), slot=2,
            updated_at="2026-07-21T10:05:00+00:00")
-    mk_task(c, "factorial", 42, stage=Stage.IMPLEMENT, park=PARK_WAKE, slot=3,
+    mk_task(c, "factorial", 42, stage=Stage.IMPLEMENT, status=waking(), slot=3,
            updated_at="2026-07-21T10:00:00+00:00")
     sess = FakeSessions(alive={1, 2})
     main_deps = deps(sess=sess)
@@ -62,7 +64,7 @@ def test_woken_tasks_resume_in_wake_order_across_repositories(tmp_path, monkeypa
     assert ("portfolio_eval", 3) not in sess.resume_calls
     from dispatcher.state import load
     saved = load(c.state_dir, "portfolio_eval", 3)
-    assert saved.park == PARK_WAKE
+    assert saved.status.kind is Kind.WAKING
     assert wake_blocked_events(c, "portfolio_eval", 3) != []
     assert wake_blocked_events(c, "portfolio_eval", 3)[-1]["detail"] == "capacity full"
 
@@ -75,7 +77,7 @@ def test_feedback_pending_spawns_before_other_repository_claims(tmp_path, monkey
     c = two_repository_cfg(tmp_path)  # portfolio_eval listed first, factorial second
     mk_task(c, "portfolio_eval", 1, slot=0)
     mk_task(c, "portfolio_eval", 2, slot=1)
-    mk_task(c, "factorial", 42, stage=Stage.PR_OPEN, feedback_pending=True,
+    mk_task(c, "factorial", 42, stage=Stage.PR_OPEN, status=waking(PR, "attention(feedback)"),
            pr_number=7, slot=2)
     gh = FakeGitHub(cands_by_repository={
         "portfolio_eval": [Candidate(10, "PE candidate", "u10")],

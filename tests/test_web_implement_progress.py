@@ -63,8 +63,8 @@ def test_no_progress_yet_is_null(tmp_path, signal):
 
 
 @pytest.mark.parametrize("stage", [
-    Stage.PLAN, Stage.AWAITING_PLAN_REVIEW, Stage.REVIEW, Stage.PR_OPEN,
-    Stage.FAILED, Stage.DONE])
+    Stage.QUEUED, Stage.SPEC, Stage.PLAN, Stage.REVIEW, Stage.PR_OPEN,
+    Stage.ADDRESS_REVIEW])
 def test_old_report_is_ignored_outside_implement(tmp_path, stage):
     got = _progress(tmp_path, stage, _sig("3/4 tickets merged"))
     assert got is None

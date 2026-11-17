@@ -8,21 +8,22 @@ from pathlib import Path
 from typing import Mapping
 
 from dispatcher.eventlog import EVENTS_FILE
-from dispatcher.state import TERMINAL_STAGES, TaskState, active
+from dispatcher.state import TaskState
+from dispatcher.status import ended, occupies
 
 
 def box_free(capacity: int, tasks: list[TaskState], triage_running: bool) -> int:
     """Free capacity across the whole box. `tasks` must be every task, not
     one repository's: capacity is one number shared by all repositories. A running
-    triage sweep holds a unit that active() cannot see (a herdr tab, not a
+    triage sweep holds a unit that occupies() cannot see (a herdr tab, not a
     TaskState)."""
-    return capacity - len(active(tasks)) - int(triage_running)
+    return capacity - sum(occupies(t.status) for t in tasks) - int(triage_running)
 
 
 def open_tasks(tasks: list[TaskState]) -> list[TaskState]:
     """Every task not yet finished: running, parked, awaiting review or CI,
     pr-open. Each one keeps a worktree on disk."""
-    return [t for t in tasks if t.stage not in TERMINAL_STAGES]
+    return [t for t in tasks if not ended(t.status)]
 
 
 def claim_room(capacity: int, max_open: int, tasks: list[TaskState],
@@ -53,7 +54,7 @@ def project_counts(names: list[str], tasks: list[TaskState],
     `project_of` maps repository -> project; a task of an unmapped repository
     (one removed from targets.yaml) counts for none."""
     counts = dict.fromkeys(names, 0)
-    for t in active(tasks):
+    for t in (t for t in tasks if occupies(t.status)):
         project = project_of.get(t.repository)
         if project in counts:
             counts[project] += 1

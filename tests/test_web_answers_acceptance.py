@@ -4,7 +4,8 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from dispatcher.state import AnswersRequest, PlanApprovalRequest
+from dispatcher.state import AnswersRequest, PlanApprovalRequest, Stage
+from tests.statuses import answers, held
 from tests.webfakes import FakeSources, HEADERS, make_config, make_task
 from web.app import create_app
 
@@ -20,8 +21,17 @@ def rig(tmp_path, request=None, file=None, name=".agent/questionnaire-answers.js
     (wt / ".agent").mkdir(parents=True)
     if file is not None:
         (wt / name).write_text(file)
-    fake.tasks_list = [make_task(issue=7, worktree=str(wt), operator_request=request)]
+    fake.tasks_list = [make_task(issue=7, worktree=str(wt), **_status(request))]
     return fake, TestClient(create_app(make_config(tmp_path), fake))
+
+
+def _status(request) -> dict:
+    """The task held at the plan gate, or parked for answers, on `request`."""
+    if request is None:
+        return {}
+    if isinstance(request, PlanApprovalRequest):
+        return {"stage": Stage.PLAN, "status": held(request)}
+    return {"stage": Stage.SPEC, "status": answers(request)}
 
 
 def answers_req(fp="r1"):   # the pending intents of these tests are at revision r1

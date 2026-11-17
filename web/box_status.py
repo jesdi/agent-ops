@@ -16,6 +16,7 @@ from typing import Callable, NamedTuple, TextIO
 from urllib.parse import quote
 
 from dispatcher import config, herdr, sessions, state, triage
+from dispatcher.status import HumanReason, Kind, ended, occupies
 from dispatcher.usage import unavailable
 from dispatcher.usage_providers import cache_path, usage_from_json
 from web import read_model
@@ -220,7 +221,7 @@ def _evidence(name, gate, usages, marker, request, projects, tasks, cfg, now, tr
 
 
 def _used(tasks, triage_tab: bool) -> int:
-    return len(state.active(tasks)) + int(triage_tab)
+    return sum(occupies(t.status) for t in tasks) + int(triage_tab)
 
 
 def _dispatcher_row(root, hb, units, now) -> str:
@@ -275,16 +276,30 @@ def _unreadable(root: Path) -> list[str]:
 
 def _task_line(t: state.TaskState, now, tabs, tabs_why) -> str:
     ref = f"{t.repository}#{t.issue}"
-    word = f"{t.park}/{t.park_reason}" if t.park == state.PARK_HUMAN and t.park_reason else t.park
-    if state.consumes_capacity(t):  # unparked or parked-login: a session runs
-        tab = sessions.session_name(t.repository, t.issue)
-        if tabs is None:
-            word = word or f"unknown ({tabs_why})"
-        else:
-            live = tab in tabs
-            word = "  ".join(filter(None, [word or ("live" if live else "no session"),
-                                           tab if live else ""]))
+    word = _park_word(t)
+    if occupies(t.status):  # running or held: a session runs
+        word = _session_word(t, word, tabs, tabs_why)
     return f"{ref}  {t.stage.value}  {word}  {_age(t, now)}"
+
+
+def _park_word(t: state.TaskState) -> str:
+    """Where t is parked, with the reason when a human holds it."""
+    fields = read_model.shown(t)
+    if fields.park == read_model.PARK_HUMAN and fields.park_reason:
+        return f"{fields.park}/{fields.park_reason}"
+    return fields.park
+
+
+def _session_word(t: state.TaskState, word: str, tabs, tabs_why) -> str:
+    """The park word of a task whose session runs, completed by its tab: the
+    tab's name when live, "no session" when gone, "unknown" when the tabs
+    could not be listed."""
+    if tabs is None:
+        return word or f"unknown ({tabs_why})"
+    tab = sessions.session_name(t.repository, t.issue)
+    if tab not in tabs:
+        return word or "no session"
+    return "  ".join(filter(None, [word or "live", tab]))
 
 
 def _lines(lines: list[str]) -> str:
@@ -293,7 +308,7 @@ def _lines(lines: list[str]) -> str:
 
 
 def _tasks_row(root, tasks, now, tabs, tabs_why) -> str:
-    open_tasks = [t for t in tasks if t.stage != state.Stage.DONE]
+    open_tasks = [t for t in tasks if t.status.kind is not Kind.DONE]
     lines = [_task_line(t, now, tabs, tabs_why) for t in open_tasks]
     lines += [f"{ref}  unknown (unreadable task file)" for ref in _unreadable(root)]
     return _lines(lines)
@@ -302,19 +317,27 @@ def _tasks_row(root, tasks, now, tabs, tabs_why) -> str:
 def _question(t: state.TaskState, now, url: str) -> str | None:
     base = f"{url}/task/{quote(t.repository, safe='')}/{t.issue}" if url else ""
     ref, age = f"{t.repository}#{t.issue}", _age(t, now)
-    req = t.operator_request
+    req = state.operator_request(t)
     if req is not None:
         what = "plan approval" if req.kind == "plan-approval" else "answers"
         return "  ".join(filter(None, [ref, what, req.path, age, base and base + "/review"]))
-    if t.park == state.PARK_HUMAN and t.park_reason == state.WHY_DECISION:
-        note = t.park_note
-        note = note[:59] + "…" if len(note) > 60 else note
-        return "  ".join(filter(None, [ref, "decision", f'"{note}"', age, base]))
+    if _awaits_decision(t):
+        return "  ".join(filter(None, [ref, "decision", f'"{_short(t.status.note)}"',
+                                       age, base]))
     return None
 
 
+def _awaits_decision(t: state.TaskState) -> bool:
+    return t.status.kind is Kind.PARKED_HUMAN and t.status.reason is HumanReason.DECISION
+
+
+def _short(note: str) -> str:
+    """The note cut to 60 characters, an ellipsis marking the cut."""
+    return note[:59] + "…" if len(note) > 60 else note
+
+
 def _questions_row(tasks, now, url) -> str:
-    live = [t for t in tasks if t.stage not in state.TERMINAL_STAGES]
+    live = [t for t in tasks if not ended(t.status)]
     return _lines([q for q in (_question(t, now, url) for t in live) if q])
 
 

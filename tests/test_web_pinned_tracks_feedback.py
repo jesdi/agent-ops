@@ -7,10 +7,11 @@ from dataclasses import replace
 import pytest
 from fastapi.testclient import TestClient
 
-from dispatcher.state import NO_SLOT, PARK_WAKE, Stage
+from dispatcher.state import (NO_SLOT, Stage)
 from tests.webfakes import (FakeSources, HEADERS, make_config, make_task,
                             tracks_policy)
 from web.app import create_app
+from tests.statuses import waking
 
 FABLE, OPUS, CODEX = "claude-fable-5-1", "claude-opus-5", "openai/gpt-5-codex"
 IMPLEMENT = [CODEX, FABLE, OPUS]
@@ -21,8 +22,8 @@ def rig(tmp_path, **task_kw):
     cfg = replace(make_config(tmp_path),
                   models=tracks_policy(implement=IMPLEMENT))
     fake.tasks_list = [make_task(
-        issue=7, stage=Stage.PR_OPEN, slot=NO_SLOT, park=PARK_WAKE,
-        pr_number=12, feedback_pending=True,
+        issue=7, stage=Stage.PR_OPEN, status=waking(), slot=NO_SLOT,
+        pr_number=12,
         picks={"feedback": f"anthropic/{FABLE}@medium"},
         implement_providers=["anthropic"], **task_kw)]
     return fake, TestClient(create_app(cfg, fake))

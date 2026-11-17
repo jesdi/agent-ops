@@ -14,8 +14,8 @@ Interface defined here:
   directory main writes `hosts.yml` into, `state_dir/tokens/<task_key>`. main
   passes it whenever the App is registered; the fake here builds its argv with
   the real `session_cmd`.
-* a task the installation doesn't reach: `park == PARK_HUMAN`, `park_reason ==
-  "access"` (state.WHY_ACCESS) and `park_note` holding the installation link.
+* a task the installation doesn't reach: status `parked-access`, its note
+  holding the installation link.
 * `app.bot_login() -> str`: the App's bot login (`<slug>[bot]`).
 """
 import json
@@ -30,7 +30,9 @@ import pytest
 import dispatcher.main as main
 from dispatcher import containers, github
 from dispatcher.sessions import session_name
-from dispatcher.state import PARK_HUMAN, Stage, load_all, task_key
+from dispatcher.state import Stage, load_all, task_key
+from dispatcher.status import Kind
+from tests.statuses import waking
 
 from tests.test_host_installation_tokens_acceptance import (INSTALL, PROJECT_TOKEN,
                                                             World, FakeApp)
@@ -214,8 +216,8 @@ def test_a_task_the_installation_does_not_reach_is_parked_with_the_link_and_spaw
     sessions = spawn_pass(world)
     assert sessions.launches == [] and sessions.spawned == []
     [task] = [t for t in load_all(world.cfg.state_dir) if t.repository == "portfolio_eval"]
-    assert (task.park, task.park_reason) == (PARK_HUMAN, "access")
-    assert INSTALL.settings_url in task.park_note
+    assert task.status.kind is Kind.PARKED_ACCESS
+    assert INSTALL.settings_url in task.status.note
     tokens = Path(world.cfg.state_dir) / "tokens"
     assert [p for p in tokens.rglob("hosts.yml")] == [] if tokens.exists() else True
     assert not any(STORED_PAT in p.read_text() for p in tokens.rglob("*") if p.is_file())
@@ -252,7 +254,7 @@ def test_an_app_error_at_spawn_neither_spawns_nor_parks_and_the_next_pass_retrie
     sessions = spawn_pass(world)
     assert sessions.launches == [] and sessions.spawned == []
     [task] = [t for t in load_all(world.cfg.state_dir) if t.repository == "analytics"]
-    assert (task.park, task.park_reason) == ("", "")
+    assert task.status == waking(cause="launch")         # claimed, launch waits
     world.app.fail.clear()
     sessions = spawn_pass(world)
     assert [(x["repository"], x["issue"]) for x in sessions.launches] == [("analytics", 7)]

@@ -17,11 +17,12 @@ import pytest
 import dispatcher.main as main
 from dispatcher.github import Candidate
 from dispatcher.models import parse_policy
-from dispatcher.state import PlanApprovalRequest, Stage, load, save
+from dispatcher.state import (PlanApprovalRequest, Stage, load, save)
 
 from tests.test_main import (FakeGitHub, FakeSessions, approve_plan, cfg, deps, make_task,
                              patch_usage, patch_workspace, pr_open_task,
                              valid_spec, write_tickets, payload)
+from tests.statuses import PR, held, waking
 from tests.usagefakes import session_usage
 
 ISSUE = 412
@@ -54,9 +55,8 @@ def _spawns(sess, stage):
 
 
 def _implement_started(c):
-    wt = make_task(c, issue=ISSUE, stage=Stage("awaiting-plan-review"),
-                   spec_path=SPEC,
-                   operator_request=PlanApprovalRequest(".agent/review.html"))
+    wt = make_task(c, issue=ISSUE, stage=Stage.PLAN, spec_path=SPEC,
+                   status=held(PlanApprovalRequest(".agent/review.html")))
     save(c.state_dir, dc_replace(_task(c), branch=BRANCH,
                                  title="Export a portfolio as CSV"))
     write_tickets(wt, 4)
@@ -95,7 +95,8 @@ def _prompt(tmp_path, monkeypatch, stage):
     elif stage == "review":
         return _review_spawn(c)[3]
     else:
-        pr_open_task(c, issue=ISSUE, spec_path=SPEC, feedback_pending=True)
+        pr_open_task(c, issue=ISSUE, spec_path=SPEC,
+                     status=waking(PR, "attention(feedback)"))
         gh = FakeGitHub()
         gh.pr_payloads[12] = payload()
         sess = FakeSessions()

@@ -17,7 +17,7 @@ from dispatcher.lifecycle import (TABLE, AcquireSlot, At, CancelIssue, Cause,
                                   RespawnStage, SetResumeOverride,
                                   SpawnAddressReview, Status, SweepTombstone,
                                   Transition, TypeLoginCode, WakeBlocked,
-                                  decide, graph, legacy_view, next_transitions,
+                                  decide, graph, next_transitions,
                                   occupies, operator_request)
 from dispatcher.classify import Look
 from dispatcher.lifecycle import (Admission, Attempt, Death, Gate, LaunchFailure, LoginCode, Notify, Pane,
@@ -52,73 +52,11 @@ S = Stage
 REVIEW_PARK = Status(Kind.PARKED_REVIEW, path="review.html", fingerprint="cd34")
 ANSWERS_PARK = Status(Kind.PARKED_ANSWERS, path="q.html", fingerprint="ab12")
 
-# The table of the scenario "migration command rewrites each legacy shape".
-MIGRATION = [
-    (dict(stage=S.IMPLEMENT), S.IMPLEMENT, Status(Kind.RUNNING)),
-    (dict(park="parked", park_reason="decision", park_note="which DB?"),
-     S.IMPLEMENT, human("decision", "which DB?")),
-    (dict(park="parked"), S.IMPLEMENT, human("operator")),
-    (dict(stage=S.QUEUED, park="parked", park_reason="access"),
-     S.QUEUED, Status(Kind.PARKED_ACCESS)),
-    (dict(stage=S.SPEC, park="parked", operator_request=ANSWERS), S.SPEC, ANSWERS_PARK),
-    (dict(stage=S.AWAITING_PLAN_REVIEW, park="awaiting-review", operator_request=PLAN),
-     S.PLAN, REVIEW_PARK),
-    (dict(stage=S.AWAITING_PLAN_REVIEW, operator_request=PLAN), S.PLAN,
-     Status(Kind.HELD_PLAN_APPROVAL, path="review.html", fingerprint="cd34")),
-    (dict(park="awaiting-ci", ci_run_id=991), S.IMPLEMENT, Status(Kind.PARKED_CI, run_id=991)),
-    (dict(stage=S.SPEC, park="parked-login"), S.SPEC, Status(Kind.HELD_LOGIN)),
-    (dict(stage=S.PLAN, park="unpark-requested"), S.PLAN,
-     waking(human("operator"), "reply")),
-    (dict(park="unpark-requested", crashed_stage="implement"), S.IMPLEMENT,
-     waking(failed("session-crash"), "resume")),
-    (dict(stage=S.SPEC, park="unpark-requested", operator_request=ANSWERS), S.SPEC,
-     waking(ANSWERS_PARK, "reply")),
-    (dict(stage=S.AWAITING_PLAN_REVIEW, park="unpark-requested", operator_request=PLAN),
-     S.PLAN, waking(REVIEW_PARK, "reply")),
-    (dict(stage=S.QUEUED, park="unpark-requested", park_reason="access"), S.QUEUED,
-     waking(Status(Kind.PARKED_ACCESS), "access")),
-    (dict(stage=S.QUEUED, unlaunched=True), S.QUEUED, waking(None, "launch")),
-    (dict(implement_providers=["anthropic"]), S.REVIEW, waking(None, "next-stage")),
-    (dict(stage=S.PR_OPEN, feedback_pending=True, attention="conflict"), S.PR_OPEN,
-     waking(Status(Kind.PARKED_PR), "attention(conflict)")),
-    (dict(stage=S.PR_OPEN), S.PR_OPEN, Status(Kind.PARKED_PR)),
-    (dict(stage=S.PR_OPEN, park="parked", park_reason="loop cap"), S.PR_OPEN,
-     human("loop-cap")),
-    (dict(stage=S.FAILED, crashed_stage="implement"), S.IMPLEMENT, failed("session-crash")),
-    (dict(stage=S.FAILED, park="parked", pr_number=88), S.PR_OPEN, failed("unknown")),
-    (dict(stage=S.FAILED, pr_number=88), S.PR_OPEN, failed("unknown")),
-    (dict(stage=S.FAILED), S.QUEUED, failed("unknown")),
-    (dict(stage=S.DONE, pr_number=88), S.PR_OPEN, Status(Kind.DONE)),
-    (dict(stage=S.CANCELED), S.QUEUED, Status(Kind.CANCELED)),
-    (dict(stage=S.BLOCKED), S.IMPLEMENT,
-     human("operator", "migrated from legacy blocked stage")),
-    (dict(stage=S.STALLED_ON_BUDGET), S.SPEC,
-     human("operator", "migrated from legacy stalled-on-budget stage")),
-]
-
-
-@pytest.mark.parametrize("shape, stage, status", MIGRATION)
-def test_the_view_reads_each_legacy_shape_as_the_migration_table_names(shape, stage, status):
-    assert legacy_view(task(**shape)) == (stage, status)
-
-
-def test_a_task_exposes_its_status_view_with_the_stage_it_belongs_to():
-    t = task(park="parked", park_reason="decision", park_note="which DB?")
-    assert t.at == At(S.IMPLEMENT, human("decision", "which DB?"))
-    done = task(implement_providers=["anthropic"])
-    assert done.at == At(S.REVIEW, waking(None, "next-stage"))
-    assert not hasattr(done, "status")  # never paired with the raw stage
-
-
-@pytest.mark.parametrize("shape", [
-    dict(park="awaiting-ci", ci_run_id=0),
-    dict(park="parked", park_reason="no such reason"),
-    dict(stage=S.AWAITING_PLAN_REVIEW, operator_request=ANSWERS),
-])
-def test_a_shape_the_table_does_not_classify_is_refused(shape):
-    with pytest.raises(ValueError):
-        legacy_view(task(**shape))
-
+def test_a_task_is_read_at_its_stored_stage_and_status():
+    t = task(status=human("decision", "which DB?"))
+    assert decide(t, Event(E.OP_REPLY)) == decide(At(S.IMPLEMENT, human("decision", "which DB?")),
+                                                  Event(E.OP_REPLY))
+    assert next_transitions(t) == next_transitions(At(t.stage, t.status))
 
 
 @pytest.mark.parametrize("kind", list(Kind))
@@ -127,21 +65,20 @@ def test_occupies_exactly_running_and_held(kind):
         Kind.RUNNING, Kind.HELD_PLAN_APPROVAL, Kind.HELD_LOGIN})
 
 
-@pytest.mark.parametrize("shape, asked", [
-    (dict(stage=S.AWAITING_PLAN_REVIEW, operator_request=PLAN), PLAN),
-    (dict(stage=S.AWAITING_PLAN_REVIEW, park="awaiting-review", operator_request=PLAN), PLAN),
-    (dict(stage=S.SPEC, park="parked", operator_request=ANSWERS), ANSWERS),
-    (dict(stage=S.SPEC, park="unpark-requested", operator_request=ANSWERS), ANSWERS),
-    (dict(stage=S.AWAITING_PLAN_REVIEW, park="unpark-requested", operator_request=PLAN),
-     PLAN),
-    (dict(park="unpark-requested", crashed_stage="implement"), None),
-    (dict(stage=S.QUEUED, unlaunched=True), None),
-    (dict(park="parked", park_reason="decision"), None),
-    (dict(), None),
-    (dict(stage=S.DONE, pr_number=88), None),
+@pytest.mark.parametrize("at, asked", [
+    (At(S.PLAN, Status(Kind.HELD_PLAN_APPROVAL, path="review.html", fingerprint="cd34")), PLAN),
+    (At(S.PLAN, REVIEW_PARK), PLAN),
+    (At(S.SPEC, ANSWERS_PARK), ANSWERS),
+    (At(S.SPEC, waking(ANSWERS_PARK, "reply")), ANSWERS),
+    (At(S.PLAN, waking(REVIEW_PARK, "reply")), PLAN),
+    (At(S.IMPLEMENT, waking(failed("session-crash"), "resume")), None),
+    (At(S.QUEUED, waking(None, "launch")), None),
+    (At(S.IMPLEMENT, human("decision")), None),
+    (At(S.IMPLEMENT, Status(Kind.RUNNING)), None),
+    (At(S.PR_OPEN, Status(Kind.DONE)), None),
 ])
-def test_operator_request_is_derived_from_the_status(shape, asked):
-    got = operator_request(task(**shape))
+def test_operator_request_is_derived_from_the_status(at, asked):
+    got = operator_request(at)
     assert (got, getattr(got, "fingerprint", None)) == (
         asked, getattr(asked, "fingerprint", None))
 
@@ -265,11 +202,6 @@ def test_a_transition_takes_a_slot_exactly_when_it_starts_occupying():
         loses = occupies(at.status) and not occupies(got.status)
         assert (AcquireSlot() in got.actions, ReleaseSlot() in got.actions) == (
             gains, loses), (at, event)
-
-
-def test_decide_reads_a_task_through_its_legacy_view():
-    t = task(park="parked", park_reason="decision")
-    assert decide(t, Event(E.OP_REPLY)) == decide(legacy_view(t), Event(E.OP_REPLY))
 
 
 @pytest.mark.parametrize("at, event, reason", [
@@ -437,11 +369,6 @@ def test_next_transitions_of_a_task_parked_on_a_decision():
             ("op-cancel", "canceled")} <= moves
     assert "op-park" not in {event for event, _ in moves}
     assert set(next_transitions(at)) <= set(graph()["status"]["edges"])
-
-
-def test_next_transitions_reads_a_task_through_its_legacy_view():
-    t = task(park="parked", park_reason="decision")
-    assert next_transitions(t) == next_transitions(legacy_view(t))
 
 
 def test_graph_draws_every_transition_row_and_the_stage_progression():

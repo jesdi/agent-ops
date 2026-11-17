@@ -3,10 +3,11 @@ from dataclasses import replace
 
 from fastapi.testclient import TestClient
 
-from dispatcher.state import Stage
+from dispatcher.state import (Stage)
 from tests.configfakes import make_project
 from tests.webfakes import FakeSources, HEADERS, make_config, make_repository, make_task
 from web.app import create_app
+from tests.statuses import DONE
 
 CORE = make_project("core")
 SIDE = make_project("side", paused=True)
@@ -37,8 +38,8 @@ def _cards(body):
 def test_board_cards_carry_their_project_and_a_removed_repository_has_none(tmp_path):
     fake, client = _rig(tmp_path)
     fake.tasks_list = [make_task(issue=7, repository="beta"),
-                       make_task(issue=8, repository="gamma", stage=Stage.DONE),
-                       make_task(issue=9, repository="gone", stage=Stage.DONE)]
+                       make_task(issue=8, repository="gamma", stage=Stage.QUEUED, status=DONE),
+                       make_task(issue=9, repository="gone", stage=Stage.QUEUED, status=DONE)]
     expected = {("beta", 7): "core", ("gamma", 8): "side", ("gone", 9): ""}
     assert _cards(client.get("/api/board", headers=HEADERS).json()) == expected
     assert _cards(client.get("/api/board/snapshot", headers=HEADERS).json()) == expected

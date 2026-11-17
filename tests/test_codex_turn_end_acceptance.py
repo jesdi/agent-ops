@@ -8,18 +8,7 @@ import json
 
 import pytest
 
-from dispatcher.state import (
-    SessionRecord,
-    Stage,
-    TaskState,
-    clear_turn_markers,
-    has_waiting,
-    mark_background,
-    mark_waiting,
-    read_background,
-    read_session,
-    save,
-)
+from dispatcher.state import (SessionRecord, Stage, TaskState, clear_turn_markers, has_waiting, mark_background, mark_waiting, read_background, read_session, save)
 from dispatcher.waitd import handle_ping
 
 
@@ -83,7 +72,7 @@ def _seed_record(state_dir, session_id=OLD_ID, issue=ISSUE):
 @pytest.mark.parametrize("source", ["cli", "exec"])
 @pytest.mark.parametrize("stage,recorded_stage", [
     pytest.param(Stage.REVIEW, "review", id="review"),
-    pytest.param(Stage.AWAITING_PLAN_REVIEW, "plan", id="continued-plan"),
+    pytest.param(Stage.PLAN, "plan", id="plan"),
 ])
 @pytest.mark.parametrize("existing_record", [False, True], ids=["absent", "existing"])
 def test_own_root_turn_records_its_id_and_writes_waiting(

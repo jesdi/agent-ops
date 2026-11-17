@@ -9,18 +9,20 @@ import pytest
 
 import dispatcher.main as main
 from dispatcher import execution_overrides
-from dispatcher.state import (NO_SLOT, PARK_WAKE, SessionRecord, Stage, TaskState,
-                              load, save, write_session)
+from dispatcher.state import (NO_SLOT, SessionRecord, Stage, TaskState, load, save,
+                              write_session)
 from tests.test_main import (ADMIT_ALL, DENY_ALL, FakeGitHub, FakeSessions, cfg,
                              deps)
 from tests.test_multi_project_capacity import (mk_task, two_repository_cfg,
                                                wake_blocked_events)
+from dispatcher.status import Kind
+from tests.statuses import waking
 
 
 def woken(c, repository, issue, slot=NO_SLOT,
           updated_at="2026-07-21T00:00:00+00:00", **kw):
     """A woken task whose session ended a turn, so a wake resumes it."""
-    mk_task(c, repository, issue, slot=slot, park=PARK_WAKE,
+    mk_task(c, repository, issue, slot=slot, status=waking(),
             updated_at=updated_at, **kw)
     write_session(c.state_dir, repository, issue,
                   SessionRecord("recorded-session", "implement"))
@@ -44,7 +46,7 @@ def test_oldest_wake_resumes_first_across_repositories(tmp_path):
 
     assert resumed(d) == [("factorial", 42)]
     assert load(c.state_dir, "factorial", 42).slot == 0
-    assert load(c.state_dir, "portfolio_eval", 3).park == PARK_WAKE
+    assert load(c.state_dir, "portfolio_eval", 3).status == waking()
     assert details(c, "portfolio_eval", 3) == ["capacity full"]
 
 
@@ -76,7 +78,7 @@ def test_two_slot_less_wakes_resume_in_slots_0_and_1(tmp_path):
 
 def test_no_free_slot_with_capacity_left_is_marked_once(tmp_path, monkeypatch):
     # Slot exhaustion with capacity left cannot happen with the real ceiling
-    # (holds_slot == consumes_capacity, max_slots == capacity + 2): lower the
+    # (occupies() decides both, max_slots == capacity + 2): lower the
     # ceiling to 1 so the one holder takes every slot while 2 units stay free.
     monkeypatch.setattr(main, "max_slots", lambda capacity: 1)
     c = cfg(tmp_path)
@@ -88,20 +90,8 @@ def test_no_free_slot_with_capacity_left_is_marked_once(tmp_path, monkeypatch):
     main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
 
     assert resumed(d) == []
-    assert load(c.state_dir, "portfolio_eval", 3).park == PARK_WAKE
+    assert load(c.state_dir, "portfolio_eval", 3).status == waking()
     assert details(c, "portfolio_eval", 3) == ["no free slot"]
-
-
-def test_a_recorded_slot_nobody_holds_is_kept(tmp_path):
-    c = cfg(tmp_path)
-    mk_task(c, "portfolio_eval", 1, slot=0)
-    woken(c, "portfolio_eval", 3, slot=2)
-    d = deps()
-
-    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
-
-    assert resumed(d) == [("portfolio_eval", 3)]
-    assert load(c.state_dir, "portfolio_eval", 3).slot == 2
 
 
 def test_a_recorded_slot_another_task_holds_is_replaced(tmp_path):
@@ -148,7 +138,7 @@ def test_a_denied_launch_waits_without_a_mark(tmp_path):
     main._resume_woken(c, d, admit=DENY_ALL, order=tuple)
 
     assert resumed(d) == []
-    assert load(c.state_dir, "portfolio_eval", 3).park == PARK_WAKE
+    assert load(c.state_dir, "portfolio_eval", 3).status == waking()
     assert details(c, "portfolio_eval", 3) == []
 
 
@@ -161,7 +151,7 @@ def test_a_failed_task_token_skips_without_a_mark(tmp_path, monkeypatch):
     main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
 
     assert resumed(d) == []
-    assert load(c.state_dir, "portfolio_eval", 3).park == PARK_WAKE
+    assert load(c.state_dir, "portfolio_eval", 3).status == waking()
     assert details(c, "portfolio_eval", 3) == []
 
 
@@ -179,7 +169,7 @@ class WakingSessions(FakeSessions):
             issue=42, repository="factorial", stage=Stage.IMPLEMENT, slot=NO_SLOT,
             worktree=wt, branch="agent/task-42", title="t",
             updated_at="2026-07-21T10:10:00+00:00", track="standard",
-            park=PARK_WAKE))
+            status=waking()))
 
 
 def test_a_task_woken_during_the_call_waits_for_the_next(tmp_path):
@@ -192,7 +182,7 @@ def test_a_task_woken_during_the_call_waits_for_the_next(tmp_path):
     main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
 
     assert resumed(d) == [("portfolio_eval", 3)]
-    assert load(c.state_dir, "factorial", 42).park == PARK_WAKE
+    assert load(c.state_dir, "factorial", 42).status == waking()
     assert details(c, "factorial", 42) == []
 
 
@@ -221,7 +211,7 @@ def test_a_resume_crash_fails_only_that_task(tmp_path, capsys, dry_run):
 
     main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple, dry_run=dry_run)
 
-    assert load(c.state_dir, "portfolio_eval", 3).stage is Stage.FAILED
+    assert load(c.state_dir, "portfolio_eval", 3).status.kind is Kind.FAILED
     assert resumed(d) == [("portfolio_eval", 4)]
     titles = [title for _repo, title, _body in gh.created_issues]
     if dry_run:

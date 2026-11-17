@@ -2,16 +2,15 @@
 dispatcher, the status line and the console share. The track it reads is the
 task track; after a done implement session it is review, also while review
 waits; a turn that fails after it saved a stage with no session of its own
-stays resumable; an attach wake queues its notice once for every resume
-path."""
+fails as a task crash at that stage, which Resume starts afresh; an attach
+wake queues its notice once for every resume path."""
 import json
 from dataclasses import replace
 
 import dispatcher.main as main
 from dispatcher import state
 from dispatcher.models import parse_policy
-from dispatcher.state import (NO_SLOT, PARK_WAKE, Stage, launch_entries,
-                              launch_track, next_stage, resumable_crash)
+from dispatcher.state import NO_SLOT, Stage, launch_entries, launch_track, next_stage
 from tests import webfakes
 from tests.pinned import (ASTRA, FABLE, IMPL_DONE, OPUS, PLAN_DONE, ahead,
                           anthropic, cards, deny, launched, make_cfg, openai,
@@ -19,6 +18,8 @@ from tests.pinned import (ASTRA, FABLE, IMPL_DONE, OPUS, PLAN_DONE, ahead,
                           usage_now)
 from tests.test_main import (PLAN_SUMMARY, SPEC_PATH, FakeNotifier,
                              FakeSessions, deps, make_task, write_tickets)
+from tests.statuses import PR, failed, waking
+from dispatcher.status import crashed
 
 PICK = {"implement": f"{ASTRA}@medium"}
 
@@ -31,10 +32,12 @@ def test_the_launch_track_is_the_task_track():
     assert launch_track(task(track="gone"), policy()) == ""
 
 
-def test_the_next_stage_of_an_implement_task():
-    assert next_stage(task()) == "implement"                        # not started
+def test_the_next_stage_is_the_stored_one_but_at_pr_open():
+    assert next_stage(task()) == "implement"
     assert next_stage(task(picks=PICK, implement_providers=["openai"])) == "implement"
-    assert next_stage(task(implement_providers=["openai"])) == "review"   # done
+    review = task(Stage.REVIEW, status=waking(cause="next-stage"), implement_providers=["openai"])
+    assert next_stage(review) == "review"                           # implement done
+    assert next_stage(task(Stage.PR_OPEN, status=PR)) == "address-review"
 
 
 def test_a_task_with_no_track_is_untracked_work_for_the_status_line_too(
@@ -44,7 +47,7 @@ def test_a_task_with_no_track_is_untracked_work_for_the_status_line_too(
     untracked track is pinned, mode `openai` does not reorder it."""
     c = make_cfg(tmp_path, monkeypatch, ahead(), pinned=["standard"],
                  mode="openai")
-    make_task(c, issue=42, stage=Stage.PLAN, track="", park=PARK_WAKE)
+    make_task(c, issue=42, stage=Stage.PLAN, status=waking(), track="")
     assert f"plan [anthropic/{FABLE}@medium]" in main._status_lines(c)[0]
     sess = FakeSessions()
     main.run_pass(c, deps(sess=sess))
@@ -58,7 +61,7 @@ def test_launch_entries_reads_the_list_of_the_stage_it_is_given():
     raw_policy = policy_raw()
     raw_policy["tracks"]["standard"]["plan"] = [f"{OPUS}@low"]
     pol = parse_policy(raw_policy)
-    gate = task(Stage.AWAITING_PLAN_REVIEW, track="standard")
+    gate = task(Stage.PLAN, track="standard", gated=True)
     assert [str(e) for e in launch_entries(gate, pol, tuple)] == [
         f"anthropic/{OPUS}@low"]                                    # the plan list
     assert [str(e) for e in launch_entries(gate, pol, tuple, "implement")] == [
@@ -89,7 +92,7 @@ def test_a_wake_of_a_done_implement_task_starts_review_afresh(tmp_path, monkeypa
     usage_now(monkeypatch, deny(ahead(), "gpt-astra", OPUS))
     step(c, wt, IMPL_DONE)
     usage_now(monkeypatch, ahead())
-    state.save(c.state_dir, replace(saved(c), park=PARK_WAKE))
+    state.save(c.state_dir, replace(saved(c), status=waking()))
     sess = FakeSessions()
     main.run_pass(c, deps(sess=sess))
     assert [s[1] for s in sess.spawned] == ["review"] and sess.resumed == []
@@ -98,7 +101,8 @@ def test_a_wake_of_a_done_implement_task_starts_review_afresh(tmp_path, monkeypa
 def test_the_card_labels_the_launch_that_waits(tmp_path):
     fake, client = rig(tmp_path, {"anthropic": anthropic(), "openai": openai()})
     fake.tasks_list = [
-        webfakes.make_task(issue=7, track="standard",
+        webfakes.make_task(issue=7, track="standard", stage=Stage.REVIEW,
+                           status=waking(cause="next-stage"), slot=NO_SLOT,
                            implement_providers=["openai"]),
         webfakes.make_task(issue=8, track="standard")]
     got = cards(client)
@@ -126,8 +130,8 @@ def test_a_turn_that_fails_after_it_saved_pr_open_stays_resumable(
          "note": "https://github.com/x/y/pull/7"}))
     main.run_pass(c, deps(sess=FakeSessions(alive={42}), notifier=Raising()))
     t = saved(c)
-    assert t.stage is Stage.FAILED and resumable_crash(t)
-    assert t.crashed_stage == "address-review" and t.pr_number == 7
+    assert t.status == failed("task-crash") and crashed(t.status)
+    assert (t.stage, next_stage(t), t.pr_number) == (Stage.PR_OPEN, "address-review", 7)
 
 
 def test_a_turn_that_fails_after_it_saved_the_plan_gate_stays_resumable(
@@ -144,8 +148,8 @@ def test_a_turn_that_fails_after_it_saved_the_plan_gate_stays_resumable(
     monkeypatch.setattr(main.spec_publish, "ensure_published", boom)
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     t = saved(c)
-    assert t.stage is Stage.FAILED and resumable_crash(t)
-    assert t.crashed_stage == "plan"
+    assert t.status == failed("task-crash") and crashed(t.status)
+    assert t.stage is Stage.PLAN
 
 
 class NoTail(FakeSessions):
@@ -154,16 +158,17 @@ class NoTail(FakeSessions):
 
 
 def test_a_crash_whose_report_fails_stays_resumable(tmp_path, monkeypatch):
-    """The implement session died and the crash was saved as resumable; the
-    report then raises. The second failure keeps the recorded crashed stage."""
+    """The implement session died, and reading its pane for the report
+    raises: the task fails as a task crash at implement, which Resume
+    starts afresh."""
     c, wt = setup(tmp_path, monkeypatch, "architecture", 2)
     step(c, wt, PLAN_DONE)
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "implement", "status": "working"}))
     main.run_pass(c, deps(sess=NoTail()))           # no live session
     t = saved(c)
-    assert t.stage is Stage.FAILED and t.crashed_stage == "implement"
-    assert resumable_crash(t)
+    assert (t.stage, t.status) == (Stage.IMPLEMENT, failed("task-crash"))
+    assert crashed(t.status)
 
 
 class Corrupting(FakeSessions):
@@ -182,11 +187,11 @@ def test_a_crash_over_an_unreadable_state_file_does_not_stop_the_pass(
         tmp_path, monkeypatch):
     c = make_cfg(tmp_path, monkeypatch, ahead())
     make_task(c, issue=42, track="architecture", picks=PICK)
-    make_task(c, issue=43, track="architecture", picks=PICK, park=PARK_WAKE)
+    make_task(c, issue=43, track="architecture", picks=PICK, status=waking())
     sess = Corrupting(state._path(c.state_dir, "portfolio_eval", 42))
     main.run_pass(c, deps(sess=sess))
     t = saved(c)
-    assert t.stage is Stage.FAILED and t.crashed_stage == "implement"
+    assert (t.stage, t.status) == (Stage.IMPLEMENT, failed("task-crash"))
     assert len(sess.resumed) == 1                   # task 43 was still reached
 
 
@@ -196,8 +201,8 @@ def test_an_attach_wake_of_a_pr_open_task_tells_the_new_session_to_wait(
         tmp_path, monkeypatch):
     """One place queues the attach notice for every resume path."""
     c = make_cfg(tmp_path, monkeypatch, ahead())
-    make_task(c, issue=42, stage=Stage.PR_OPEN, slot=NO_SLOT, pr_number=12,
-              track="architecture", park=PARK_WAKE, hold_for_attach=True)
+    make_task(c, issue=42, stage=Stage.PR_OPEN, status=waking(), slot=NO_SLOT, pr_number=12,
+              track="architecture", hold_for_attach=True)
     sess, notifier = FakeSessions(), FakeNotifier()
     main.run_pass(c, deps(sess=sess, notifier=notifier))
     assert sess.spawned[0][1] == "address-review"

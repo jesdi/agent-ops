@@ -24,7 +24,7 @@ def test_the_implement_session_records_its_provider(tmp_path, monkeypatch):
 
 def test_a_provider_is_recorded_once_through_review(tmp_path, monkeypatch):
     c = make_cfg(tmp_path, monkeypatch, ahead(), mode="openai")
-    wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW,
+    wt = make_task(c, issue=42, stage=Stage.PLAN, gated=True,
                    track="standard")
     write_tickets(wt, 3)
     approve_plan(c, wt)

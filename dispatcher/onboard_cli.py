@@ -12,7 +12,7 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from dispatcher import config, onboard
+from dispatcher import config, migrate, onboard
 from dispatcher.infra_config import project_block
 
 USER = "agent"
@@ -39,6 +39,7 @@ def _parser() -> argparse.ArgumentParser:
     nouns = parser.add_subparsers(dest="noun", required=True)
     status = nouns.add_parser("status", help="read-only report of the box: what it is claiming and why not")
     status.add_argument("--config", default=config.default_config_path())
+    migrate.add_command(nouns)
     add = nouns.add_parser("project").add_subparsers(dest="verb", required=True).add_parser(
         "add", help="onboard a project: it ends merged, deployed, visible and paused")
     add.add_argument("name", type=_slug)
@@ -60,18 +61,34 @@ def main(argv: list[str] | None = None, sh: onboard.Sh = onboard.sh) -> int:
         return box_status.run(args.config, datetime.now(timezone.utc),
                               box_status.system_probes(), sys.stdout)
     state_dir = config.load_config(args.config).state_dir
+    if "run" in args:   # a noun that registers its own runner
+        return args.run(state_dir, args)
+    return _project_add(args, state_dir, sh)
+
+
+def _project_add(args: argparse.Namespace, state_dir: str, sh: onboard.Sh) -> int:
     existing = onboard.load_record(state_dir, args.name)
     if existing and existing.status == "complete":
         _show(existing, "already onboarded")  # informational: no prompts, no writes
         return 0
+    _start(args, state_dir, existing)
+    _confirm(sh, state_dir, args.name)
+    return 0
+
+
+def _start(args: argparse.Namespace, state_dir: str, existing: onboard.Record | None) -> None:
+    """Write the add intent; `--manual` first skips a pending draft."""
     if args.manual and existing and existing.request.get("inspect"):
         _write(state_dir, "skip-inspection", args.name, {"revision": existing.revision})
     _write(state_dir, "add", args.name, _request(args, existing))
-    rec = _kick(sh, state_dir, args.name)
+
+
+def _confirm(sh: onboard.Sh, state_dir: str, project: str) -> None:
+    """Kick the engine; a proposal the operator confirms is kicked again."""
+    rec = _kick(sh, state_dir, project)
     if rec.awaiting == "confirm" and onboard.can_confirm(rec) and _yes(rec):
-        _write(state_dir, "confirm", args.name, {"revision": rec.revision})
-        _kick(sh, state_dir, args.name)
-    return 0
+        _write(state_dir, "confirm", project, {"revision": rec.revision})
+        _kick(sh, state_dir, project)
 
 
 def _yes(rec: onboard.Record) -> bool:

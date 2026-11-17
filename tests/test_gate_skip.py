@@ -11,7 +11,7 @@ from dispatcher import intents as intents_mod
 from dispatcher import spec_publish
 from dispatcher.artifacts import REVIEW_PAGE_MARKER, REVIEW_PAGE_MAX_BYTES, count_open_questions
 from dispatcher.classify import Observation, Reads, _skips_gate
-from dispatcher.state import Stage, StageSignal, TaskState, read_stage_signal, save
+from dispatcher.state import (Stage, StageSignal, TaskState, read_stage_signal, save)
 
 from tests.test_gate_skip_acceptance import (BRANCH, FOLDER, ISSUE,
                                              NONE_SUMMARY, ONE_SUMMARY, SPEC, SUMMARY, _page,
@@ -19,6 +19,10 @@ from tests.test_gate_skip_acceptance import (BRANCH, FOLDER, ISSUE,
                                              _pass, _ready, _setup, _task,
                                              _task_at_ready, _wait_case)
 from tests.test_main import FakeGitHub, LiveUntilEnded, approve_plan, deps, write_tickets
+from tests.statuses import RUNNING, held
+from tests.statuses import failed as failed_
+from dispatcher.status import Kind
+from dispatcher.state import operator_request
 
 
 def test_track_named_in_the_ready_report_does_not_count(tmp_path, monkeypatch):
@@ -74,7 +78,7 @@ def test_task_that_waited_never_skips_after_a_respawn(tmp_path, monkeypatch):
     c, wt, sess = _waited_once(tmp_path, monkeypatch)
     sess.alive_set = set()
     _pass(c, sess)                              # found dead: respawned
-    assert _task(c).stage is Stage.AWAITING_PLAN_REVIEW
+    assert _task(c).stage is Stage.PLAN and _task(c).gated
     (wt / SUMMARY).write_text(NONE_SUMMARY)
     _ready(wt)
     sess.alive_set = {ISSUE}
@@ -110,18 +114,17 @@ def test_bad_open_questions_does_not_make_the_signal_unreadable(tmp_path, raw, p
     assert sig.status == "awaiting-review" and sig.open_questions == parsed
 
 
-@pytest.mark.parametrize("stage, skips", [(Stage.AWAITING_PLAN_REVIEW, False),
-                                          (Stage.PLAN, True)])
-def test_task_file_at_the_gate_from_before_the_gated_flag_never_skips(
-        tmp_path, monkeypatch, stage, skips):
-    """A task saved at the gate before `gated` existed loads with it false:
-    the stage alone keeps its next ready report at the gate."""
+@pytest.mark.parametrize("status, skips", [(held(SUMMARY), False), (RUNNING, True)])
+def test_task_held_at_the_gate_without_the_gated_flag_never_skips(
+        tmp_path, monkeypatch, status, skips):
+    """A task held at the gate whose `gated` is false (a file saved before
+    the flag): the status alone keeps its next ready report at the gate."""
     c = _setup(tmp_path, monkeypatch)
     wt, sess = _task_at_ready(c, tmp_path)
-    save(c.state_dir, dc_replace(_task(c), stage=stage))
+    save(c.state_dir, dc_replace(_task(c), stage=Stage.PLAN, status=status))
     _pass(c, sess)
     assert bool(_implements(sess)) is skips
-    assert (_task(c).operator_request is None) is skips
+    assert (operator_request(_task(c)) is None) is skips
 
 
 # --- fix round 1 --------------------------------------------------------------
@@ -132,7 +135,7 @@ def test_false_open_question_count_waits(tmp_path, monkeypatch):
 
 
 def _assert_no_implement(c, sess):
-    assert _task(c).stage.value == "awaiting-plan-review"
+    assert _task(c).status.kind is Kind.HELD_PLAN_APPROVAL
     assert _implements(sess) == []
 
 
@@ -170,11 +173,11 @@ def test_questionnaire_raised_by_the_plan_session_counts(tmp_path, monkeypatch):
         {"stage": "plan", "status": "awaiting-answers",
          "artifact": ".agent/questions.md"}))
     _pass(c, sess)                              # parks for the answer
-    assert _task(c).park and _task(c).asked is True
+    assert _task(c).status.kind is Kind.PARKED_ANSWERS and _task(c).asked is True
     intents_mod.write_intent(c.state_dir, "reply", "portfolio_eval", ISSUE,
                              {"text": "Export CSV"}, actor="op", epoch_ms=1)
     _pass(c, sess)                              # resumed with the answer
-    assert _task(c).park == "" and len(sess.resumed) == 1
+    assert _task(c).status.kind is Kind.RUNNING and len(sess.resumed) == 1
     _ready(wt)                                  # nothing open any more
     _assert_waits(c, sess, _pass(c, sess))
 
@@ -185,23 +188,23 @@ def test_blocked_park_in_the_plan_stage_is_not_a_questionnaire(tmp_path, monkeyp
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "plan", "status": "blocked", "note": "spec contradicts the code"}))
     _pass(c, sess)
-    assert _task(c).park and _task(c).asked is False
+    assert _task(c).status.kind is Kind.PARKED_HUMAN and _task(c).asked is False
 
 
 def test_old_gate_task_file_never_skips_after_its_session_dies(tmp_path, monkeypatch):
-    """A task file saved at the gate before `gated` existed has no such key.
-    Its dead session is respawned into the plan stage; the fresh session's
-    ready report with nothing open still waits."""
+    """A task file held at the gate saved before `gated` existed has no such
+    key. Its dead session is respawned into the plan stage; the fresh
+    session's ready report with nothing open still waits."""
     c = _setup(tmp_path, monkeypatch)
     wt, sess = _task_at_ready(c, tmp_path)
-    save(c.state_dir, dc_replace(_task(c), stage=Stage.AWAITING_PLAN_REVIEW))
+    save(c.state_dir, dc_replace(_task(c), stage=Stage.PLAN, status=held(SUMMARY)))
     (f,) = [p for p in (tmp_path / "state").glob("task-*.json")]
     doc = json.loads(f.read_text())
     del doc["gated"]
     f.write_text(json.dumps(doc))
     sess.alive_set = set()
     _pass(c, sess)                              # found dead: respawned
-    assert _task(c).stage is Stage.AWAITING_PLAN_REVIEW
+    assert _task(c).stage is Stage.PLAN and _task(c).gated
     _ready(wt)
     sess.alive_set = {ISSUE}
     _assert_waits(c, sess, _pass(c, sess))
@@ -252,7 +255,7 @@ def test_failed_implement_launch_on_the_skip_path_resumes_into_implement(
     sess.spawn_raises = {ISSUE}
     _pass(c, sess)
     failed = _task(c)
-    assert (failed.stage, failed.crashed_stage) == (Stage.FAILED, "implement")
+    assert (failed.stage, failed.status) == (Stage.IMPLEMENT, failed_("task-crash"))
     assert (failed.gated, failed.asked) == (False, False)
 
     intents_mod.write_intent(c.state_dir, "resume", "portfolio_eval", ISSUE, {}, "op", 1)

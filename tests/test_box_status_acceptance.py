@@ -13,13 +13,14 @@ import pytest
 
 from dispatcher import onboard_cli, state
 from dispatcher.failures import write_quarantine
-from dispatcher.state import PARK_CI, PARK_HUMAN, PARK_LOGIN, Stage
+from dispatcher.state import Stage
 from dispatcher.usage import unavailable
 from dispatcher.usage_providers import usage_to_json
 from tests.usagefakes import session_usage
 from tests.webfakes import make_task
 from web import box_status
 from web.box_status import Probes, Unit
+from tests.statuses import human, login, ci
 
 NOW = datetime(2026, 11, 6, 12, 0, tzinfo=timezone.utc)
 ROOT = Path(__file__).resolve().parent.parent
@@ -222,8 +223,8 @@ def test_three_unparked_tasks_fill_capacity(box):
 
 def test_parked_tasks_free_their_slot(box):
     box.task(1)
-    box.task(2, park=PARK_HUMAN)
-    box.task(3, park=PARK_HUMAN)
+    box.task(2, status=human())
+    box.task(3, status=human())
     code, text = box.report()
     assert "capacity-full" not in verdict(text)
     assert "1/3" in row(text, "slots")
@@ -232,7 +233,7 @@ def test_parked_tasks_free_their_slot(box):
 def test_parked_login_keeps_its_slot(box):
     box.task(1)
     box.task(2)
-    box.task(3, park=PARK_LOGIN)
+    box.task(3, status=login())
     assert verdict(box.report()[1]) == BLOCKED + "capacity-full (3/3 slots)"
 
 
@@ -254,7 +255,7 @@ def snapshot(root):
 
 def test_report_changes_nothing_and_takes_no_lock(box, monkeypatch):
     box.projects(agent_ops=True, billing=True)
-    box.task(270, stage=Stage.REVIEW, park=PARK_CI)
+    box.task(270, stage=Stage.REVIEW, status=ci(7))
     box.task(281)
     box.tabs = {"task-agent-ops-281"}
     before = snapshot(box.state)

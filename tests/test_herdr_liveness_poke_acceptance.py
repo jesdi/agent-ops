@@ -12,9 +12,8 @@ import pytest
 
 import dispatcher.main as main
 from dispatcher import eventlog
-from dispatcher.state import (PARK_HUMAN, Stage, StageSignal, TaskState,
-                              has_waiting, load, mark_background,
-                              mark_waiting, save)
+from dispatcher.state import (Stage, StageSignal, TaskState, has_waiting, load, mark_background, mark_waiting, save)
+from dispatcher.status import Kind
 from tests.test_main import (FakeSessions, Reply, cfg, deps, make_task,
                              patch_events, patch_usage, patch_workspace)
 
@@ -80,7 +79,7 @@ def test_working_session_with_waiting_marker_is_neither_parked_nor_poked(tmp_pat
     sess.work()
     for _ in range(2):
         main.run_pass(c, d)
-    assert _task(c).park == "" and sess.ended == []
+    assert _task(c).status.kind is Kind.RUNNING and sess.ended == []
     assert sess.sent_text == [] and _ev(c, "poked") == []
 
 
@@ -95,7 +94,7 @@ def test_stopped_session_is_poked_once_with_the_line(tmp_path, monkeypatch, stat
     assert "\n" not in POKE
     assert len(_ev(c, "poked")) == 1
     t = _task(c)
-    assert t.park == "" and sess.ended == []
+    assert t.status.kind is Kind.RUNNING and sess.ended == []
     assert has_waiting(c.state_dir, T, N)      # the marker stays: poke is safe, not consumed
 
 
@@ -112,7 +111,7 @@ def test_poked_again_while_stopped_and_not_while_working(tmp_path, monkeypatch):
     main.run_pass(c, d)
     main.run_pass(c, d)
     assert len(sess.sent_text) == 3 and len(_ev(c, "poked")) == 3
-    assert _task(c).park == ""
+    assert _task(c).status.kind is Kind.RUNNING
 
 
 def test_pokes_without_working_pass_keep_the_clock_and_count(tmp_path, monkeypatch):
@@ -133,9 +132,9 @@ def test_poking_past_the_cap_parks_with_note_and_ends_session(tmp_path, monkeypa
     _poke_state(c, 3 * HOUR + MIN, pokes=36)
     main.run_pass(c, d)
     t = _task(c)
-    assert t.park == PARK_HUMAN
-    assert t.park_note == "(poked 36 times over 180m — stopped mid-stage without a stage signal)"
-    assert [e["detail"] for e in _ev(c, "parked")] == [t.park_note]
+    assert t.status.kind is Kind.PARKED_HUMAN
+    assert t.status.note == "(poked 36 times over 180m — stopped mid-stage without a stage signal)"
+    assert [e["detail"] for e in _ev(c, "parked")] == [t.status.note]
     assert sess.ended == [N]
     assert sess.sent_text == []
 
@@ -145,7 +144,7 @@ def test_poke_inside_the_cap_is_not_a_park(tmp_path, monkeypatch):
     sess.stop()
     _poke_state(c, 2 * HOUR + 59 * MIN, pokes=35)
     main.run_pass(c, d)
-    assert _task(c).park == "" and sess.sent_text == [(N, POKE)]
+    assert _task(c).status.kind is Kind.RUNNING and sess.sent_text == [(N, POKE)]
 
 
 def test_working_pass_resets_the_poke_clock(tmp_path, monkeypatch):
@@ -158,7 +157,7 @@ def test_working_pass_resets_the_poke_clock(tmp_path, monkeypatch):
     sess.stop()                                  # stopped again, well inside a fresh cap
     main.run_pass(c, d)
     t = _task(c)
-    assert t.park == "" and sess.sent_text == [(N, POKE)]
+    assert t.status.kind is Kind.RUNNING and sess.sent_text == [(N, POKE)]
     assert t.pokes == 1 and abs(t.poked_since - time.time()) < 60
 
 
@@ -172,7 +171,7 @@ def test_poked_session_that_writes_blocked_is_parked_with_its_note(tmp_path, mon
     _signal(wt, "blocked", stage="implement", note="need the staging credentials")
     main.run_pass(c, d)
     t = _task(c)
-    assert t.park == PARK_HUMAN and t.park_note == "need the staging credentials"
+    assert t.status.kind is Kind.PARKED_HUMAN and t.status.note == "need the staging credentials"
     assert sess.ended == [N] and len(sess.sent_text) == 1
 
 
@@ -185,7 +184,7 @@ def test_poked_session_that_writes_awaiting_answers_is_parked(tmp_path, monkeypa
     _signal(wt, "awaiting-answers", stage="spec", note="5 questions",
             artifact=".agent/questionnaire.md")
     main.run_pass(c, d)
-    assert _task(c).park == PARK_HUMAN and len(sess.sent_text) == 1
+    assert _task(c).status.kind is Kind.PARKED_ANSWERS and len(sess.sent_text) == 1
 
 
 def test_poked_session_that_writes_done_advances_as_before(tmp_path, monkeypatch):
@@ -206,7 +205,7 @@ def test_blocked_signal_with_herdr_working_parks_with_the_note(tmp_path, monkeyp
     sess.work()
     main.run_pass(c, d)
     t = _task(c)
-    assert t.park == PARK_HUMAN and t.park_note == "need API key"
+    assert t.status.kind is Kind.PARKED_HUMAN and t.status.note == "need API key"
     assert sess.sent_text == []
 
 
@@ -218,7 +217,7 @@ def test_hang_without_marker_stall_parks_byte_for_byte(tmp_path, monkeypatch, st
     sess.stop(status, idle=11 * MIN)
     main.run_pass(c, d)
     t = _task(c)
-    assert t.park == PARK_HUMAN and t.park_note == STALL_NOTE
+    assert t.status.kind is Kind.PARKED_HUMAN and t.status.note == STALL_NOTE
     assert sess.sent_text == [] and sess.ended == [N]
 
 
@@ -226,7 +225,7 @@ def test_no_marker_idle_under_timeout_is_left_alone(tmp_path, monkeypatch):
     c, wt, sess, d = _setup(tmp_path, monkeypatch, marker=False)
     sess.stop("idle", idle=9 * MIN)
     main.run_pass(c, d)
-    assert _task(c).park == "" and sess.sent_text == [] and sess.ended == []
+    assert _task(c).status.kind is Kind.RUNNING and sess.sent_text == [] and sess.ended == []
 
 
 # --- left alone --------------------------------------------------------------------
@@ -236,7 +235,7 @@ def test_unknown_idle_is_neither_parked_nor_poked(tmp_path, monkeypatch):
     sess.state[N] = ("done", 5)                  # idle_seconds -> None
     assert sess.idle_seconds(T, N) is None
     main.run_pass(c, d)
-    assert _task(c).park == "" and sess.sent_text == [] and sess.ended == []
+    assert _task(c).status.kind is Kind.RUNNING and sess.sent_text == [] and sess.ended == []
 
 
 def test_background_marker_session_idle_two_hours_is_left_alone(tmp_path, monkeypatch):
@@ -245,7 +244,7 @@ def test_background_marker_session_idle_two_hours_is_left_alone(tmp_path, monkey
     sess.stop("idle", idle=2 * HOUR)
     for _ in range(2):
         main.run_pass(c, d)
-    assert _task(c).park == "" and sess.sent_text == [] and sess.ended == []
+    assert _task(c).status.kind is Kind.RUNNING and sess.sent_text == [] and sess.ended == []
 
 
 def test_stall_after_zero_never_parks_or_pokes(tmp_path, monkeypatch):
@@ -253,7 +252,7 @@ def test_stall_after_zero_never_parks_or_pokes(tmp_path, monkeypatch):
     c, wt, sess, d = _setup(tmp_path, monkeypatch, c=c)
     sess.stop("idle", idle=3 * HOUR)
     main.run_pass(c, d)
-    assert _task(c).park == "" and sess.sent_text == [] and sess.ended == []
+    assert _task(c).status.kind is Kind.RUNNING and sess.sent_text == [] and sess.ended == []
 
 
 # --- fresh poke clock ----------------------------------------------------------------
@@ -266,11 +265,11 @@ def test_park_and_resume_starts_a_fresh_poke_clock(tmp_path, monkeypatch):
     sess.stop()
     main.run_pass(c, d)
     t = _task(c)
-    assert t.park == PARK_HUMAN and t.park_note == "need a key"
+    assert t.status.kind is Kind.PARKED_HUMAN and t.status.note == "need a key"
     patch_events(monkeypatch, [Reply(reply_to_msg_id=t.park_msg_id, text="use key X")])
     main.run_pass(c, d)
     patch_events(monkeypatch, [])
-    assert _task(c).park == ""
+    assert _task(c).status.kind is Kind.RUNNING
     _signal(wt, "working", stage="implement")
     sess.alive_set.add(N)                        # the resumed session is live
     mark_waiting(c.state_dir, T, N)
@@ -278,7 +277,7 @@ def test_park_and_resume_starts_a_fresh_poke_clock(tmp_path, monkeypatch):
     sess.sent_text.clear()
     main.run_pass(c, d)
     t = _task(c)
-    assert t.park == "" and sess.sent_text == [(N, POKE)]
+    assert t.status.kind is Kind.RUNNING and sess.sent_text == [(N, POKE)]
     assert t.pokes == 1 and abs(t.poked_since - time.time()) < 60
 
 

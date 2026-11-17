@@ -22,9 +22,9 @@ from dispatcher.state import Stage, load
 from dispatcher.usage import (PaceConfig, ProviderUsage, Window, WindowKind,
                               admits, allowance, unavailable)
 from dispatcher.github import Candidate
-from dispatcher.state import PARK_WAKE
 from tests.test_main import (FakeGitHub, FakeSessions, approve_plan, cfg, deps, make_task,
                              patch_workspace, write_tickets)
+from tests.statuses import PR, waking
 
 SONNET = "claude-sonnet-5-5"
 LUNA = "openai/gpt-6-luna@high"
@@ -68,7 +68,7 @@ def policy(implement, review=None):
 
 
 def run(tmp_path, monkeypatch, usages, implement=WRITTEN, review=None,
-        pace=PACE, stage=Stage.AWAITING_PLAN_REVIEW, picks=None, override=None, frozen=None,
+        pace=PACE, stage=Stage.PLAN, picks=None, override=None, frozen=None,
         **task_kw):
     """One pass over a task about to launch its next stage: an approved plan enters
     implement; IMPLEMENT done (one ticket) enters review. Returns the sessions
@@ -81,8 +81,9 @@ def run(tmp_path, monkeypatch, usages, implement=WRITTEN, review=None,
             def now(cls, tz=None):
                 return frozen
         monkeypatch.setattr(main, "datetime", Frozen)
-    wt = make_task(c, issue=42, stage=stage, picks=picks or {}, **task_kw)
-    if stage is Stage.AWAITING_PLAN_REVIEW:
+    wt = make_task(c, issue=42, stage=stage, picks=picks or {},
+                   gated=stage is Stage.PLAN, **task_kw)
+    if stage is Stage.PLAN:   # a plan session at the review gate
         write_tickets(wt, 1)
         approve_plan(c, wt, task_kw.get("spec_path", ""))
         signal = {"stage": "plan", "status": "done", "note": "1 ticket",
@@ -326,7 +327,7 @@ def test_a_newly_claimed_issues_first_stage_launches_the_top_ranked_entry(
 def test_a_woken_task_with_no_pick_resumes_on_the_top_ranked_entry(
         tmp_path, monkeypatch):
     c = _openai_ranks_first(tmp_path, monkeypatch)
-    make_task(c, issue=42, stage=Stage.PR_OPEN, park=PARK_WAKE, pr_number=7)
+    make_task(c, issue=42, stage=Stage.PR_OPEN, status=waking(), pr_number=7)
     sess = FakeSessions()
     main.run_pass(c, deps(sess=sess))
     assert [s[1] for s in sess.spawned] == ["address-review"]
@@ -336,8 +337,8 @@ def test_a_woken_task_with_no_pick_resumes_on_the_top_ranked_entry(
 def test_a_feedback_spawn_with_no_pick_launches_the_top_ranked_entry(
         tmp_path, monkeypatch):
     c = _openai_ranks_first(tmp_path, monkeypatch)
-    make_task(c, issue=42, stage=Stage.PR_OPEN, pr_number=12,
-              feedback_pending=True)
+    make_task(c, issue=42, stage=Stage.PR_OPEN, status=waking(PR, "attention(feedback)"),
+              pr_number=12)
     sess = FakeSessions()
     main.run_pass(c, deps(sess=sess))
     assert [s[1] for s in sess.spawned] == ["address-review"]

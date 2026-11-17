@@ -3,6 +3,7 @@ import pytest
 
 from dispatcher import onboarding_sessions as sessions
 from dispatcher.config import Config
+from tests.statuses import waking
 
 HERDR_RUN = sessions.herdr._run
 
@@ -201,12 +202,12 @@ def test_woken_task_has_priority_over_inspection(tmp_path, monkeypatch):
     from dataclasses import replace
     from pathlib import Path
     from dispatcher import main
-    from dispatcher.state import PARK_WAKE, Stage, SessionRecord, write_session
+    from dispatcher.state import Stage, SessionRecord, write_session
     from tests.test_main import cfg as task_cfg, deps, FakeSessions, make_task, patch_usage, patch_workspace
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     configuration = replace(task_cfg(tmp_path), capacity=1)
-    make_task(configuration, issue=42, stage=Stage.IMPLEMENT, park=PARK_WAKE)
+    make_task(configuration, issue=42, stage=Stage.IMPLEMENT, status=waking())
     write_session(configuration.state_dir, 'portfolio_eval', 42, SessionRecord('resume-42', 'implement'))
     ident = request(Path(configuration.state_dir))
     live = FakeSessions()

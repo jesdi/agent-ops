@@ -6,10 +6,10 @@ import time
 
 import dispatcher.main as main
 from dispatcher import intents as intents_mod
-from dispatcher.state import (PARK_HUMAN, Stage, has_waiting, load,
-                              mark_background, mark_waiting, read_background)
+from dispatcher.state import (Stage, has_waiting, load, mark_background, mark_waiting, read_background)
 from tests.test_main import (FakeSessions, cfg, deps, make_task, patch_usage,
                              patch_workspace)
+from dispatcher.status import Kind
 
 T, N = "portfolio_eval", 42
 MIN = 60
@@ -42,7 +42,7 @@ def test_crash_then_resume_does_not_inherit_the_old_wait(tmp_path, monkeypatch):
     sess = Herdr(("idle", 5), alive=[], idle={N: 11 * MIN})
     d = deps(sess=sess)
     main.run_pass(c, d)                        # the session crashed
-    assert load(c.state_dir, T, N).stage is Stage.FAILED
+    assert load(c.state_dir, T, N).status.kind is Kind.FAILED
     assert read_background(c.state_dir, T, N) is None   # the crash drops it
     intents_mod.write_intent(c.state_dir, "resume", T, N, {}, "op", 1)
     main.run_pass(c, d)                        # respawned
@@ -50,7 +50,7 @@ def test_crash_then_resume_does_not_inherit_the_old_wait(tmp_path, monkeypatch):
     for _ in range(2):
         main.run_pass(c, d)
     t = load(c.state_dir, T, N)
-    assert t.park == PARK_HUMAN and t.park_note.startswith(STALL)
+    assert t.status.kind is Kind.PARKED_HUMAN and t.status.note.startswith(STALL)
 
 
 class WakesBetweenReads(FakeSessions):
@@ -78,7 +78,7 @@ def test_a_wake_between_herdr_reads_never_stall_parks(tmp_path, monkeypatch):
     main.run_pass(c, deps(sess=Herdr(("idle", 5), alive=[N], idle={N: 0.0})))
     assert load(c.state_dir, T, N).background_seq == 5
     main.run_pass(c, deps(sess=WakesBetweenReads(alive=[N])))
-    assert load(c.state_dir, T, N).park == ""
+    assert load(c.state_dir, T, N).status.kind is Kind.RUNNING
 
 
 CAP = "(background work still running after 180m — cap reached)"
@@ -93,14 +93,14 @@ def test_same_work_reported_after_a_woken_turn_keeps_the_cap_clock(tmp_path, mon
     main.run_pass(c, d)                        # records counter 5
     sess.state = ("working", 6)                # woken into a new turn
     main.run_pass(c, d)                        # the wait is over: today's rules
-    assert load(c.state_dir, T, N).park == ""
+    assert load(c.state_dir, T, N).status.kind is Kind.RUNNING
     mark_background(c.state_dir, T, N, WORK)   # the next turn end: same work
     assert read_background(c.state_dir, T, N).since == since
     sess.state = ("idle", 6)
     main.run_pass(c, d)                        # records the new report
     main.run_pass(c, d)
     t = load(c.state_dir, T, N)
-    assert t.park == PARK_HUMAN and t.park_note == CAP
+    assert t.status.kind is Kind.PARKED_HUMAN and t.status.note == CAP
 
 
 def test_new_work_reported_after_a_woken_turn_restarts_the_cap_clock(tmp_path, monkeypatch):
@@ -118,7 +118,7 @@ def test_new_work_reported_after_a_woken_turn_restarts_the_cap_clock(tmp_path, m
     main.run_pass(c, d)                        # records the new report
     main.run_pass(c, d)                        # the old clock would cap-park here
     t = load(c.state_dir, T, N)
-    assert t.park == "" and t.background_seq == 6
+    assert t.status.kind is Kind.RUNNING and t.background_seq == 6
 
 
 def test_a_waiting_ping_after_a_woken_wait_pokes_the_stopped_session(tmp_path, monkeypatch):
@@ -133,7 +133,7 @@ def test_a_waiting_ping_after_a_woken_wait_pokes_the_stopped_session(tmp_path, m
     sess.state, sess.idle[N] = ("done", 7), 30.0
     main.run_pass(c, d)
     t = load(c.state_dir, T, N)
-    assert t.park == "" and sess.ended == []
+    assert t.status.kind is Kind.RUNNING and sess.ended == []
     assert len(sess.sent_text) == 1            # poked, not parked
     assert read_background(c.state_dir, T, N) is None
     assert has_waiting(c.state_dir, T, N)

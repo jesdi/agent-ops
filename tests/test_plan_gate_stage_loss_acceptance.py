@@ -1,6 +1,7 @@
 """Acceptance tests for ticket 01 of plan-gate-stage-loss: a plan launch
-from the gate stage runs at the gate stage (since #132 ticket 05 the gate
-stage decides, never `gated`).
+from the gate runs at the gate (since #132 ticket 06: stage plan, held there
+or running with `gated`; only the operator's recorded approval passes a
+`done`).
 
 Spec: specs/plan-gate-stage-loss/spec.md, requirements 1-3 and their scenarios.
 Black-box, through dispatcher.main.run_pass over the fakes of tests/test_main.py,
@@ -14,14 +15,17 @@ import dispatcher.main as main
 from dispatcher import eventlog, intents as intents_mod
 from dispatcher.lifecycle import PLAN_NO_APPROVAL
 from dispatcher.models import parse_policy
-from dispatcher.state import NO_SLOT, PARK_REVIEW, PlanApprovalRequest, Stage
+from dispatcher.state import (NO_SLOT, PlanApprovalRequest, Stage)
 
 from tests.test_main import (FakeSessions, deps, make_task,
                              patch_usage, patch_workspace, record_session)
 from tests.test_plan_review_gate_acceptance import (
-    GATE, ISSUE, SPEC, SUMMARY, _arm, _done, _folder_files, _plan_task, _ready,
+    ISSUE, SPEC, SUMMARY, _arm, _done, _folder_files, _plan_task, _ready,
     _signal, _task)
 from tests.test_plan_review_gate_acceptance import _cfg as _gate_cfg
+from tests.statuses import failed, held, review
+from dispatcher.status import Kind
+from dispatcher.state import at_gate, operator_request
 
 NEW_CONVERSATION = "new conversation: no session recorded"
 
@@ -44,14 +48,19 @@ def _setup(tmp_path, monkeypatch):
 
 def _gated(c, tmp_path, *, tickets=1, session=False, **kw):
     """A gated task, parked at the gate for review; `session` records a conversation."""
-    return _plan_task(c, tmp_path, Stage(GATE), git=False, tickets=tickets,
-                      session=session, gated=True, park=PARK_REVIEW,
-                      operator_request=PlanApprovalRequest(SUMMARY), **kw)
+    return _plan_task(c, tmp_path, Stage.PLAN, git=False, tickets=tickets,
+                      session=session, gated=True, status=review(PlanApprovalRequest(SUMMARY)), **kw)
 
 
 def _approve(c):
     intents_mod.write_intent(c.state_dir, "reply", "portfolio_eval", ISSUE,
                              {"text": "approve"}, actor="op", epoch_ms=1)
+
+
+def _unapproved_done(wt):
+    """The session reports done; the operator approved nothing."""
+    _signal(wt, stage="plan", status="done", note="approved",
+            artifact=".agent/tickets", track="standard")
 
 
 def _resumed(c):
@@ -83,7 +92,7 @@ def test_wake_at_the_gate_with_no_session_record_keeps_the_gate_stage(tmp_path, 
 
     assert [s[:2] for s in sess.spawned] == [(ISSUE, "plan")]
     assert [e["detail"] for e in _resumed(c)] == [NEW_CONVERSATION]
-    assert _task(c).stage.value == GATE
+    assert at_gate(_task(c))
 
 
 def test_approval_after_a_fresh_launch_starts_implement(tmp_path, monkeypatch):
@@ -124,15 +133,15 @@ def test_resumed_conversation_at_the_gate_is_unchanged(tmp_path, monkeypatch):
 
     assert sess.spawned == [] and len(sess.resumed) == 1
     assert [e["detail"] for e in _resumed(c)] == [""]
-    assert _task(c).stage.value == GATE
+    assert at_gate(_task(c))
 
 
 @pytest.mark.parametrize("used", [0, 1])
 def test_respawn_of_a_dead_session_at_the_gate_keeps_the_gate_stage(
         tmp_path, monkeypatch, used):
     c = _setup(tmp_path, monkeypatch)
-    wt = _plan_task(c, tmp_path, Stage(GATE), git=False, gated=True,
-                    unattended_rounds=used, operator_request=PlanApprovalRequest(SUMMARY))
+    wt = _plan_task(c, tmp_path, Stage.PLAN, git=False, gated=True,
+                    unattended_rounds=used, status=held(SUMMARY))
     _ready(wt)
     _arm(c)
     sess = FakeSessions(alive=set())
@@ -141,7 +150,7 @@ def test_respawn_of_a_dead_session_at_the_gate_keeps_the_gate_stage(
 
     assert [s[:2] for s in sess.spawned] == [(ISSUE, "plan")]
     t = _task(c)
-    assert t.stage.value == GATE and t.unattended_rounds == used + 1
+    assert at_gate(t) and t.unattended_rounds == used + 1
 
     sess.alive_set.add(ISSUE)
     _ready(wt)   # the new session reports its plan ready again
@@ -149,22 +158,22 @@ def test_respawn_of_a_dead_session_at_the_gate_keeps_the_gate_stage(
 
     t = _task(c)
     assert t.unattended_rounds == used + 1   # the respawn and this report are one round
-    assert t.stage.value == GATE
-    assert t.operator_request is not None and t.operator_request.path == SUMMARY
+    assert at_gate(t)
+    assert operator_request(t) is not None and operator_request(t).path == SUMMARY
     if used == 0:
-        assert t.park == ""   # below the cap the first ready report starts a fresh grace period
+        assert t.status.kind is Kind.HELD_PLAN_APPROVAL   # below the cap the first ready report starts a fresh grace period
     assert sess.resumed == []   # a ready report is not bounced back to the session
 
 
-@pytest.mark.parametrize("crashed", ["plan", GATE])
 def test_crash_resume_of_a_gated_task_runs_in_stage_plan_and_its_done_is_bounced(
-        tmp_path, monkeypatch, crashed):
-    """#132 ticket 05: `gated` moves no launch to the gate. A Resume after a
-    crash is no session at the gate, so its `done` is no approval, even one
-    the operator approved before the crash."""
+        tmp_path, monkeypatch):
+    """A Resume after a crash carries no approval: the crash cleared any
+    the operator gave before it, so the resumed session's `done` is no
+    approval."""
     c = _setup(tmp_path, monkeypatch)
-    wt = _plan_task(c, tmp_path, Stage.FAILED, git=False, tickets=1, gated=True,
-                    slot=NO_SLOT, crashed_stage=crashed, unattended_rounds=1)
+    wt = _plan_task(c, tmp_path, Stage.PLAN, git=False, tickets=1, gated=True,
+                    slot=NO_SLOT, status=failed(), unattended_rounds=1)
+    assert _task(c).plan_approval == ""
     intents_mod.write_intent(c.state_dir, "resume", "portfolio_eval", ISSUE, {}, "op", 1)
     sess = FakeSessions()
 
@@ -176,7 +185,7 @@ def test_crash_resume_of_a_gated_task_runs_in_stage_plan_and_its_done_is_bounced
 
     sess.alive_set.add(ISSUE)
     record_session(c, "plan", ISSUE)
-    _done(c, wt)                            # an approval of the plan on disk is there
+    _unapproved_done(wt)
     main.run_pass(c, deps(sess=sess))
 
     (resume,) = sess.resumed
@@ -187,8 +196,8 @@ def test_crash_resume_of_a_gated_task_runs_in_stage_plan_and_its_done_is_bounced
 def test_crash_resume_of_a_plan_that_never_reached_the_gate_runs_in_stage_plan(
         tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
-    _plan_task(c, tmp_path, Stage.FAILED, git=False, gated=False,
-               slot=NO_SLOT, crashed_stage="plan")
+    _plan_task(c, tmp_path, Stage.PLAN, git=False, gated=False,
+               slot=NO_SLOT, status=failed())
     intents_mod.write_intent(c.state_dir, "resume", "portfolio_eval", ISSUE, {}, "op", 1)
     sess = FakeSessions()
 
@@ -214,10 +223,10 @@ def test_plan_launch_from_spec_still_sets_stage_plan(tmp_path, monkeypatch):
 
 def test_done_from_a_gated_task_in_stage_plan_is_bounced(tmp_path, monkeypatch):
     """#132 ticket 05: no "gate state was lost" park; a gated task's plan
-    `done` outside the gate is bounced like any unapproved one."""
+    `done` with no recorded approval is bounced like any unapproved one."""
     c = _setup(tmp_path, monkeypatch)
     wt = _plan_task(c, tmp_path, Stage.PLAN, git=False, tickets=1, gated=True)
-    _done(c, wt)
+    _unapproved_done(wt)
     sess = FakeSessions(alive={ISSUE})
 
     main.run_pass(c, deps(sess=sess))
@@ -225,14 +234,14 @@ def test_done_from_a_gated_task_in_stage_plan_is_bounced(tmp_path, monkeypatch):
     (resume,) = sess.resumed
     assert PLAN_NO_APPROVAL in resume[1] and _implement_spawns(sess) == []
     t = _task(c)
-    assert (t.stage, t.park, t.plan_slips) == (Stage.PLAN, "", 1)
+    assert (t.stage, t.status.kind, t.plan_slips) == (Stage.PLAN, Kind.RUNNING, 1)
 
 
 def test_done_from_an_ungated_task_in_stage_plan_still_bounces(tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
     wt = _plan_task(c, tmp_path, Stage.PLAN, git=False, tickets=1, gated=False,
                     plan_retries=0)
-    _done(c, wt)
+    _unapproved_done(wt)
     sess = FakeSessions(alive={ISSUE})
 
     main.run_pass(c, deps(sess=sess))

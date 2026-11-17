@@ -11,14 +11,15 @@ import pytest
 
 import dispatcher.main as main
 from dispatcher import eventlog, spec_publish
-from dispatcher.state import (NO_SLOT, PARK_CI, PARK_HUMAN, PARK_LOGIN, PARK_REVIEW,
-                              PlanApprovalRequest, Stage, active, load, load_all,
-                              mark_background, mark_waiting, save)
+from dispatcher.state import (NO_SLOT, PlanApprovalRequest, Stage, load, load_all, mark_background, mark_waiting, save)
 from dispatcher.artifacts import plan_revision
 from tests.test_herdr_liveness_poke_acceptance import HerdrSessions
 from tests.test_main import (PLAN_SUMMARY, SPEC_PATH, FakeGitHub, FakeSessions,
                              approve_plan, cfg, deps, make_task, patch_usage,
                              patch_workspace, write_tickets)
+from tests.statuses import RUNNING, failed, held, waking
+from dispatcher.status import Kind, occupies
+from dispatcher.state import at_gate, operator_request
 
 T, N = "portfolio_eval", 42
 MIN, HOUR = 60, 3600
@@ -79,8 +80,8 @@ def test_a_task_whose_track_left_the_config_parks_for_config(c):
     signal(wt, "done")
     d = run(c)
     t = now(c)
-    assert (t.park, t.park_reason, t.slot) == (PARK_HUMAN, "config", NO_SLOT)
-    assert "'renamed'" in t.park_note and N in d.sessions.ended
+    assert (t.status.kind, t.status.reason, t.slot) == (Kind.PARKED_HUMAN, "config", NO_SLOT)
+    assert "'renamed'" in t.status.note and N in d.sessions.ended
     assert "parked_question" in d.notifier.sent and d.sessions.spawned == []
 
 
@@ -88,7 +89,7 @@ def test_a_dead_session_without_done_crashes_and_keeps_its_stage(c):
     task(c)
     d = run(c, FakeSessions(alive=set()))
     t = now(c)
-    assert (t.stage, t.crashed_stage, t.park) == (Stage.FAILED, "implement", "")
+    assert (t.stage, t.status) == (Stage.IMPLEMENT, failed())
     assert d.github.released == [(N, "session crashed mid-stage")]
     assert "session_crashed" in d.notifier.sent and N in d.sessions.ended
 
@@ -102,32 +103,30 @@ def test_a_dead_session_with_a_done_signal_takes_the_done_path(c):
 
 
 def test_a_dead_session_at_the_gate_respawns_plan_while_rounds_remain(c):
-    task(c, stage=Stage.AWAITING_PLAN_REVIEW, spec_path=SPEC_PATH,
-         operator_request=PlanApprovalRequest(PLAN_SUMMARY))
+    task(c, stage=Stage.PLAN, status=held(PlanApprovalRequest(PLAN_SUMMARY)), spec_path=SPEC_PATH)
     d = run(c, FakeSessions(alive=set()))
     assert [s[:2] for s in d.sessions.spawned] == [(N, "plan")]
     t = now(c)
-    assert (t.stage, t.operator_request, t.gate_respawn_pending) == (
-        Stage.AWAITING_PLAN_REVIEW, None, True)
+    assert (t.stage, t.status, t.gate_respawn_pending) == (Stage.PLAN, RUNNING, True)
+    assert at_gate(t) and operator_request(t) is None
 
 
 def test_a_dead_session_at_the_gate_parks_for_review_with_no_rounds_left(c):
-    task(c, stage=Stage.AWAITING_PLAN_REVIEW, spec_path=SPEC_PATH, unattended_rounds=2,
-         operator_request=PlanApprovalRequest(PLAN_SUMMARY, fingerprint="fp"))
+    task(c, stage=Stage.PLAN, status=held(PlanApprovalRequest(PLAN_SUMMARY, fingerprint="fp")), spec_path=SPEC_PATH, unattended_rounds=2)
     d = run(c, FakeSessions(alive=set()))
     t = now(c)
-    assert (t.park, t.slot, t.park_note) == (
-        PARK_REVIEW, NO_SLOT, "plan session stopped at the review gate")
-    assert t.operator_request == PlanApprovalRequest(PLAN_SUMMARY, fingerprint="fp")
+    assert (t.status.kind, t.slot, t.status.note) == (
+        Kind.PARKED_REVIEW, NO_SLOT, "plan session stopped at the review gate")
+    assert operator_request(t) == PlanApprovalRequest(PLAN_SUMMARY, fingerprint="fp")
     assert "plan_session_stopped" in d.notifier.sent and d.sessions.spawned == []
 
 
 def test_a_claim_that_never_launched_spawns_spec(c):
-    task(c, stage=Stage.QUEUED, unlaunched=True)
+    task(c, stage=Stage.QUEUED, status=waking(cause="launch"))
     d = run(c, FakeSessions(alive=set()))
     assert [s[:2] for s in d.sessions.spawned] == [(N, "spec")]
     t = now(c)
-    assert (t.stage, t.unlaunched, t.slot) == (Stage.SPEC, False, 0)
+    assert (t.stage, t.status, t.slot) == (Stage.SPEC, RUNNING, 0)
 
 
 @pytest.mark.parametrize("sig", [None, {"status": "working"}])
@@ -137,8 +136,8 @@ def test_a_silent_session_past_the_stall_time_parks_stalled(c, sig):
         signal(wt, sig["status"])
     d = run(c, FakeSessions(alive={N}, idle={N: 601.0}))
     t = now(c)
-    assert (t.park, t.park_reason, t.park_note, t.slot) == (
-        PARK_HUMAN, "stalled", STALL_NOTE, NO_SLOT)
+    assert (t.status.kind, t.status.reason, t.status.note, t.slot) == (
+        Kind.PARKED_HUMAN, "stalled", STALL_NOTE, NO_SLOT)
     assert N in d.sessions.ended
 
 
@@ -161,7 +160,7 @@ def test_a_session_at_the_gate_waiting_for_review_never_stalls(c):
     signal(wt, "awaiting-review", stage="plan", artifact=PLAN_SUMMARY)
     d = run(c, FakeSessions(alive={N}, idle={N: 5000.0}))
     t = now(c)
-    assert (t.stage, t.park) == (Stage.AWAITING_PLAN_REVIEW, "")
+    assert (t.stage, t.status.kind) == (Stage.PLAN, Kind.HELD_PLAN_APPROVAL)
     assert d.notifier.sent == []
 
 
@@ -187,7 +186,7 @@ def test_awaiting_ci_parks_on_the_run_and_ends_the_session(c):
     signal(wt, "awaiting-ci", run_id=991)
     d = run(c)
     t = now(c)
-    assert (t.park, t.ci_run_id, t.slot) == (PARK_CI, 991, NO_SLOT)
+    assert (t.status.kind, t.status.run_id, t.slot) == (Kind.PARKED_CI, 991, NO_SLOT)
     assert N in d.sessions.ended
 
 
@@ -195,7 +194,7 @@ def test_awaiting_ci_without_a_run_id_fails_the_task(c):
     wt = task(c)
     signal(wt, "awaiting-ci")
     d = run(c)
-    assert now(c).stage is Stage.FAILED
+    assert now(c).status.kind is Kind.FAILED
     assert ("artifact_failed", "awaiting-ci without run_id") in [
         (t, ctx["note"]) for t, ctx in d.notifier.contexts]
 
@@ -205,9 +204,9 @@ def test_parking_releases_the_slot(c):
     signal(wt, "blocked", note="which DB?")
     d = run(c)
     t = now(c)
-    assert (t.park, t.park_reason, t.park_note, t.slot) == (
-        PARK_HUMAN, "decision", "which DB?", NO_SLOT)
-    assert active(load_all(c.state_dir)) == []
+    assert (t.status.kind, t.status.reason, t.status.note, t.slot) == (
+        Kind.PARKED_HUMAN, "decision", "which DB?", NO_SLOT)
+    assert [t for t in load_all(c.state_dir) if occupies(t.status)] == []
     assert N in d.sessions.ended and "parked_question" in d.notifier.sent
     assert [e["detail"] for e in events(c, "parked")] == ["which DB?"]
 
@@ -219,8 +218,8 @@ def test_awaiting_answers_parks_with_the_page_as_the_request(c):
            note="pick one")
     run(c)
     t = now(c)
-    assert (t.park, t.park_note, t.operator_request.path, t.asked) == (
-        PARK_HUMAN, "pick one", ".agent/questions.html", True)
+    assert (t.status.kind, t.status.note, operator_request(t).path, t.asked) == (
+        Kind.PARKED_ANSWERS, "pick one", ".agent/questions.html", True)
 
 
 def test_awaiting_answers_with_an_unusable_page_parks_with_a_note(c):
@@ -228,8 +227,8 @@ def test_awaiting_answers_with_an_unusable_page_parks_with_a_note(c):
     signal(wt, "awaiting-answers", artifact="/etc/passwd", note="pick one")
     run(c)
     t = now(c)
-    assert t.park == PARK_HUMAN and t.operator_request is None
-    assert "malformed awaiting-answers" in t.park_note
+    assert t.status.kind is Kind.PARKED_HUMAN and operator_request(t) is None
+    assert "malformed awaiting-answers" in t.status.note
 
 
 def test_a_park_at_a_login_prompt_holds_the_session_and_its_slot(c):
@@ -238,8 +237,8 @@ def test_a_park_at_a_login_prompt_holds_the_session_and_its_slot(c):
     sess = FakeSessions(alive={N}, tail=LOGIN_TAIL)
     d = run(c, sess)
     t = now(c)
-    assert (t.park, t.slot) == (PARK_LOGIN, 1)
-    assert active(load_all(c.state_dir)) == [t]
+    assert (t.status.kind, t.slot) == (Kind.HELD_LOGIN, 1)
+    assert [t for t in load_all(c.state_dir) if occupies(t.status)] == [t]
     assert N not in d.sessions.ended and "needs_relogin" in d.notifier.sent
 
 
@@ -248,7 +247,7 @@ def test_a_new_loop_round_is_counted(c):
     signal(wt, "working", stage="review", loop="review", round=1)
     d = run(c)
     t = now(c)
-    assert (t.review_rounds, t.park) == (1, "")
+    assert (t.review_rounds, t.status.kind) == (1, Kind.RUNNING)
     assert [e["detail"] for e in events(c, "round")] == ["review round 1/2"]
     assert d.notifier.sent == []
 
@@ -265,8 +264,8 @@ def test_a_loop_round_past_its_cap_parks_for_the_operator(c):
     signal(wt, "working", stage="review", loop="review", round=3)
     d = run(c)
     t = now(c)
-    assert (t.park, t.park_reason, t.slot) == (PARK_HUMAN, "loop cap", NO_SLOT)
-    assert "review loop exceeded its cap of 2 rounds" in t.park_note
+    assert (t.status.kind, t.status.reason, t.slot) == (Kind.PARKED_HUMAN, "loop-cap", NO_SLOT)
+    assert "review loop exceeded its cap of 2 rounds" in t.status.note
     assert N in d.sessions.ended
 
 
@@ -280,12 +279,11 @@ def test_a_round_report_the_policy_does_not_count_changes_nothing(c, extra):
 
 
 def test_a_working_report_at_the_gate_disarms_the_request(c):
-    wt = task(c, stage=Stage.AWAITING_PLAN_REVIEW, spec_path=SPEC_PATH,
-              operator_request=PlanApprovalRequest(PLAN_SUMMARY, fingerprint="fp"))
+    wt = task(c, stage=Stage.PLAN, status=held(PlanApprovalRequest(PLAN_SUMMARY, fingerprint="fp")), spec_path=SPEC_PATH)
     signal(wt, "working", stage="plan")
     run(c)
     t = now(c)
-    assert (t.stage, t.operator_request, t.park) == (Stage.AWAITING_PLAN_REVIEW, None, "")
+    assert (t.stage, operator_request(t), t.status.kind) == (Stage.PLAN, None, Kind.RUNNING)
 
 
 # --- pokes ------------------------------------------------------------------
@@ -299,14 +297,14 @@ def test_a_stopped_session_is_poked_then_parked(c):
         mark_waiting(c.state_dir, T, N)
         run(c, sess)
     t = now(c)
-    assert (t.park, t.pokes) == ("", 2) and len(sess.sent_text) == 2
+    assert (t.status.kind, t.pokes) == (Kind.RUNNING, 2) and len(sess.sent_text) == 2
     assert [e["detail"] for e in events(c, "poked")] == ["poke 1", "poke 2"]
     save(c.state_dir, dc_replace(t, poked_since=time.time() - 2 * HOUR - 1))
     mark_waiting(c.state_dir, T, N)
     run(c, sess)
     t = now(c)
-    assert (t.park, t.park_reason) == (PARK_HUMAN, "stalled")
-    assert "poked 2 times over 120m" in t.park_note and len(sess.sent_text) == 2
+    assert (t.status.kind, t.status.reason) == (Kind.PARKED_HUMAN, "stalled")
+    assert "poked 2 times over 120m" in t.status.note and len(sess.sent_text) == 2
 
 
 def test_a_poke_leaves_updated_at_alone(c):
@@ -324,7 +322,7 @@ def test_a_stopped_session_herdr_cannot_see_is_not_poked(c):
     mark_waiting(c.state_dir, T, N)
     sess = FakeSessions(alive={N}, idle={N: 30.0})   # agent_state None
     run(c, sess)
-    assert sess.sent_text == [] and now(c).park == ""
+    assert sess.sent_text == [] and now(c).status.kind is Kind.RUNNING
 
 
 def test_a_stopped_session_at_a_prompt_parks_instead_of_a_poke(c):
@@ -335,8 +333,8 @@ def test_a_stopped_session_at_a_prompt_parks_instead_of_a_poke(c):
     sess.state[N] = ("blocked", 5)
     run(c, sess)
     t = now(c)
-    assert sess.sent_text == [] and t.park == PARK_HUMAN
-    assert t.park_note == "(session stopped mid-stage waiting for input)"
+    assert sess.sent_text == [] and t.status.kind is Kind.PARKED_HUMAN
+    assert t.status.note == "(session stopped mid-stage waiting for input)"
 
 
 def test_a_session_herdr_sees_working_ends_the_poke_stretch(c):
@@ -344,7 +342,7 @@ def test_a_session_herdr_sees_working_ends_the_poke_stretch(c):
     signal(wt, "working")
     run(c, HerdrSessions({N: ("working", 6)}, alive=[N], idle={N: 0.0}))
     t = now(c)
-    assert (t.poked_since, t.pokes, t.park) == (0.0, 0, "")
+    assert (t.poked_since, t.pokes, t.status.kind) == (0.0, 0, Kind.RUNNING)
 
 
 def test_a_round_report_with_a_waiting_marker_counts_and_pokes(c):
@@ -374,7 +372,7 @@ def test_a_background_report_is_recorded_and_leaves_updated_at_alone(c):
     run(c, sess)
     t = now(c)
     assert t.background_reported and t.background_seq == 5
-    assert (t.park, t.updated_at) == ("", before.updated_at)
+    assert (t.status.kind, t.updated_at) == (Kind.RUNNING, before.updated_at)
 
 
 def test_a_background_report_herdr_sees_working_is_not_recorded(c):
@@ -386,21 +384,21 @@ def test_a_background_report_herdr_sees_working_is_not_recorded(c):
 def test_a_recorded_background_wait_holds_off_the_stall(c):
     _, sess = _waiting_in_background(c, 60)
     run(c, sess)
-    assert now(c).park == ""
+    assert now(c).status.kind is Kind.RUNNING
 
 
 def test_a_background_wait_past_its_cap_parks_stalled(c):
     _, sess = _waiting_in_background(c, 4 * HOUR)
     run(c, sess)
     t = now(c)
-    assert (t.park, t.park_reason, t.park_note) == (PARK_HUMAN, "stalled", CAP_NOTE)
+    assert (t.status.kind, t.status.reason, t.status.note) == (Kind.PARKED_HUMAN, "stalled", CAP_NOTE)
 
 
 def test_a_new_turn_ends_the_background_wait_and_the_stall_applies(c):
     _, sess = _waiting_in_background(c, 60)
     sess.state[N] = ("idle", 6)
     run(c, sess)
-    assert (now(c).park, now(c).park_note) == (PARK_HUMAN, STALL_NOTE)
+    assert (now(c).status.kind, now(c).status.note) == (Kind.PARKED_HUMAN, STALL_NOTE)
 
 
 def test_a_waiting_marker_takes_precedence_over_a_background_wait(c):
@@ -408,14 +406,14 @@ def test_a_waiting_marker_takes_precedence_over_a_background_wait(c):
     mark_waiting(c.state_dir, T, N)
     run(c, sess)
     t = now(c)
-    assert t.park == "" and t.pokes == 1
+    assert t.status.kind is Kind.RUNNING and t.pokes == 1
 
 
 def test_a_background_wait_still_counts_loop_rounds(c):
     wt, sess = _waiting_in_background(c, 60)
     signal(wt, "working", stage="review", loop="review", round=1)
     run(c, sess)
-    assert (now(c).review_rounds, now(c).park) == (1, "")
+    assert (now(c).review_rounds, now(c).status.kind) == (1, Kind.RUNNING)
 
 
 # --- ready reports -------------------------------------------------------------
@@ -431,8 +429,9 @@ def test_a_ready_plan_enters_the_gate_and_keeps_its_slot(c):
     _plan_ready(c)
     d = run(c)
     t = now(c)
-    assert (t.stage, t.park, t.slot, t.gated) == (Stage.AWAITING_PLAN_REVIEW, "", 0, True)
-    assert t.operator_request.path == PLAN_SUMMARY and t.operator_request.fingerprint
+    assert (t.stage, t.status.kind, t.slot, t.gated) == (
+        Stage.PLAN, Kind.HELD_PLAN_APPROVAL, 0, True)
+    assert operator_request(t).path == PLAN_SUMMARY and operator_request(t).fingerprint
     assert "awaiting_plan_review" in d.notifier.sent
     assert d.github.comments == [(N, "📝 Plan ready for review: https://x/spec")]
 
@@ -445,7 +444,7 @@ def test_a_ready_plan_with_bad_tickets_retries_then_fails(c):
     assert len(d.sessions.resumed) == 1 and "plan_retry" in d.notifier.sent
     signal(wt, "awaiting-review", stage="plan", artifact=PLAN_SUMMARY)
     d = run(c)
-    assert now(c).stage is Stage.FAILED and "artifact_failed" in d.notifier.sent
+    assert now(c).status.kind is Kind.FAILED and "artifact_failed" in d.notifier.sent
 
 
 def test_a_ready_plan_on_a_gate_free_track_skips_the_gate(c):
@@ -456,7 +455,7 @@ def test_a_ready_plan_on_a_gate_free_track_skips_the_gate(c):
     signal(wt, "awaiting-review", stage="plan", artifact=PLAN_SUMMARY, open_questions=0)
     d = run(c)
     t = now(c)
-    assert (t.stage, t.gated, t.operator_request, t.ticket_count) == (
+    assert (t.stage, t.gated, operator_request(t), t.ticket_count) == (
         Stage.IMPLEMENT, False, None, 2)
     assert [s[:2] for s in d.sessions.spawned] == [(N, "implement")]
     assert "implement_started" in d.notifier.sent
@@ -464,13 +463,13 @@ def test_a_ready_plan_on_a_gate_free_track_skips_the_gate(c):
 
 
 def _at_the_gate(c, updated_at=NOW, **kw):
-    wt = task(c, stage=Stage.AWAITING_PLAN_REVIEW, spec_path=SPEC_PATH, gated=True,
+    wt = task(c, stage=Stage.PLAN, status=RUNNING, spec_path=SPEC_PATH, gated=True,
               updated_at=updated_at, **kw)
     write_tickets(wt, 2)
     rev = plan_revision(wt, PLAN_SUMMARY, SPEC_PATH)
     t = now(c)
-    save(c.state_dir, dc_replace(t, operator_request=PlanApprovalRequest(
-        rev.path, fingerprint=rev.fingerprint)))
+    save(c.state_dir, dc_replace(t, status=held(PlanApprovalRequest(
+        rev.path, fingerprint=rev.fingerprint))))
     signal(wt, "awaiting-review", stage="plan", artifact=PLAN_SUMMARY)
     return wt
 
@@ -485,28 +484,28 @@ def test_an_armed_plan_inside_the_grace_time_waits(c):
 def test_an_armed_plan_past_the_grace_time_parks_for_review(c):
     old = (datetime.now(timezone.utc) - timedelta(minutes=16)).isoformat()
     _at_the_gate(c, updated_at=old)
-    request = now(c).operator_request
+    request = operator_request(now(c))
     d = run(c)
     t = now(c)
-    assert (t.park, t.slot, t.operator_request) == (PARK_REVIEW, NO_SLOT, request)
+    assert (t.status.kind, t.slot, operator_request(t)) == (Kind.PARKED_REVIEW, NO_SLOT, request)
     assert "plan_parked" in d.notifier.sent and N in d.sessions.ended
 
 
 def test_a_ready_report_at_the_gate_with_no_request_is_a_new_round(c):
     wt = _at_the_gate(c)
-    save(c.state_dir, dc_replace(now(c), operator_request=None))
+    save(c.state_dir, dc_replace(now(c), status=RUNNING))
     d = run(c)
     t = now(c)
-    assert t.operator_request is not None and t.unattended_rounds == 1
+    assert operator_request(t) is not None and t.unattended_rounds == 1
     assert "awaiting_plan_review" in d.notifier.sent
 
 
 def test_a_new_round_with_the_unattended_rounds_used_parks_for_review(c):
     _at_the_gate(c, unattended_rounds=2)
-    save(c.state_dir, dc_replace(now(c), operator_request=None))
+    save(c.state_dir, dc_replace(now(c), status=RUNNING))
     d = run(c)
     t = now(c)
-    assert (t.park, t.operator_request.path) == (PARK_REVIEW, PLAN_SUMMARY)
+    assert (t.status.kind, operator_request(t).path) == (Kind.PARKED_REVIEW, PLAN_SUMMARY)
     assert "plan_parked" in d.notifier.sent
 
 
@@ -514,10 +513,10 @@ def test_a_ready_report_from_the_spec_stage_is_bounced_then_parked(c):
     wt = task(c, stage=Stage.SPEC)
     signal(wt, "awaiting-review", stage="spec")
     d = run(c)
-    assert (now(c).spec_retries, now(c).park) == (1, "") and len(d.sessions.resumed) == 1
+    assert (now(c).spec_retries, now(c).status.kind) == (1, Kind.RUNNING) and len(d.sessions.resumed) == 1
     signal(wt, "awaiting-review", stage="spec")
     run(c)
-    assert (now(c).park, now(c).park_reason) == (PARK_HUMAN, "bad signal")
+    assert (now(c).status.kind, now(c).status.reason) == (Kind.PARKED_HUMAN, "bad-signal")
 
 
 def test_a_ready_report_from_a_stage_with_no_gate_changes_nothing(c):
@@ -526,24 +525,6 @@ def test_a_ready_report_from_a_stage_with_no_gate_changes_nothing(c):
     before = now(c)
     run(c)
     assert now(c) == before
-
-
-@pytest.mark.parametrize("status", ["blocked", "done"])
-def test_a_live_session_at_the_legacy_blocked_stage_is_left_alone(c, status):
-    """The escalate-in-place stage: its session waits for the operator."""
-    signal(task(c, stage=Stage.BLOCKED), status, stage="blocked", note="q")
-    before = now(c)
-    d = run(c)
-    assert now(c) == before
-    assert (d.notifier.sent, d.sessions.ended, d.sessions.spawned) == ([], [], [])
-
-
-def test_done_at_a_stage_no_stage_follows_changes_nothing(c):
-    signal(task(c, stage=Stage.STALLED_ON_BUDGET), "done", stage="stalled-on-budget")
-    before = now(c)
-    d = run(c)
-    assert now(c) == before
-    assert (d.notifier.sent, d.sessions.ended, d.sessions.spawned) == ([], [], [])
 
 
 # --- done ----------------------------------------------------------------------
@@ -567,7 +548,7 @@ def test_implement_done_with_review_denied_waits_without_its_implement_pick(c, m
     d = run(c)
     t = now(c)
     assert d.sessions.spawned == [] and "implement" not in t.picks
-    assert (t.stage, t.park) == (Stage.IMPLEMENT, "")
+    assert (t.stage, t.status) == (Stage.REVIEW, waking(cause="next-stage"))
 
 
 def test_a_launch_the_config_strands_parks_for_config(c):
@@ -578,8 +559,8 @@ def test_a_launch_the_config_strands_parks_for_config(c):
     signal(wt, "done")
     d = run(c)
     t = now(c)
-    assert (t.park, t.park_reason) == (PARK_HUMAN, "config")
-    assert "runs on openai, which no model entry names" in t.park_note
+    assert (t.status.kind, t.status.reason) == (Kind.PARKED_HUMAN, "config")
+    assert "runs on openai, which no model entry names" in t.status.note
     assert d.sessions.spawned == []
 
 
@@ -591,7 +572,7 @@ def test_review_done_opens_the_pr(c, stage, template):
            artifact="https://github.com/jesdi/portfolio_eval/pull/88")
     d = run(c)
     t = now(c)
-    assert (t.stage, t.pr_number, t.park) == (Stage.PR_OPEN, 88, "")
+    assert (t.stage, t.pr_number, t.status.kind) == (Stage.PR_OPEN, 88, Kind.PARKED_PR)
     assert template in d.notifier.sent
     assert len(events(c, "pr-opened")) == 1
 
@@ -600,11 +581,11 @@ def test_an_unapproved_plan_done_is_bounced_then_parked(c):
     wt = task(c, stage=Stage.PLAN)
     signal(wt, "done", stage="plan")
     d = run(c)
-    assert (now(c).plan_slips, now(c).park) == (1, "") and len(d.sessions.resumed) == 1
+    assert (now(c).plan_slips, now(c).status.kind) == (1, Kind.RUNNING) and len(d.sessions.resumed) == 1
     assert "accepted only after the operator has approved" in d.sessions.resumed[0][1]
     signal(wt, "done", stage="plan")
     run(c)
-    assert (now(c).park, now(c).park_reason) == (PARK_HUMAN, "bad signal")
+    assert (now(c).status.kind, now(c).status.reason) == (Kind.PARKED_HUMAN, "bad-signal")
 
 
 def test_a_gated_plan_done_is_bounced_like_any_unapproved_done(c):
@@ -613,7 +594,7 @@ def test_a_gated_plan_done_is_bounced_like_any_unapproved_done(c):
     wt = task(c, stage=Stage.PLAN, gated=True)
     signal(wt, "done", stage="plan")
     d = run(c)
-    assert (now(c).plan_slips, now(c).park) == (1, "") and len(d.sessions.resumed) == 1
+    assert (now(c).plan_slips, now(c).status.kind) == (1, Kind.RUNNING) and len(d.sessions.resumed) == 1
     assert "accepted only after the operator has approved" in d.sessions.resumed[0][1]
 
 
@@ -623,7 +604,7 @@ def test_an_approved_plan_starts_one_implement_session(c):
     signal(wt, "done", stage="plan")
     d = run(c)
     t = now(c)
-    assert (t.stage, t.ticket_count, t.operator_request) == (Stage.IMPLEMENT, 2, None)
+    assert (t.stage, t.ticket_count, operator_request(t)) == (Stage.IMPLEMENT, 2, None)
     assert [s[:2] for s in d.sessions.spawned] == [(N, "implement")]
     assert "implement_started" in d.notifier.sent
 
@@ -669,7 +650,7 @@ def test_spec_done_with_a_bad_spec_fails(c):
     (wt / "spec.md").write_text("# tiny")
     signal(wt, "done", stage="spec", artifact="spec.md", track="standard")
     d = run(c)
-    assert now(c).stage is Stage.FAILED and "artifact_failed" in d.notifier.sent
+    assert now(c).status.kind is Kind.FAILED and "artifact_failed" in d.notifier.sent
 
 
 # --- crashes -------------------------------------------------------------------
@@ -683,7 +664,7 @@ def test_a_launch_that_raises_fails_at_the_stage_that_could_not_start(c):
            artifact="https://github.com/jesdi/portfolio_eval/pull/9")
     d = run(c, FakeSessions(alive={N, 43}, spawn_raises={N}))
     t = now(c)
-    assert (t.stage, t.crashed_stage, t.spec_path) == (Stage.FAILED, "plan", "spec.md")
+    assert (t.stage, t.status, t.spec_path) == (Stage.PLAN, failed("task-crash"), "spec.md")
     assert (N, "task crashed mid-pass") in d.github.released
     assert load(c.state_dir, T, 43).stage is Stage.PR_OPEN
 
@@ -701,6 +682,6 @@ def test_any_other_error_in_a_turn_fails_the_task_and_the_pass_goes_on(c, monkey
     monkeypatch.setattr(main, "read_stage_signal", boom)
     d = run(c, FakeSessions(alive={N, 43}))
     t = now(c)
-    assert (t.stage, t.crashed_stage) == (Stage.FAILED, "implement")
+    assert (t.stage, t.status) == (Stage.IMPLEMENT, failed("task-crash"))
     assert (N, "task crashed mid-pass") in d.github.released
     assert load(c.state_dir, T, 43).stage is Stage.REVIEW

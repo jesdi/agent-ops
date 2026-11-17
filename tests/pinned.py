@@ -11,7 +11,8 @@ from dataclasses import replace
 
 import dispatcher.main as main
 from dispatcher import intents, state
-from dispatcher.state import PARK_WAKE, Stage, TaskState, load, save
+from dispatcher.state import Stage, TaskState, load, save
+from tests.statuses import RUNNING, waking
 from tests.test_main import (GOOD_TICKET, FakeGitHub, FakeSessions, approve_plan, deps,
                              make_task)
 from tests.test_pinned_tracks_order import (ASTRA, FABLE, OPUS, SOL,
@@ -56,9 +57,9 @@ def rewrite(state_dir, repository, *drop, **over):
     return p
 
 
-def old_shape(state_dir, stage, picks, **raw_over):
+def old_shape(state_dir, stage, picks, status=RUNNING, **raw_over):
     """A state file with no recorded provider, as before the record existed."""
-    save(state_dir, task(stage, picks=picks))
+    save(state_dir, task(stage, picks=picks, status=status))
     return rewrite(state_dir, "t", "implement_providers", **raw_over)
 
 
@@ -72,8 +73,7 @@ def setup(tmp_path, monkeypatch, task_track, tickets, usages=None, **kw):
     """A task at the plan review gate whose plan session wrote `tickets`
     ticket files: PLAN_DONE is the operator's approval."""
     c = make_cfg(tmp_path, monkeypatch, usages or ahead(), **kw)
-    wt = make_task(c, issue=42, stage=Stage.AWAITING_PLAN_REVIEW,
-                   track=task_track)
+    wt = make_task(c, issue=42, stage=Stage.PLAN, gated=True, track=task_track)
     for n in range(1, tickets + 1):
         write_ticket(wt, n)
     approve_plan(c, wt)
@@ -99,7 +99,7 @@ def unpinned(c):
 def wake(c, cfg=None, **kw):
     """The operator wakes the task; one pass (of `cfg`, when the config
     changed since)."""
-    save(c.state_dir, replace(saved(c), park=PARK_WAKE, **kw))
+    save(c.state_dir, replace(saved(c), status=waking(), **kw))
     sess = FakeSessions()
     main.run_pass(cfg or c, deps(sess=sess))
     return sess

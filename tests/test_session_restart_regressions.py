@@ -7,10 +7,11 @@ import pytest
 
 import dispatcher.main as main
 from dispatcher import messages
-from dispatcher.state import Stage, load, save
+from dispatcher.state import (Stage, load, save)
 from tests.test_session_restart_acceptance import (
     KINDS, MODELS, RECORDS, RecordingSessions, _arrange, _assert_delivered, _pass,
 )
+from dispatcher.status import Kind
 
 
 class LaunchBoundarySessions(RecordingSessions):
@@ -69,7 +70,7 @@ def test_deeply_nested_record_restarts_review_without_losing_messages(
     launch, after = _pass(c, d, before)
 
     assert after.stage is Stage.REVIEW
-    assert after.park == ""
+    assert after.status.kind is Kind.RUNNING
     assert d.github.created_issues == []
     _assert_pending_at_launch(sessions, before, queued)
     _assert_delivered(c, before, queued, launch["prompt"])
@@ -119,7 +120,7 @@ def test_rejected_fresh_restart_keeps_queued_messages_pending(
     main.run_pass(c, d)
 
     assert sessions.launches == []
-    assert load(c.state_dir, before.repository, before.issue).stage is Stage.FAILED
+    assert load(c.state_dir, before.repository, before.issue).status.kind is Kind.FAILED
     assert messages.undelivered(c.state_dir, before.repository, before.issue) == list(queued), (
         "A failed fresh launch must leave queued messages pending")
     _assert_pending_at_launch(sessions, before, queued)

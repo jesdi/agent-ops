@@ -1,8 +1,7 @@
 """The task lifecycle (ADR 0014, specs/2026-11-10-task-lifecycle-state-machine).
 
 A task is at a `stage` (pipeline position) with a `status` (what it does
-there). Until the status is stored, `legacy_view` reads it from today's park
-fields; the migration command applies the same function to every task file.
+there, dispatcher.status); `decide` is the one table over the two.
 """
 from __future__ import annotations
 
@@ -13,83 +12,11 @@ from typing import Callable, NamedTuple
 from dispatcher.artifacts import REVIEW_PAGE, CheckResult, PlanRevision
 from dispatcher.loops import Decision, Retry
 from dispatcher.loops import Outcome as Rounds
-from dispatcher.models import IMPLEMENT_PICK
-from dispatcher.state import (PARK_CI, PARK_HUMAN, PARK_LOGIN, PARK_REVIEW,
-                              PARK_WAKE, RESPAWNABLE_STAGES, WHY_ACCESS, WHY_BAD_SIGNAL,
-                              WHY_CONFIG, WHY_DECISION, WHY_LOOP_CAP, WHY_OPERATOR,
-                              WHY_STALLED, AnswersRequest,
-                              OperatorRequest, PlanApprovalRequest, Stage, StageSignal,
-                              TaskState, end, gate_stage, implement_done, park, unpark)
+from dispatcher.state import Stage, StageSignal, TaskState, operator_request
+from dispatcher.status import Cause, FailReason, HumanReason, Kind, Status, occupies
 
-
-class Kind(str, Enum):
-    """The 13 leaf status kinds the table is total over."""
-    RUNNING = "running"
-    HELD_PLAN_APPROVAL = "held-plan-approval"
-    HELD_LOGIN = "held-login"
-    PARKED_HUMAN = "parked-human"
-    PARKED_ANSWERS = "parked-answers"
-    PARKED_ACCESS = "parked-access"
-    PARKED_CI = "parked-ci"
-    PARKED_REVIEW = "parked-review"
-    PARKED_PR = "parked-pr"
-    WAKING = "waking"
-    FAILED = "failed"
-    CANCELED = "canceled"
-    DONE = "done"
-
-
-class HumanReason(str, Enum):
-    """Why a task is parked for the operator (requirement 1)."""
-    DECISION = "decision"
-    STALLED = "stalled"
-    LOOP_CAP = "loop-cap"
-    BAD_SIGNAL = "bad-signal"
-    CONFIG = "config"
-    OPERATOR = "operator"
-
-
-class FailReason(str, Enum):
-    """Why a task failed (requirement 10 guards on it)."""
-    SESSION_CRASH = "session-crash"
-    TASK_CRASH = "task-crash"
-    KILLED = "killed"
-    PR_CLOSED = "pr-closed"
-    ARTIFACT = "artifact"
-    UNKNOWN = "unknown"
-
-
-class Cause(str, Enum):
-    """Why a task wakes (requirement 11); attention(kind) is one value per
-    kind of PR attention."""
-    REPLY = "reply"
-    RESUME = "resume"
-    RANKED = "ranked"
-    CI = "ci"
-    ACCESS = "access"
-    LAUNCH = "launch"
-    NEXT_STAGE = "next-stage"
-    ATTENTION_FEEDBACK = "attention(feedback)"
-    ATTENTION_CHECK_FAILED = "attention(check-failed)"
-    ATTENTION_CONFLICT = "attention(conflict)"
-    ATTENTION_OPERATOR = "attention(operator)"
-
-
-@dataclass(frozen=True)
-class Status:
-    """A status kind and its detail; a field a kind does not use stays empty.
-    `reason`: a HumanReason of parked-human, a FailReason of failed. `path`,
-    `fingerprint`: the page of held-plan-approval, parked-review and
-    parked-answers. `origin`, `cause`: the status a waking task comes from
-    (None for launch and next-stage) and why it wakes."""
-    kind: Kind
-    reason: HumanReason | FailReason | None = None
-    note: str = ""
-    path: str = ""
-    fingerprint: str = ""
-    run_id: int = 0
-    origin: Status | None = None
-    cause: Cause | None = None
+__all__ = ["Cause", "FailReason", "HumanReason", "Kind", "Status", "occupies",
+           "operator_request"]
 
 
 class At(NamedTuple):
@@ -99,246 +26,8 @@ class At(NamedTuple):
 
 
 def _at(task: TaskState | At) -> At:
-    """`task` as (stage, status), never its raw stage beside its status."""
-    return task if isinstance(task, At) else task.at
-
-
-_OCCUPYING = frozenset({Kind.RUNNING, Kind.HELD_PLAN_APPROVAL, Kind.HELD_LOGIN})
-
-
-def occupies(status: Status) -> bool:
-    """Does a task in `status` hold a slot and a capacity unit?"""
-    return status.kind in _OCCUPYING
-
-
-def operator_request(task: TaskState | At) -> OperatorRequest | None:
-    """What the operator is asked for, derived from the status."""
-    return _request(_at(task).status)
-
-
-def _request(status: Status) -> OperatorRequest | None:
-    if status.kind is Kind.WAKING:
-        return _request(status.origin) if status.origin else None
-    if status.kind in (Kind.HELD_PLAN_APPROVAL, Kind.PARKED_REVIEW):
-        return PlanApprovalRequest(path=status.path, fingerprint=status.fingerprint)
-    if status.kind is Kind.PARKED_ANSWERS:
-        return AnswersRequest(path=status.path, fingerprint=status.fingerprint)
-    return None
-
-
-_RETIRED_STAGES = {Stage.BLOCKED: Stage.IMPLEMENT, Stage.STALLED_ON_BUDGET: Stage.SPEC}
-_ENDED = {Stage.FAILED: Kind.FAILED, Stage.DONE: Kind.DONE, Stage.CANCELED: Kind.CANCELED}
-# today's park_reason spellings
-_HUMAN_REASONS = {WHY_DECISION: HumanReason.DECISION, WHY_STALLED: HumanReason.STALLED,
-                  WHY_LOOP_CAP: HumanReason.LOOP_CAP, WHY_BAD_SIGNAL: HumanReason.BAD_SIGNAL,
-                  WHY_CONFIG: HumanReason.CONFIG, WHY_OPERATOR: HumanReason.OPERATOR,
-                  "": HumanReason.OPERATOR}
-_REQUEST_PARKS = {"answers": Kind.PARKED_ANSWERS, "plan-approval": Kind.PARKED_REVIEW}
-
-
-def legacy_view(t: TaskState) -> At:
-    """(stage, status) of a task stored with today's park fields: the table of
-    the scenario "migration command rewrites each legacy shape". Raises
-    ValueError on a shape that table does not classify."""
-    if t.stage in _ENDED:
-        return At(*_ended(t))
-    if t.stage in _RETIRED_STAGES:
-        return At(*_retired(t))
-    stage = Stage.PLAN if t.stage is Stage.AWAITING_PLAN_REVIEW else t.stage
-    if t.park == PARK_WAKE:
-        return At(stage, _woken(t))
-    if t.park:
-        return At(stage, _parked(t))
-    return At(*_live(t))
-
-
-def _ended(t: TaskState) -> tuple[Stage, Status]:
-    """A failed, canceled or done task, whatever park it still carries. A
-    remembered stage reads as a session crash, a task crash (launch-failed,
-    task-crashed) included: no legacy field holds the reason, and no new
-    one is added for it; ticket 06 stores the status, reason and all."""
-    if t.stage is Stage.FAILED and t.crashed_stage:
-        return Stage(t.crashed_stage), Status(Kind.FAILED, reason=FailReason.SESSION_CRASH)
-    kind = _ENDED[t.stage]
-    stage = Stage.PR_OPEN if t.pr_number else Stage.QUEUED
-    return stage, Status(kind, reason=FailReason.UNKNOWN if kind is Kind.FAILED else None)
-
-
-def _retired(t: TaskState) -> tuple[Stage, Status]:
-    stage = Stage.PR_OPEN if t.pr_number else _RETIRED_STAGES[t.stage]
-    note = f"migrated from legacy {t.stage.value} stage"
-    return stage, Status(Kind.PARKED_HUMAN, reason=HumanReason.OPERATOR, note=note)
-
-
-def _woken(t: TaskState) -> Status:
-    """A queued wake keeps what it would be still parked: its origin."""
-    if t.crashed_stage:
-        return Status(Kind.WAKING, origin=Status(Kind.FAILED, reason=FailReason.SESSION_CRASH),
-                      cause=Cause.RESUME)
-    origin = _parked(t)
-    cause = Cause.ACCESS if origin.kind is Kind.PARKED_ACCESS else Cause.REPLY
-    return Status(Kind.WAKING, origin=origin, cause=cause)
-
-
-def _parked(t: TaskState) -> Status:
-    if t.park == PARK_LOGIN:
-        return Status(Kind.HELD_LOGIN, note=t.park_note)
-    if t.park == PARK_CI:
-        return _parked_ci(t)
-    if t.operator_request is not None:
-        return Status(_REQUEST_PARKS[t.operator_request.kind], note=t.park_note,
-                      path=t.operator_request.path,
-                      fingerprint=t.operator_request.fingerprint)
-    if t.park_reason == WHY_ACCESS:
-        return Status(Kind.PARKED_ACCESS, note=t.park_note)
-    return _parked_human(t)
-
-
-def _parked_ci(t: TaskState) -> Status:
-    if t.ci_run_id <= 0:
-        raise ValueError(f"task {t.repository}#{t.issue}: awaiting-ci with no run id")
-    return Status(Kind.PARKED_CI, run_id=t.ci_run_id)
-
-
-def _parked_human(t: TaskState) -> Status:
-    if t.park not in (PARK_HUMAN, PARK_WAKE) or t.park_reason not in _HUMAN_REASONS:
-        raise ValueError(f"task {t.repository}#{t.issue}: unclassified park "
-                         f"{t.park!r} reason {t.park_reason!r}")
-    return Status(Kind.PARKED_HUMAN, reason=_HUMAN_REASONS[t.park_reason],
-                  note=t.park_note)
-
-
-def _live(t: TaskState) -> tuple[Stage, Status]:
-    """A task with no park field set."""
-    if t.unlaunched:
-        return Stage.QUEUED, Status(Kind.WAKING, cause=Cause.LAUNCH)
-    if t.stage is Stage.IMPLEMENT and implement_done(t):
-        return Stage.REVIEW, Status(Kind.WAKING, cause=Cause.NEXT_STAGE)
-    if t.stage is Stage.PR_OPEN:
-        return Stage.PR_OPEN, _at_pr(t)
-    if t.stage is Stage.AWAITING_PLAN_REVIEW:
-        return Stage.PLAN, _at_gate(t)
-    return t.stage, Status(Kind.RUNNING)
-
-
-def _at_pr(t: TaskState) -> Status:
-    if t.feedback_pending:
-        return Status(Kind.WAKING, origin=Status(Kind.PARKED_PR),
-                      cause=Cause(f"attention({t.attention or 'feedback'})"))
-    return Status(Kind.PARKED_PR)
-
-
-def _at_gate(t: TaskState) -> Status:
-    """A live plan session at the review gate, held on its request; one that
-    reworks the plan (its request disarmed) or was respawned runs."""
-    if t.operator_request is None:
-        return Status(Kind.RUNNING)
-    if t.operator_request.kind != "plan-approval":
-        raise ValueError(f"task {t.repository}#{t.issue}: at the plan gate with "
-                         f"an {t.operator_request.kind} request")
-    return Status(Kind.HELD_PLAN_APPROVAL, path=t.operator_request.path,
-                  fingerprint=t.operator_request.fingerprint)
-
-
-# The park_reason spelling of each HumanReason, the inverse of _HUMAN_REASONS.
-_WHY = {HumanReason.DECISION: WHY_DECISION, HumanReason.STALLED: WHY_STALLED,
-        HumanReason.LOOP_CAP: WHY_LOOP_CAP, HumanReason.BAD_SIGNAL: WHY_BAD_SIGNAL,
-        HumanReason.CONFIG: WHY_CONFIG, HumanReason.OPERATOR: WHY_OPERATOR}
-
-
-def legacy_fields(t: TaskState, stage: Stage, status: Status) -> TaskState:
-    """`t` with (stage, status) written to today's park fields through the
-    doors: the inverse of legacy_view for what the session events enter.
-    Expand phase only (design "The move"); storing the status replaces it."""
-    t = _ENCODE[status.kind](_without_implement_pick(t, stage), stage, status)
-    return _off_the_gate(t)
-
-
-def _off_the_gate(t: TaskState) -> TaskState:
-    """A task that left the gate keeps no plan approval: one is proof only
-    for the gate session's `done`."""
-    return t if t.stage is Stage.AWAITING_PLAN_REVIEW else replace(t, plan_approval="")
-
-
-def _without_implement_pick(t: TaskState, stage: Stage) -> TaskState:
-    """Implement is done once its pick is gone (state.implement_done)."""
-    if t.stage is not Stage.IMPLEMENT or stage is not Stage.REVIEW:
-        return t
-    return replace(t, picks={k: v for k, v in t.picks.items() if k != IMPLEMENT_PICK})
-
-
-def _at_stage(t: TaskState, stage: Stage) -> TaskState:
-    return replace(t, stage=gate_stage(t, stage))
-
-
-def _encode_running(t: TaskState, stage: Stage, status: Status) -> TaskState:
-    return unpark(_at_stage(t, stage))
-
-
-def _encode_held(t: TaskState, stage: Stage, status: Status) -> TaskState:
-    request = PlanApprovalRequest(status.path, fingerprint=status.fingerprint)
-    return replace(unpark(t, request=request), stage=Stage.AWAITING_PLAN_REVIEW,
-                   plan_approval="")
-
-
-def _encode_login(t: TaskState, stage: Stage, status: Status) -> TaskState:
-    return park(_at_stage(t, stage), PARK_LOGIN, note=status.note)
-
-
-def _encode_human(t: TaskState, stage: Stage, status: Status) -> TaskState:
-    return park(_at_stage(t, stage), PARK_HUMAN, note=status.note, reason=_WHY[status.reason])
-
-
-def _encode_answers(t: TaskState, stage: Stage, status: Status) -> TaskState:
-    request = AnswersRequest(status.path, fingerprint=status.fingerprint)
-    return park(_at_stage(t, stage), PARK_HUMAN, note=status.note, reason=WHY_DECISION,
-                request=request)
-
-
-def _encode_review(t: TaskState, stage: Stage, status: Status) -> TaskState:
-    request = PlanApprovalRequest(status.path, fingerprint=status.fingerprint)
-    return replace(park(t, PARK_REVIEW, note=status.note, request=request),
-                   stage=Stage.AWAITING_PLAN_REVIEW, plan_approval="")
-
-
-def _encode_ci(t: TaskState, stage: Stage, status: Status) -> TaskState:
-    return park(_at_stage(t, stage), PARK_CI, ci_run_id=status.run_id)
-
-
-def _encode_pr(t: TaskState, stage: Stage, status: Status) -> TaskState:
-    return replace(unpark(t), stage=Stage.PR_OPEN)
-
-
-def _encode_waking(t: TaskState, stage: Stage, status: Status) -> TaskState:
-    """Only the wait for the review launch is entered by a session event."""
-    if status.cause is not Cause.NEXT_STAGE:
-        raise ValueError(f"no legacy shape for waking({status.cause})")
-    return replace(unpark(t), stage=Stage.IMPLEMENT)
-
-
-def _encode_failed(t: TaskState, stage: Stage, status: Status) -> TaskState:
-    """A crash remembers the stage Resume respawns; any other failure is not
-    resumable in the legacy shape. Session and task crashes store alike
-    (_ended) until ticket 06 stores the status."""
-    launched = Stage.ADDRESS_REVIEW if stage is Stage.PR_OPEN else stage
-    crashed = status.reason in (FailReason.SESSION_CRASH, FailReason.TASK_CRASH)
-    return end(t, Stage.FAILED,
-               crashed_stage=launched.value if crashed and launched in RESPAWNABLE_STAGES
-               else "")
-
-
-def _no_encoding(t: TaskState, stage: Stage, status: Status) -> TaskState:
-    raise ValueError(f"no session event enters {status.kind.value}")
-
-
-_ENCODE = {Kind.RUNNING: _encode_running, Kind.HELD_PLAN_APPROVAL: _encode_held,
-           Kind.HELD_LOGIN: _encode_login, Kind.PARKED_HUMAN: _encode_human,
-           Kind.PARKED_ANSWERS: _encode_answers, Kind.PARKED_ACCESS: _no_encoding,
-           Kind.PARKED_CI: _encode_ci, Kind.PARKED_REVIEW: _encode_review,
-           Kind.PARKED_PR: _encode_pr, Kind.WAKING: _encode_waking,
-           Kind.FAILED: _encode_failed, Kind.CANCELED: _no_encoding,
-           Kind.DONE: _no_encoding}
-
+    """`task` as (stage, status)."""
+    return task if isinstance(task, At) else At(task.stage, task.status)
 
 
 # ---- Events ---------------------------------------------------------------
@@ -1018,11 +707,10 @@ def _approved(f: Facts) -> Transition | Ignore:
 
 
 def _plan_done(f: Facts) -> Transition | Ignore:
-    """Only the gate session's `done` on the plan revision the operator
-    approved is the approval; any other is bounced, `gated` or not: a
-    respawn cannot change the status family."""
-    gate = _report(f).gate
-    if gate.at and gate.approved:
+    """Only a `done` on the plan revision the operator approved (the
+    dispatcher's record of the drained approve, never a worktree file) is
+    the approval; any other is bounced, wherever the session runs."""
+    if _report(f).gate.approved:
         return _approved(f)
     return _bounce(f, Retry.PLAN_SIGNAL, PLAN_NO_APPROVAL)
 
