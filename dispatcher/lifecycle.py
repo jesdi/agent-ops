@@ -182,8 +182,7 @@ class LoginCode:
 @dataclass(frozen=True)
 class Attempt:
     """ci-finished, pr-check-failed, pr-conflict."""
-    exhausted: bool           # no ci round left
-    note: str = ""            # exhausted: why it parks
+    round: Decision | None    # the round a failure spends; None: a success spends none
 
 
 Detail = (Report | Silence | Wait | Death | Stranded | LaunchFailure | Woken | Ranked
@@ -473,7 +472,12 @@ def respawns(f: Facts) -> bool:
 
 
 def loop_exhausted(f: Facts) -> bool:
-    return f.event.detail.exhausted
+    d = f.event.detail.round
+    return d is not None and d.outcome is Rounds.EXHAUSTED
+
+
+def counted(f: Facts) -> bool:
+    return f.event.detail.round is not None
 
 
 def left_login_prompt(f: Facts) -> bool:
@@ -481,11 +485,16 @@ def left_login_prompt(f: Facts) -> bool:
 
 
 def _capped(f: Facts) -> Status:
-    return Status(Kind.PARKED_HUMAN, reason=HumanReason.LOOP_CAP, note=f.event.detail.note)
+    return Status(Kind.PARKED_HUMAN, reason=HumanReason.LOOP_CAP,
+                  note=f.event.detail.round.cap_note)
 
 
 def _ask_capped(f: Facts) -> Notify:
-    return Notify("parked_question", f.event.detail.note)
+    return Notify("parked_question", f.event.detail.round.cap_note)
+
+
+def _round(f: Facts) -> ApplyRound:
+    return ApplyRound(f.event.detail.round)
 
 
 def _wake(cause: Cause) -> Callable[[Facts], Status]:
@@ -1095,9 +1104,11 @@ TABLE: tuple[Row, ...] = _complete([
     *[Row(k, E.FLUSH_DUE, k, build=_stay, actions=(Flush(),)) for k in _ENDS],
     *_rest([E.FLUSH_DUE], Ignore("not finished")),
 
-    # ci-finished: a failed run spent a ci round (loops) before the event.
+    # ci-finished: a failed run spends a round (loops) the row counts.
     Row(K.PARKED_CI, E.CI_FINISHED, K.PARKED_HUMAN, guard=loop_exhausted,
-        build=_capped, derive=(_ask_capped,)),
+        build=_capped, derive=(_round, _ask_capped)),
+    Row(K.PARKED_CI, E.CI_FINISHED, K.WAKING, guard=counted, build=_wake(Cause.CI),
+        derive=(_round,)),
     Row(K.PARKED_CI, E.CI_FINISHED, K.WAKING, build=_wake(Cause.CI)),
     *_rest([E.CI_FINISHED], Ignore("not waiting for CI")),
 
@@ -1189,7 +1200,7 @@ _PLAIN = {EventType.RESUME_ADMITTED: Woken(blocked=""),
           EventType.CANDIDATE_RANKED: Ranked(this_pass=False),
           EventType.OP_RESUME: ResumeChoice(model="", bypass_usage=False),
           EventType.OP_LOGIN_CODE: LoginCode(code="", left_login_prompt=False),
-          **{e: Attempt(exhausted=False) for e in (EventType.CI_FINISHED,
+          **{e: Attempt(round=None) for e in (EventType.CI_FINISHED,
                                                    EventType.PR_CHECK_FAILED,
                                                    EventType.PR_CONFLICT)}}
 

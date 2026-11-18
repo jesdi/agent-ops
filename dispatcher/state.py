@@ -276,6 +276,9 @@ class StageSignal:
 # The "waiting for a free slot" marker, wake-blocked-<repository>-<issue> in
 # state_dir. Written by dispatcher.main, read by web.sources.
 WAKE_BLOCKED_PREFIX = "wake-blocked-"
+# rank-rejected-<repository>-<issue>: the done task's updated_at the table
+# last refused `candidate-ranked` for (dispatcher.main._rank_rejected).
+RANK_REJECTED_PREFIX = "rank-rejected-"
 
 
 def task_key(repository: str, issue: int) -> str:

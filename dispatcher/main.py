@@ -63,7 +63,7 @@ from dispatcher.models import (Admitted, Entry, ModelPolicy,
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.runtimes import runtime_for
 from dispatcher.sessions import Sessions
-from dispatcher.state import (NO_POKES, NO_SLOT, WAKE_BLOCKED_PREFIX,
+from dispatcher.state import (NO_POKES, NO_SLOT, RANK_REJECTED_PREFIX, WAKE_BLOCKED_PREFIX,
                               Stage, StageSignal, TaskState, allocate_slot,
                               clear_session, clear_turn_markers, delete, has_waiting,
                               launch_entries, load,
@@ -1153,24 +1153,21 @@ def _check_ci_run(cfg: Config, deps: Deps, repository: Repository,
                   task: TaskState) -> None:
     """Once its run concluded, a CI-parked task hears the conclusion and the
     table decides: wake it, or park it for the operator when a failed run
-    spent the last round (counted here, before the event)."""
+    spends the last round (the row counts it)."""
     conclusion = _ci_conclusion(deps, repository, task)
     if not conclusion:
         return
     run_id = task.status.run_id
-    attempt = Attempt(exhausted=False)
+    dec = None
     if conclusion != "success":
         dec = loops.evaluate(task, loops.FailedRun(f"run {run_id} {conclusion}"),
                              cfg.loop_caps)
-        task, exhausted = _apply_loop_decision(
-            cfg, deps, repository, task, dec, park_exhausted=lambda t, note: None)
-        attempt = Attempt(exhausted, dec.cap_note)
-    if not attempt.exhausted:
+    turn = _Turn(cfg, deps, repository, admit=None, order=None, dry_run=False)
+    outcome = _apply(turn, task, Event(EventType.CI_FINISHED, Attempt(dec)))
+    if isinstance(outcome, Transition) and outcome.status.kind is Kind.WAKING:
         _queue_message(cfg, task.repository, task.issue,
                        f"E2E run {run_id} concluded: {conclusion} — "
                        f"fetch logs with: gh run view {run_id} --log-failed", "dispatcher")
-    turn = _Turn(cfg, deps, repository, admit=None, order=None, dry_run=False)
-    _apply(turn, task, Event(EventType.CI_FINISHED, attempt))
 
 
 def _poll_pr(cfg: Config, deps: Deps, repository: Repository, task: TaskState
@@ -1658,7 +1655,7 @@ class _Turn:
     what an action leaves for after the commit."""
     cfg: Config
     deps: Deps
-    repository: Repository
+    repository: Repository | None       # None: the task's repository left the config
     admit: Admit | None
     order: Order | None
     dry_run: bool
@@ -2307,6 +2304,7 @@ def _flushed(turn: _Turn, task: TaskState, act: Flush) -> TaskState:
 
     def retire(saved: TaskState) -> None:
         _clear_wake_blocked(turn.cfg, saved.repository, saved.issue)
+        _rank_rejected_path(turn.cfg, saved.repository, saved.issue).unlink(missing_ok=True)
         clear_session(turn.cfg.state_dir, saved.repository, saved.issue)
         delete(turn.cfg.state_dir, saved.repository, saved.issue)
         eventlog.append_event(turn.cfg.state_dir, "flushed", repository=saved.repository,
@@ -2708,10 +2706,32 @@ def _ranked_again(cfg: Config, deps: Deps, by_issue: dict, repository: Repositor
     task = by_issue.get((repository.name, cand.number))
     if task is None:
         return True
+    if _rank_rejected(cfg, task):
+        return False
     this_pass = bool(pass_started) and task.updated_at >= pass_started
     turn = _Turn(cfg, deps, repository, admit=None, order=None, dry_run=False)
     outcome = _apply(turn, task, Event(EventType.CANDIDATE_RANKED, Ranked(this_pass)))
-    return isinstance(outcome, Transition) and SweepTombstone() in outcome.actions
+    if isinstance(outcome, Reject):
+        _rank_rejected_path(cfg, task.repository, task.issue).write_text(task.updated_at)
+    return _swept(outcome)
+
+
+def _swept(outcome: Transition | Ignore | Reject) -> bool:
+    return isinstance(outcome, Transition) and any(
+        isinstance(a, SweepTombstone) for a in outcome.actions)
+
+
+def _rank_rejected_path(cfg: Config, repository: str, issue: int) -> Path:
+    return Path(cfg.state_dir) / f"{RANK_REJECTED_PREFIX}{task_key(repository, issue)}"
+
+
+def _rank_rejected(cfg: Config, task: TaskState) -> bool:
+    """Edge-triggered like _mark_wake_blocked: the table already refused this
+    very task state on `candidate-ranked` (the marker holds its updated_at),
+    so a card left in Ready is not refused, and logged, every pass. Any
+    change to the task reopens the question."""
+    p = _rank_rejected_path(cfg, task.repository, task.issue)
+    return p.exists() and p.read_text() == task.updated_at
 
 
 def _claimable(cfg: Config, deps: Deps, members: list[Repository], tasks: list[TaskState],

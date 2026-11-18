@@ -3014,6 +3014,22 @@ def test_done_task_ranked_again_is_rejected(tmp_path, monkeypatch):
     assert rejected and rejected[0]["transition"]["event"] == "candidate-ranked"
 
 
+def test_done_task_ranked_every_pass_is_rejected_once(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.PR_OPEN, status=DONE, slot=NO_SLOT,
+              updated_at=_ago(minutes=1))
+    gh = FakeGitHub([Candidate(42, "Merged but Ready", "u42")])
+    main.run_pass(c, deps(gh, FakeSessions()))
+    main.run_pass(c, deps(gh, FakeSessions()))
+    assert len(_events(c, "transition-rejected")) == 1
+    t = load(c.state_dir, "portfolio_eval", 42)
+    save(c.state_dir, dc_replace(t, updated_at=_ago(seconds=1)))  # the task changed
+    main.run_pass(c, deps(gh, FakeSessions()))
+    assert len(_events(c, "transition-rejected")) == 2
+
+
 def test_cancel_intent_without_task_file_uses_intent_repository(tmp_path, monkeypatch):
     # A backlog card has no task file; the intent itself names the repository
     # so the board/issue side still happens. No tombstone is written.

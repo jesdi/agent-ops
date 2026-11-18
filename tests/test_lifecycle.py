@@ -9,7 +9,7 @@ from unittest import mock
 import pytest
 
 from dispatcher import lifecycle
-from dispatcher.lifecycle import (TABLE, AcquireSlot, At, CancelIssue, Cause,
+from dispatcher.lifecycle import (TABLE, AcquireSlot, ApplyRound, At, CancelIssue, Cause,
                                   FailReason, HumanReason,
                                   ContinueSession, EndSession, Event, EventType,
                                   FinishMerged, Ignore, Kind, Reject,
@@ -23,11 +23,14 @@ from dispatcher.classify import Look
 from dispatcher.lifecycle import (Admission, Attempt, Death, Gate, LaunchFailure, LoginCode, Notify, Pane,
                                   Ranked, Report, ResumeChoice, Silence, Stranded, Wait,
                                   Woken)
+from dispatcher.loops import Decision, Loop, Outcome as Rounds
 from dispatcher.state import (AnswersRequest, PlanApprovalRequest, Stage, StageSignal,
                               TaskState)
 
 ANSWERS = AnswersRequest(path="q.html", fingerprint="ab12")
 PLAN = PlanApprovalRequest(path="review.html", fingerprint="cd34")
+SPENT = Decision(Rounds.WITHIN_LIMIT, Loop.E2E, 2, 3, "run 991 failure")
+CAPPED = Decision(Rounds.EXHAUSTED, Loop.E2E, 4, 3, "run 991 failure")
 
 
 def task(stage=Stage.IMPLEMENT, **kw) -> TaskState:
@@ -137,7 +140,7 @@ DETAILS = {
     E.CANDIDATE_RANKED: [Ranked(False), Ranked(True)],
     E.OP_RESUME: [ResumeChoice("", False), ResumeChoice("anthropic/claude-opus-5", True)],
     E.OP_LOGIN_CODE: [LoginCode("ABCD-1234", False), LoginCode("ABCD-1234", True)],
-    **{e: [Attempt(False), Attempt(True)]
+    **{e: [Attempt(None), Attempt(SPENT), Attempt(CAPPED)]
        for e in (E.CI_FINISHED, E.PR_CHECK_FAILED, E.PR_CONFLICT)},
 }
 
@@ -300,10 +303,10 @@ def test_pr_feedback_wakes_an_address_review_round():
 
 
 def test_an_exhausted_ci_loop_parks_for_the_operator_where_only_merge_and_close_act():
-    got = decide(At(S.PR_OPEN, PR), Event(E.PR_CHECK_FAILED, Attempt(True)))
+    got = decide(At(S.PR_OPEN, PR), Event(E.PR_CHECK_FAILED, Attempt(CAPPED)))
     assert got.status.kind is Kind.PARKED_HUMAN and got.status.reason is HumanReason.LOOP_CAP
     at = At(S.PR_OPEN, got.status)
-    assert isinstance(decide(at, Event(E.PR_CONFLICT, Attempt(False))), Ignore)
+    assert isinstance(decide(at, Event(E.PR_CONFLICT, Attempt(None))), Ignore)
     assert decide(at, Event(E.PR_MERGED)).status == Status(Kind.DONE)
 
 
@@ -326,9 +329,19 @@ def test_a_merged_pr_finishes_the_task():
     assert got.status == Status(Kind.DONE) and FinishMerged() in got.actions
 
 
+def test_a_failed_ci_run_counts_its_round_in_the_table():
+    at = At(S.IMPLEMENT, Status(Kind.PARKED_CI, run_id=991))
+    got = decide(at, Event(E.CI_FINISHED, Attempt(SPENT)))
+    assert got.status.cause is Cause.CI and got.actions == (ApplyRound(SPENT),)
+    got = decide(at, Event(E.CI_FINISHED, Attempt(CAPPED)))
+    assert got.status == Status(Kind.PARKED_HUMAN, reason=HumanReason.LOOP_CAP,
+                                note=CAPPED.cap_note)
+    assert got.actions == (ApplyRound(CAPPED), Notify("parked_question", CAPPED.cap_note))
+
+
 def test_ci_and_access_wake_their_parks():
     assert decide(At(S.IMPLEMENT, Status(Kind.PARKED_CI, run_id=991)),
-                  Event(E.CI_FINISHED, Attempt(False))).status.cause is Cause.CI
+                  Event(E.CI_FINISHED, Attempt(None))).status.cause is Cause.CI
     assert decide(At(S.QUEUED, Status(Kind.PARKED_ACCESS)), Event(E.ACCESS_REACHED)
                   ).status == waking(Status(Kind.PARKED_ACCESS), "access")
 
@@ -430,7 +443,7 @@ def test_a_row_that_decides_nothing_refuses_what_it_would_drop(outcome, dropped)
 
 @pytest.mark.parametrize("event, detail", [
     (E.OP_REPLY, LoginCode("ABCD-1234", False)), (E.OP_KILL, ResumeChoice("m", False)),
-    (E.PR_FEEDBACK, Attempt(True)), (E.OP_RESUME, Ranked(True)),
+    (E.PR_FEEDBACK, Attempt(CAPPED)), (E.OP_RESUME, Ranked(True)),
     (E.SESSION_SIGNAL, Silence(round=None, note="", pane=None, login="")),
 ])
 def test_an_event_refuses_facts_its_type_does_not_carry(event, detail):
