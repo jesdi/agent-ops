@@ -45,6 +45,7 @@ from dispatcher.artifacts import (REVIEW_PAGE, TICKETS_DIR, check_spec, check_ti
 from dispatcher.classify import (BackgroundView, Look, Observation, Reads, artifact_path,
                                  classify, config_note)
 from dispatcher.lifecycle import (AcquireSlot, Admission, ApplyRound, At, ClearTurnMarkers,
+                                  ContinueSession, SpawnAddressReview,
                                   EndPokeStretch, EndSession, EnterGate, Event, EventType,
                                   LaunchFailure, LinkPR, MarkAsked, Notify,
                                   CancelIssue, Ignore, Pane, Poke, PublishSpec, RecordBackgroundWait,
@@ -1619,7 +1620,7 @@ def _launch_woken(cfg: Config, deps: Deps, repository: Repository,
                   task: TaskState, launch: Launch, gh_config: str) -> str:
     """Launch a woken task. Returns why a new conversation replaced the
     recorded one, else ""."""
-    entry, message = launch.entry, _resume_text(task)
+    message = _resume_text(task)
     _heal_exclude(repository, task)
     # The two fresh-spawn paths below write stage.json and the models.log
     # line themselves (_spawn_stage), with the stage that is launched.
@@ -1633,17 +1634,35 @@ def _launch_woken(cfg: Config, deps: Deps, repository: Repository,
                      gh_config=gh_config)
         return ""
     if task.stage is Stage.PR_OPEN:
-        # No session to continue at pr-open: an operator wake on a parked
-        # pr-open task is a fresh address-review round carrying their message.
-        task = loops.reset(task, ResetCause.PR_CYCLE_STARTED)
-        task = replace(unpark(task), attention="operator", feedback_cursor=_cursor_now(),
-                       resume_model_override="", resume_bypass_usage=False, resume_text="")
-        _clear_wake_blocked(cfg, task.repository, task.issue)
-        _spawn_stage(cfg, deps, repository, task, launch, message=message, gh_config=gh_config)
-        eventlog.append_event(cfg.state_dir, "resumed", repository=repository.name,
-                              issue=task.issue, stage=Stage.ADDRESS_REVIEW.value,
-                              model=str(entry))
+        _address_review_round(cfg, deps, repository, task, launch, message, gh_config)
         return ""
+    task, detail = _continue_woken(cfg, deps, repository, task, launch, message, gh_config)
+    save(cfg.state_dir, task)
+    return detail
+
+
+def _address_review_round(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
+                          launch: Launch, message: str, gh_config: str) -> TaskState:
+    """No session to continue at pr-open: an operator wake on a parked
+    pr-open task is a fresh address-review round carrying their message."""
+    task = loops.reset(task, ResetCause.PR_CYCLE_STARTED)
+    task = replace(unpark(task), attention="operator", feedback_cursor=_cursor_now(),
+                   resume_model_override="", resume_bypass_usage=False, resume_text="")
+    _clear_wake_blocked(cfg, task.repository, task.issue)
+    task = _spawn_stage(cfg, deps, repository, task, launch, message=message,
+                        gh_config=gh_config)
+    eventlog.append_event(cfg.state_dir, "resumed", repository=repository.name,
+                          issue=task.issue, stage=Stage.ADDRESS_REVIEW.value,
+                          model=str(launch.entry))
+    return task
+
+
+def _continue_woken(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
+                    launch: Launch, message: str, gh_config: str) -> tuple[TaskState, str]:
+    """Continue a woken task's recorded conversation, else launch its stage
+    afresh: the task as it now runs, unsaved, and why a new conversation
+    replaced the recorded one, else ""."""
+    entry = launch.entry
     # Before resuming: the next pass must not re-read blocked/awaiting-ci
     # and re-park the freshly resumed session.
     _write_working(task.worktree, task.stage, entry)
@@ -1651,14 +1670,12 @@ def _launch_woken(cfg: Config, deps: Deps, repository: Repository,
     task, detail = _continue_or_restart(cfg, deps, repository, task, launch, message,
                                         gh_config=gh_config)
     _clear_wake_blocked(cfg, task.repository, task.issue)
-    save(cfg.state_dir, replace(unpark(task),
-                                resume_model_override="",
-                                resume_bypass_usage=False,
-                                resume_text="",
-                                picks={**task.picks,
-                                      pick_key(task.stage.value): str(entry)},
-                                updated_at=_now()))
-    return detail
+    return replace(unpark(task),
+                   resume_model_override="",
+                   resume_bypass_usage=False,
+                   resume_text="",
+                   picks={**task.picks, pick_key(task.stage.value): str(entry)},
+                   updated_at=_now()), detail
 
 
 RESUME_TEXT = "The operator resumed this task. Continue."
@@ -1903,8 +1920,11 @@ def _admission(turn: _Turn, task: TaskState, stage: Stage,
                      stranded=config_note(why) if why else "")
 
 
-def _launch_action(t: Transition) -> RespawnStage | RetryStage | None:
-    return next((a for a in t.actions if isinstance(a, (RespawnStage, RetryStage))), None)
+_LAUNCH_ACTIONS = (RespawnStage, RetryStage, ContinueSession, SpawnAddressReview)
+
+
+def _launch_action(t: Transition) -> object | None:
+    return next((a for a in t.actions if isinstance(a, _LAUNCH_ACTIONS)), None)
 
 
 def _launches(t: Transition) -> bool:
@@ -2094,6 +2114,36 @@ def _respawned(turn: _Turn, task: TaskState, act: RespawnStage) -> TaskState:
                                                spec_path=spec_path or task.spec_path)) from exc
     turn.launched = True
     turn.after.append(lambda saved: _working_launched(turn, saved, launch))
+    return task
+
+
+def _session_continued(turn: _Turn, task: TaskState, act: ContinueSession) -> TaskState:
+    """An admitted wake continues its stage's recorded conversation. The
+    pane is ended first: the resume command would otherwise be typed INTO
+    a live session's input box."""
+    launch, message = turn.launches[task.stage], _resume_text(task)
+    _end_session(turn.cfg, turn.deps, task.repository, task.issue)
+    try:
+        _heal_exclude(turn.repository, task)
+        task, _ = _continue_woken(turn.cfg, turn.deps, turn.repository, task, launch,
+                                  message, turn.gh_config)
+    except Exception as exc:
+        raise _LaunchFailed(task.stage, task) from exc
+    turn.launched = True
+    return task
+
+
+def _address_review_spawned(turn: _Turn, task: TaskState, act: SpawnAddressReview) -> TaskState:
+    """An admitted wake at pr-open starts an operator address-review round;
+    the implement session may still be alive there, so it is ended first."""
+    launch, message = turn.launches[Stage.ADDRESS_REVIEW], _resume_text(task)
+    _end_session(turn.cfg, turn.deps, task.repository, task.issue)
+    try:
+        task = _address_review_round(turn.cfg, turn.deps, turn.repository, task, launch,
+                                     message, turn.gh_config)
+    except Exception as exc:
+        raise _LaunchFailed(Stage.ADDRESS_REVIEW, task) from exc
+    turn.launched = True
     return task
 
 
@@ -2340,6 +2390,7 @@ def _issue_canceled(turn: _Turn, task: TaskState, act: CancelIssue) -> TaskState
 _ACT: dict[type, Callable[..., TaskState]] = {
     AcquireSlot: _acquire_slot, ReleaseSlot: _release_slot, EndSession: _ended,
     RespawnStage: _respawned, RetryStage: _retried, PublishSpec: _published,
+    ContinueSession: _session_continued, SpawnAddressReview: _address_review_spawned,
     ApplyRound: _counted, Poke: _poked, EndPokeStretch: _stretch_ended,
     RecordBackgroundWait: _wait_recorded, ReportCrash: _crash_reported,
     ReportTaskCrash: _task_crash_reported, MarkAsked: _marked_asked, EnterGate: _gate_entered,

@@ -965,8 +965,7 @@ def test_every_action_a_session_event_emits_has_a_handler():
     other event families wire theirs with their own tickets."""
     import typing
     from dispatcher import lifecycle as lc
-    later = {lc.ContinueSession, lc.SpawnAddressReview,
-             lc.FinishMerged, lc.SweepTombstone, lc.Flush, lc.TypeLoginCode}
+    later = {lc.FinishMerged, lc.SweepTombstone, lc.Flush, lc.TypeLoginCode}
     assert set(typing.get_args(lc.Action)) - later == set(main._ACT)
 
 
@@ -7374,3 +7373,74 @@ def test_a_park_intent_without_a_task_is_skipped(tmp_path):
     main._apply_intents(c, deps())
     assert load(c.state_dir, "portfolio_eval", 42) is None
     assert _events(c, "transition") == [] and _events(c, "transition-rejected") == []
+
+
+def _admitted_turn(c, sess, stage):
+    """A turn whose resume-admitted launch of `stage` the gate admitted."""
+    from dispatcher.models import Entry
+    turn = _turn(c)
+    turn.deps = deps(sess=sess)
+    turn.launches[stage] = main.Launch(stage, Entry("anthropic", "claude-opus-5"))
+    return turn
+
+
+def _resume_admitted(turn, c):
+    from dispatcher.lifecycle import Event, EventType, Woken
+    main._apply(turn, load(c.state_dir, "portfolio_eval", 42),
+                Event(EventType.RESUME_ADMITTED, Woken("")))
+    return load(c.state_dir, "portfolio_eval", 42)
+
+
+def _ended_before(sess, method):
+    """`method` of `sess` asserts the pane was ended before it ran."""
+    real = getattr(sess, method)
+
+    def guarded(repository, issue, *a, **kw):
+        assert issue in sess.ended, f"{method} over a live pane"
+        return real(repository, issue, *a, **kw)
+    setattr(sess, method, guarded)
+
+
+def test_resume_admitted_continues_the_parked_session_after_ending_its_pane(tmp_path):
+    c = cfg(tmp_path)
+    make_task(c, status=waking(human(), "resume"), resume_text="yes, Postgres",
+              resume_model_override="m-x", resume_bypass_usage=True)
+    sess = FakeSessions(alive=[42])
+    _ended_before(sess, "resume")
+    t = _resume_admitted(_admitted_turn(c, sess, Stage.IMPLEMENT), c)
+    [(issue, text, model, _)] = sess.resumed
+    assert (issue, model) == (42, "anthropic/claude-opus-5") and "yes, Postgres" in text
+    assert sess.spawned == []
+    assert (t.stage, t.status.kind) == (Stage.IMPLEMENT, Kind.RUNNING)
+    assert (t.resume_text, t.resume_model_override, t.resume_bypass_usage) == ("", "", False)
+    assert t.picks["implement"] == "anthropic/claude-opus-5"
+    [e] = _events(c, "resumed")
+    assert (e["stage"], e["detail"]) == ("implement", "")
+
+
+def test_resume_admitted_on_pr_open_spawns_an_operator_address_review_round(tmp_path):
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.PR_OPEN, status=waking(PR, "resume"), resume_text="rename it",
+              ci_rounds=2, resume_model_override="m-x")
+    sess = FakeSessions(alive=[42])
+    _ended_before(sess, "spawn_stage")
+    t = _resume_admitted(_admitted_turn(c, sess, Stage.ADDRESS_REVIEW), c)
+    [(issue, stage, _model, prompt, _)] = sess.spawned
+    assert (issue, stage) == (42, "address-review") and "rename it" in prompt
+    assert sess.resumed == []
+    assert (t.stage, t.status.kind, t.attention) == (Stage.ADDRESS_REVIEW, Kind.RUNNING, "operator")
+    assert t.feedback_cursor and t.ci_rounds == 0
+    assert (t.resume_text, t.resume_model_override) == ("", "")
+    [e] = _events(c, "resumed")
+    assert e["stage"] == "address-review"
+
+
+def test_resume_admitted_respawn_never_continues_the_transcript(tmp_path):
+    c = cfg(tmp_path)
+    make_task(c, status=waking(failed("session-crash"), "resume"))
+    sess = FakeSessions(alive=[42])
+    _ended_before(sess, "spawn_stage")
+    t = _resume_admitted(_admitted_turn(c, sess, Stage.IMPLEMENT), c)
+    assert sess.resumed == [], "a respawn never passes --continue"
+    assert [(i, s) for i, s, *_ in sess.spawned] == [(42, "implement")]
+    assert (t.stage, t.status.kind) == (Stage.IMPLEMENT, Kind.RUNNING)
