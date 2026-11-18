@@ -48,7 +48,7 @@ from dispatcher.lifecycle import (AcquireSlot, Admission, ApplyRound, At, Attemp
                                   ContinueSession, Feedback, SpawnAddressReview,
                                   EndPokeStretch, EndSession, EnterGate, Event, EventType,
                                   Flush, LaunchFailure, LinkPR, MarkAsked, Notify,
-                                  CancelIssue, Ignore, Pane, Poke, PublishSpec, RecordBackgroundWait,
+                                  CancelIssue, FinishMerged, Ignore, Pane, Poke, PublishSpec, RecordBackgroundWait,
                                   ReleaseCard, ReleaseSlot, Reject, ReportCrash, ReportTaskCrash,
                                   ResetRounds, RespawnStage, RetryStage, SetResumeOverride,
                                   Ranked, Stranded, SweepTombstone, Transition, WakeBlocked,
@@ -1175,12 +1175,16 @@ def _classify_pr(deps: Deps, repository: Repository, task: TaskState
     return res
 
 
+# The stages whose PR is watched: parked on it, or addressing its review.
+_PR_STAGES = (Stage.PR_OPEN, Stage.ADDRESS_REVIEW)
+
+
 def _poll_prs(cfg: Config, deps: Deps, repository: Repository,
               dry_run: bool = False) -> None:
     """Watch every pr-open task's PR independently of CI access and capacity.
     Reaction (address-review spawn) is a wake, gated in _drive_wakes."""
     for task in load_all(cfg.state_dir):
-        if (task.repository != repository.name or task.stage is not Stage.PR_OPEN
+        if (task.repository != repository.name or task.stage not in _PR_STAGES
                 or ended(task.status)):
             continue
         polled = _poll_pr_or_warn(cfg, deps, repository, task)
@@ -1200,12 +1204,22 @@ def _poll_pr_or_warn(cfg: Config, deps: Deps, repository: Repository, task: Task
 
 def _react_to_pr(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
                  res: "pr_poll.PollResult", dry_run: bool) -> None:
-    if res.kind == "merged":
-        _finish_merged_or_warn(cfg, deps, repository, task, dry_run)
-    elif res.kind == "closed":
-        _fail_closed_pr(cfg, deps, repository, task)
-    else:
+    """A merge or a close ends the task through the table; a merge whose
+    teardown raises commits nothing and is retried next pass (a merged PR
+    still reads merged)."""
+    if res.kind not in _PR_ENDS:
         _react_to_open_pr(cfg, deps, repository, task, res)
+        return
+    turn = _Turn(cfg, deps, repository, admit=None, order=None, dry_run=dry_run)
+    try:
+        _apply(turn, task, Event(_PR_ENDS[res.kind]))
+    except (subprocess.CalledProcessError,
+            subprocess.TimeoutExpired, OSError, host_auth.HostWait) as exc:
+        print(f"[warn] PR {res.kind} not settled for #{task.issue}: {exc}",
+              file=sys.stderr)
+
+
+_PR_ENDS = {"merged": EventType.PR_MERGED, "closed": EventType.PR_CLOSED}
 
 
 # A PR event and the cursor it advances first, so the same red check or
@@ -1235,63 +1249,6 @@ def _pr_detail(cfg: Config, task: TaskState, res: "pr_poll.PollResult"
         return Feedback(f"PR #{task.pr_number}, newest feedback {res.latest_ts}")
     return Attempt(loops.evaluate(
         task, loops.PRAttention(f"{res.kind} on PR #{task.pr_number}"), cfg.loop_caps))
-
-
-def _finish_merged_or_warn(cfg: Config, deps: Deps, repository: Repository,
-                           task: TaskState, dry_run: bool) -> None:
-    try:
-        _finish_merged(cfg, deps, repository, task, dry_run)
-    except (subprocess.CalledProcessError,
-            subprocess.TimeoutExpired, OSError, host_auth.HostWait) as exc:
-        print(f"[warn] _finish_merged failed for #{task.issue}: {exc}",
-              file=sys.stderr)
-
-
-def _fail_closed_pr(cfg: Config, deps: Deps, repository: Repository,
-                    task: TaskState) -> None:
-    """Fail a pr-open task whose PR closed unmerged and send pr_closed once
-    (an ended task is not polled again). No session runs at pr-open: the
-    pr-open transition ended it. The worktree stays for autopsy."""
-    save(cfg.state_dir, replace(end(task, Status(Kind.FAILED, reason=FailReason.PR_CLOSED)),
-                                updated_at=_now()))
-    eventlog.append_event(cfg.state_dir, "pr-closed",
-                          repository=repository.name, issue=task.issue,
-                          stage=Stage.PR_OPEN.value,
-                          detail=f"PR #{task.pr_number} closed unmerged")
-    _notify(deps, repository, task, "pr_closed",
-            f"PR #{task.pr_number}. Worktree preserved for autopsy.")
-
-
-def _finish_merged(cfg: Config, deps: Deps, repository: Repository,
-                   task: TaskState, dry_run: bool = False) -> None:
-    """Ordered so a mid-sequence gh failure retries next pass (a merged PR
-    still reads merged): board first (the raising step; a board without
-    Done is skipped with a warning), then teardown
-    (best-effort by construction), then the state flip that stops polling.
-    The issue close comes first of all: an issue the operator closed (even as
-    not planned) is left as it is, and a failed close retries before any
-    teardown."""
-    if (not dry_run and deps.github.issue_state(repository.repo, task.issue)
-            == "OPEN"):
-        deps.github.close_issue(repository.repo, task.issue)
-    try:
-        deps.github.set_status(repository, task.issue, "Done")
-    except BoardError as exc:  # no Done on the board: a retry cannot help
-        print(f"[warn] {repository.name}: board not updated for merged "
-              f"#{task.issue} — {exc}", file=sys.stderr)
-    _end_session(cfg, deps, task.repository, task.issue)
-    if not dry_run:
-        task_artifacts.collect(cfg.state_dir, task, repository.repo, auth=deps.github.auth)
-        task_artifacts.pin_published(cfg.state_dir, task, repository.repo)
-    remove_workspace(repository, task.worktree, task.branch, dry_run=dry_run)
-    deps.github.delete_branch(repository, task.branch)
-    save(cfg.state_dir, replace(end(task, Status(Kind.DONE)), done_at=_now(),
-                                updated_at=_now()))
-    eventlog.append_event(cfg.state_dir, "merged", repository=repository.name,
-                          issue=task.issue, stage="done",
-                          detail=f"PR #{task.pr_number}")
-    _notify(deps, repository, task, "task_done",
-            f"https://github.com/{repository.repo}/pull/{task.pr_number}")
 
 
 def _wake_blocked_path(cfg: Config, repository: str, issue: int) -> Path:
@@ -2139,10 +2096,20 @@ def _plain(turn: _Turn, saved: TaskState, act: Notify) -> dict:
     return {"note": act.note + (f"\n{turn.spec_line}" if turn.spec_line else "")}
 
 
+def _merged_note(turn: _Turn, saved: TaskState, act: Notify) -> dict:
+    return {"note": f"https://github.com/{turn.repository.repo}/pull/{saved.pr_number}"}
+
+
+def _closed_note(turn: _Turn, saved: TaskState, act: Notify) -> dict:
+    return {"note": f"PR #{saved.pr_number}. Worktree preserved for autopsy."}
+
+
 # The notices that carry the pane, and how each is worded.
+_TAIL_NOTICES = frozenset({"parked_question", "needs_relogin", "plan_parked",
+                           "plan_session_stopped"})
 _NOTICES = {"parked_question": _question, "needs_relogin": _relogin,
-            "plan_parked": _plan_parked, "plan_session_stopped": _plan_parked}
-_TAIL_NOTICES = frozenset(_NOTICES)
+            "plan_parked": _plan_parked, "plan_session_stopped": _plan_parked,
+            "task_done": _merged_note, "pr_closed": _closed_note}
 
 
 def _send_notice(turn: _Turn, saved: TaskState, act: Notify) -> None:
@@ -2173,6 +2140,30 @@ def _card_released(turn: _Turn, task: TaskState, act: ReleaseCard) -> TaskState:
 def _issue_canceled(turn: _Turn, task: TaskState, act: CancelIssue) -> TaskState:
     _cancel_issue(turn.deps, turn.repository, task.issue)
     return task
+
+
+def _merge_finished(turn: _Turn, task: TaskState, act: FinishMerged) -> TaskState:
+    """Before the commit, so a raise leaves the task parked on its PR. The
+    issue close comes first (an issue the operator closed, even as not
+    planned, is left as it is), then the board (a board without Done is
+    skipped with a warning), then the teardown."""
+    deps, repository = turn.deps, turn.repository
+    if not turn.dry_run and deps.github.issue_state(repository.repo, task.issue) == "OPEN":
+        deps.github.close_issue(repository.repo, task.issue)
+    try:
+        deps.github.set_status(repository, task.issue, "Done")
+    except BoardError as exc:  # no Done on the board: a retry cannot help
+        print(f"[warn] {repository.name}: board not updated for merged "
+              f"#{task.issue} — {exc}", file=sys.stderr)
+    if not turn.dry_run:
+        task_artifacts.collect(turn.cfg.state_dir, task, repository.repo, auth=deps.github.auth)
+        task_artifacts.pin_published(turn.cfg.state_dir, task, repository.repo)
+    remove_workspace(repository, task.worktree, task.branch, dry_run=turn.dry_run)
+    deps.github.delete_branch(repository, task.branch)
+    turn.after.append(lambda saved: eventlog.append_event(
+        turn.cfg.state_dir, "merged", repository=saved.repository, issue=saved.issue,
+        stage="done", detail=f"PR #{saved.pr_number}"))
+    return replace(task, done_at=_now())
 
 
 def _tombstone_swept(turn: _Turn, task: TaskState, act: SweepTombstone) -> TaskState:
@@ -2219,7 +2210,7 @@ _ACT: dict[type, Callable[..., TaskState]] = {
     LinkPR: _pr_linked, ClearTurnMarkers: _markers_cleared, Notify: _noticed,
     WakeBlocked: _wake_blocked, ResetRounds: _rounds_reset, SetResumeOverride: _override_set,
     ReleaseCard: _card_released, CancelIssue: _issue_canceled, SweepTombstone: _tombstone_swept,
-    Flush: _flushed,
+    Flush: _flushed, FinishMerged: _merge_finished,
 }
 
 

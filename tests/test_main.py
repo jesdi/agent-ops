@@ -965,7 +965,7 @@ def test_every_action_a_session_event_emits_has_a_handler():
     other event families wire theirs with their own tickets."""
     import typing
     from dispatcher import lifecycle as lc
-    later = {lc.FinishMerged, lc.TypeLoginCode}
+    later = {lc.TypeLoginCode}
     assert set(typing.get_args(lc.Action)) - later == set(main._ACT)
 
 
@@ -4278,8 +4278,7 @@ def test_closed_unmerged_pr_fails_task_preserving_worktree(tmp_path, monkeypatch
     main.run_pass(c, deps(gh, sess, notifier=notif))
     assert load(c.state_dir, "portfolio_eval", 42).status.kind is Kind.FAILED
     assert removed == [] and "pr_closed" in notif.sent
-    # No session runs at pr-open: the pr-open transition already ended it.
-    assert sess.ended == []
+    assert sess.ended == [42]   # the close ends whatever session is left
 
 
 def test_feedback_sets_pending_flag_and_notifies_once(tmp_path, monkeypatch):
@@ -4334,9 +4333,9 @@ def test_poll_failure_leaves_task_untouched(tmp_path, monkeypatch):
     assert got.stage is Stage.PR_OPEN and feedback_pending(got) is False
 
 
-def test_finish_merged_gh_failure_leaves_task_pr_open_and_pass_survives(
+def test_merge_board_failure_leaves_task_pr_open_and_pass_survives(
         tmp_path, monkeypatch):
-    """set_status raising mid-_finish_merged must be caught per-task: the pass
+    """set_status raising mid-FinishMerged must be caught per-task: the pass
     continues (no exception escapes run_pass), the task stays PR_OPEN (state
     flip never reached), and the worktree was NOT removed (teardown runs after
     the raising step so it too was never reached)."""
@@ -4356,6 +4355,78 @@ def test_finish_merged_gh_failure_leaves_task_pr_open_and_pass_survives(
     got = load(c.state_dir, "portfolio_eval", 42)
     assert got.stage is Stage.PR_OPEN  # state flip never reached
     assert removed == []               # teardown never reached (board runs first)
+
+
+def test_closed_pr_on_a_running_address_review_ends_its_session_failed(
+        tmp_path, monkeypatch):
+    """The close ends the live address-review pane and frees its slot."""
+    patch_usage(monkeypatch)
+    patch_teardown(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.ADDRESS_REVIEW, status=RUNNING, slot=0, pr_number=12)
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload(state="CLOSED")
+    notif, sess = FakeNotifier(), FakeSessions(alive={42})
+    main.run_pass(c, deps(gh, sess, notifier=notif))
+    got = load(c.state_dir, "portfolio_eval", 42)
+    assert (got.stage, got.status, got.slot) == (
+        Stage.ADDRESS_REVIEW, failed("pr-closed"), NO_SLOT)
+    assert 42 in sess.ended and notif.sent.count("pr_closed") == 1
+
+
+def test_closed_pr_on_a_waking_task_ends_it_failed(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_teardown(monkeypatch)
+    c = replace_capacity(cfg(tmp_path), 0)     # the wake cannot launch
+    pr_open_task(c, status=waking(PR, "attention(feedback)"))
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload(state="CLOSED")
+    sess = FakeSessions()
+    main.run_pass(c, deps(gh, sess))
+    got = load(c.state_dir, "portfolio_eval", 42)
+    assert (got.stage, got.status) == (Stage.PR_OPEN, failed("pr-closed"))
+    assert sess.spawned == []
+
+
+def test_merge_whose_teardown_fails_halfway_stays_parked_and_retries(
+        tmp_path, monkeypatch):
+    """The teardown runs before the commit: a raise leaves parked(pr), and
+    the PR, still merged, finishes the task next pass."""
+    patch_usage(monkeypatch)
+    removed = patch_teardown(monkeypatch)
+    c = cfg(tmp_path)
+    pr_open_task(c)
+
+    class DeleteFailsOnce(FakeGitHub):
+        def delete_branch(self, repository, branch):
+            if not self.deleted_branches:
+                self.deleted_branches.append(None)
+                raise subprocess.CalledProcessError(1, ["git"])
+            super().delete_branch(repository, branch)
+
+    gh = DeleteFailsOnce()
+    gh.pr_payloads[12] = payload(state="MERGED", merged_at="2026-07-30T10:00:00Z")
+    notif = FakeNotifier()
+    main.run_pass(c, deps(gh, notifier=notif))  # must not raise
+    got = load(c.state_dir, "portfolio_eval", 42)
+    assert (got.status, got.done_at, len(removed)) == (PR, "", 1)
+    assert "task_done" not in notif.sent and _events(c, "merged") == []
+    main.run_pass(c, deps(gh, notifier=notif))
+    got = load(c.state_dir, "portfolio_eval", 42)
+    assert got.status == DONE and got.done_at
+    assert notif.sent.count("task_done") == 1 and len(_events(c, "merged")) == 1
+
+
+def test_merge_after_an_exhausted_park_ends_done(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_teardown(monkeypatch)
+    c = cfg(tmp_path)
+    pr_open_task(c, status=human("loop-cap", "ci loop hit its cap"))
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload(state="MERGED", merged_at="2026-07-30T10:00:00Z")
+    main.run_pass(c, deps(gh))
+    got = load(c.state_dir, "portfolio_eval", 42)
+    assert (got.stage, got.status) == (Stage.PR_OPEN, DONE) and got.done_at
 
 
 def test_review_done_captures_pr_number(tmp_path, monkeypatch):

@@ -174,13 +174,15 @@ def test_dispatcher_archives_before_workspace_teardown_and_done_flush(tmp_path, 
         assert '/blob/abc123/' in artifacts.read(state, task.repository, task.issue).items[0].publication.url
         shutil.rmtree(task.worktree, ignore_errors=True)  # the flush calls it again
     monkeypatch.setattr(main, 'remove_workspace', remove_workspace)
-    monkeypatch.setattr(main, '_notify', lambda *a, **kw: None)
     deps = SimpleNamespace(
         sessions=SimpleNamespace(end=lambda *a: None),
+        notifier=SimpleNamespace(send=lambda *a, **kw: 0),
         github=SimpleNamespace(delete_branch=lambda *a: None, issue_state=lambda *a: 'CLOSED',
                                set_status=lambda *a: None, auth=host_auth.STORED),
     )
-    main._finish_merged(cfg, deps, repository, task)
+    from dispatcher.lifecycle import Event, EventType
+    main._apply(main._Turn(cfg, deps, repository, None, None, False), task,
+                Event(EventType.PR_MERGED))
     main._sync_artifacts(cfg)
     main._flush_finished(cfg, deps)
     assert load(state, task.repository, task.issue) is None
