@@ -1786,11 +1786,11 @@ def _admission(turn: _Turn, task: TaskState, stage: Stage,
                      stranded=config_note(why) if why else "")
 
 
-_LAUNCH_ACTIONS = (RespawnStage, RetryStage, ContinueSession, SpawnAddressReview)
+LaunchAction = RespawnStage | RetryStage | ContinueSession | SpawnAddressReview
 
 
-def _launch_action(t: Transition) -> object | None:
-    return next((a for a in t.actions if isinstance(a, _LAUNCH_ACTIONS)), None)
+def _launch_action(t: Transition) -> LaunchAction | None:
+    return next((a for a in t.actions if isinstance(a, LaunchAction)), None)
 
 
 def _launches(t: Transition) -> bool:
@@ -1973,17 +1973,30 @@ def _respawned(turn: _Turn, task: TaskState, act: RespawnStage) -> TaskState:
     task, spec_path = _handover(turn, task, act)
     task, message = _woken_respawn(turn, task)
     launch = turn.launches[act.stage]
-    _end_session(turn.cfg, turn.deps, task.repository, task.issue)
     task = loops.reset(task, ResetCause.STAGE_STARTED)
-    try:
+
+    def spawn(task: TaskState) -> TaskState:
         _write_launching(task.worktree, act.stage, launch.entry)
-        task = _spawned(turn.cfg, turn.deps, turn.repository, task, launch, spec_path,
+        return _spawned(turn.cfg, turn.deps, turn.repository, task, launch, spec_path,
                         message, gh_config=turn.gh_config)
-    except Exception as exc:
-        raise _LaunchFailed(act.stage, replace(task, stage=act.stage,
-                                               spec_path=spec_path or task.spec_path)) from exc
-    turn.launched = True
+    task = _relaunched(turn, task, act.stage, spawn, accepted=replace(
+        task, stage=act.stage, spec_path=spec_path or task.spec_path))
     turn.after.append(lambda saved: _working_launched(turn, saved, launch))
+    return task
+
+
+def _relaunched(turn: _Turn, task: TaskState, stage: Stage,
+                start: Callable[[TaskState], TaskState],
+                accepted: TaskState | None = None) -> TaskState:
+    """End the task's pane, then `start` a session for `stage`: a launch
+    into a live pane would type its command INTO that session's input box.
+    A raising launch fails with `accepted` (the task as handed over)."""
+    _end_session(turn.cfg, turn.deps, task.repository, task.issue)
+    try:
+        task = start(task)
+    except Exception as exc:
+        raise _LaunchFailed(stage, accepted or task) from exc
+    turn.launched = True
     return task
 
 
@@ -2018,29 +2031,21 @@ def _session_continued(turn: _Turn, task: TaskState, act: ContinueSession) -> Ta
     pane is ended first: the resume command would otherwise be typed INTO
     a live session's input box."""
     launch, message = turn.launches[task.stage], _resume_text(task)
-    _end_session(turn.cfg, turn.deps, task.repository, task.issue)
-    try:
+
+    def resume(task: TaskState) -> TaskState:
         _heal_exclude(turn.repository, task)
         task, turn.restarted = _continue_woken(turn.cfg, turn.deps, turn.repository, task,
                                                launch, message, turn.gh_config)
-    except Exception as exc:
-        raise _LaunchFailed(task.stage, task) from exc
-    turn.launched = True
-    return task
+        return task
+    return _relaunched(turn, task, task.stage, resume)
 
 
 def _address_review_spawned(turn: _Turn, task: TaskState, act: SpawnAddressReview) -> TaskState:
     """An admitted wake at pr-open starts an operator address-review round;
     the implement session may still be alive there, so it is ended first."""
     launch, message = turn.launches[Stage.ADDRESS_REVIEW], _resume_text(task)
-    _end_session(turn.cfg, turn.deps, task.repository, task.issue)
-    try:
-        task = _address_review_round(turn.cfg, turn.deps, turn.repository, task, launch,
-                                     message, turn.gh_config)
-    except Exception as exc:
-        raise _LaunchFailed(Stage.ADDRESS_REVIEW, task) from exc
-    turn.launched = True
-    return task
+    return _relaunched(turn, task, Stage.ADDRESS_REVIEW, lambda task: _address_review_round(
+        turn.cfg, turn.deps, turn.repository, task, launch, message, turn.gh_config))
 
 
 def _working_launched(turn: _Turn, saved: TaskState, launch: Launch) -> None:

@@ -2958,6 +2958,27 @@ def test_reopened_canceled_issue_is_claimed_again(tmp_path, monkeypatch):
     assert claimed and claimed[0]["stage"] == "queued"
 
 
+@pytest.mark.parametrize("reason", ["pr-closed", "unknown"])
+def test_failed_queued_task_ranked_again_is_swept_and_claimed(tmp_path, monkeypatch, reason):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.QUEUED, status=failed(reason), slot=NO_SLOT,
+              updated_at="2026-07-21T00:00:00+00:00")
+    old = load(c.state_dir, "portfolio_eval", 42)
+    gh = FakeGitHub([Candidate(42, "Ranked again", "u42")])
+    main.run_pass(c, deps(gh, FakeSessions()))
+    assert gh.claimed == [42]
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.status.kind is not Kind.FAILED and t.title != old.title
+    events = eventlog.read_tail(c.state_dir)
+    reopened = [e for e in events if e["event"] == "reopened"]
+    assert [e["issue"] for e in reopened] == [42]
+    assert reopened[0]["detail"] == "failed task ranked again"
+    claimed = [e for e in events if e["event"] == "claimed"]
+    assert claimed and claimed[0]["stage"] == "queued"
+
+
 def test_canceled_this_pass_ranks_without_sweeping_its_tombstone(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
