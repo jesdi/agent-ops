@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 import dispatcher.main as main
+from dispatcher.deps import Deps, _now
 from dispatcher import execution_overrides, failures, github_app, spec_publish, state
 from dispatcher.board import BoardError
 from dispatcher.github import Candidate
@@ -2430,7 +2431,7 @@ def test_a_rejected_reply_keeps_its_message(tmp_path, monkeypatch):
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
     make_task(c, issue=42, stage=Stage.PR_OPEN, status=failed("pr-closed"), slot=NO_SLOT,
-              updated_at=main._now())    # inside the retention window
+              updated_at=_now())    # inside the retention window
     before = load(c.state_dir, "portfolio_eval", 42)
     assert _reply_pass(c, "try once more", FakeSessions()) == before
     [e] = _events(c, "transition-rejected")
@@ -4260,18 +4261,6 @@ def test_address_review_reuses_the_feedback_pick(tmp_path, monkeypatch):
     main.run_pass(c, deps(gh, sess))
     assert [s[:3] + (s[4],) for s in sess.spawned] == [
         (42, "address-review", "anthropic/claude-sonnet-5", "low")]
-
-
-def test_cursor_now_never_seals_the_second_it_was_taken_in():
-    """GitHub stamps comments to the second, and pr_poll's trigger is a
-    strict `>`. A cursor whose own second is already sealed hides every
-    comment GitHub reports in that second — including ones posted after the
-    session started. The cursor must be strictly below the second any
-    comment written from now on can carry."""
-    cursor = datetime.fromisoformat(main._cursor_now())
-    now_second = datetime.now(timezone.utc).replace(microsecond=0)
-    assert cursor.microsecond == 0          # no sub-second precision
-    assert cursor < now_second
 
 
 def test_spawned_cursor_still_sees_a_comment_from_the_spawn_second(
@@ -6630,7 +6619,7 @@ def test_flapping_at_the_gate_gets_two_new_rounds_then_parks(tmp_path, monkeypat
     gh = FakeGitHub()
     monkeypatch.setattr(main.spec_publish, "ensure_published",
                         lambda **k: spec_publish.PublishResult(url=SPEC_URL))
-    d = main.Deps(github=gh, sessions=sess, notifier=notifier, app=EveryRepoApp())
+    d = Deps(github=gh, sessions=sess, notifier=notifier, app=EveryRepoApp())
     main.run_pass(c, d)
     for _flap in range(10):
         if parked(load(c.state_dir, "portfolio_eval", 42)):

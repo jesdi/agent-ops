@@ -34,6 +34,7 @@ from dispatcher import (answers, claims, eventlog, execution_overrides, failures
                         messages, pr_poll, priority, queue_ops, relogin, task_tokens, tmux_migration,
                         triage, onboarding_sessions)
 from dispatcher.state import write_json_atomic
+from dispatcher.deps import Admit, Deps, _access, _cursor_now, _now
 from dispatcher.board import BoardError
 from dispatcher.github import Candidate, GitHubClient
 
@@ -83,46 +84,6 @@ import telegram.inbound as inbound
 from telegram.inbound import Command, Plain, Reply
 from telegram.notify import Notifier
 from telegram.templates import task_ref
-
-Admit = Callable[[str], Verdict]
-
-
-@dataclass
-class Deps:
-    github: object
-    sessions: object
-    notifier: object
-    # The GitHub App: every container's token comes from it. Required, so no
-    # launch ever falls back to the box's stored all-repos PAT.
-    app: github_app.Client
-    # the time a task token's life is measured against
-    clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
-    # The pass's App access (_begin_pass_auth): one cache for every token the pass mints.
-    access: github_app.Access = field(init=False)
-
-    def __post_init__(self):
-        self.access = _access(self)
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _cursor_now() -> str:
-    """Now, truncated to whole seconds and stepped back one, for
-    feedback_cursor only (same ISO shape as _now() otherwise).
-
-    GitHub reports comment/review timestamps at second granularity: a
-    comment posted at 10:00:00.9 comes back as "10:00:00Z". pr_poll's
-    trigger is a strict `dt > cursor`, so a cursor of 10:00:00.5 — or of
-    10:00:00, truncation alone changes nothing here — hides that comment
-    from every future round even though it was posted AFTER the session
-    that was supposed to see it started. Whole seconds minus one make the
-    whole second the spawn happened in still readable, which is the side
-    the spec picks: a redundant round beats a lost comment."""
-    return (datetime.now(timezone.utc).replace(microsecond=0)
-            - timedelta(seconds=1)).isoformat()
-
 
 def _policy(cfg: Config, repository: Repository | None) -> ModelPolicy:
     """repository is None for a task whose repository has left the config — it still
@@ -3213,10 +3174,6 @@ def _sync_artifacts(cfg: Config, *, dry_run: bool = False,
         except (OSError, ValueError, host_auth.HostWait):
             log.exception("Artifact collection failed for %s/%s", task.repository, task.issue)
     task_artifacts.cleanup(cfg.state_dir)
-
-
-def _access(deps: Deps) -> github_app.Access:
-    return github_app.Access(deps.app, now=deps.clock, refresh=task_tokens.REFRESH)
 
 
 def _begin_pass_auth(cfg: Config, deps: Deps) -> None:

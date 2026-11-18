@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import dispatcher.main as main
+from dispatcher import deps as deps_mod
+from dispatcher.deps import Deps
 from dispatcher import github_app, host_auth
 from dispatcher.config import Board, Config, Project, Repository
 from dispatcher.models import parse_policy
@@ -17,7 +19,7 @@ from tests.statuses import PR, RUNNING, held
 from tests.usagefakes import session_usage
 
 # Every dispatcher module that reads the `datetime` name at runtime.
-_CLOCK_READERS = (main,)
+_CLOCK_READERS = (main, deps_mod)
 
 
 def freeze_clock(monkeypatch, at):
@@ -240,7 +242,7 @@ class FakeSessions:
 
 class EveryRepoApp:
     """A registered GitHub App whose installation reaches every repository: the
-    explicit App every dispatcher is wired with (main.Deps requires one)."""
+    explicit App every dispatcher is wired with (Deps requires one)."""
 
     INSTALLATION = github_app.Installation(1, "https://github.com/settings/installations/1", "any")
 
@@ -309,7 +311,7 @@ def patch_workspace(monkeypatch, tmp_path):
 
 
 def deps(gh=None, sess=None, notifier=None):
-    return main.Deps(github=gh or FakeGitHub(),
+    return Deps(github=gh or FakeGitHub(),
                      sessions=sess or FakeSessions(),
                      notifier=notifier or FakeNotifier(), app=EveryRepoApp())
 

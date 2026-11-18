@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 import dispatcher.main as main
+from dispatcher.deps import Deps
 from dispatcher import github_app, task_tokens
 from dispatcher.github import Candidate
 from dispatcher.models import Entry
@@ -39,7 +40,7 @@ class App(FakeApp):
 
 
 def deps_of(app, sess=None, gh=None):
-    return main.Deps(github=gh or FakeGitHub(), sessions=sess or FakeSessions(alive={42}),
+    return Deps(github=gh or FakeGitHub(), sessions=sess or FakeSessions(alive={42}),
                      notifier=FakeNotifier(), app=app)
 
 

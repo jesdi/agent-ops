@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 import dispatcher.main as main
+from dispatcher.deps import Deps
 from dispatcher import herdr, onboard
 from dispatcher.sessions import Sessions as RealSessions
 from dispatcher.state import NO_SLOT, SessionRecord, save, write_session
@@ -33,7 +34,7 @@ def gh_sources(line: str) -> list[str]:
 
 def test_a_dispatcher_cannot_be_wired_without_a_github_app():
     with pytest.raises(TypeError, match="app"):
-        main.Deps(github=None, sessions=FakeSessions(), notifier=FakeNotifier())
+        Deps(github=None, sessions=FakeSessions(), notifier=FakeNotifier())
 
 
 def test_onboarding_cannot_run_without_a_github_app(tmp_path):

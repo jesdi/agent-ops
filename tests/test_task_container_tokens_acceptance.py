@@ -28,6 +28,7 @@ from pathlib import Path
 import pytest
 
 import dispatcher.main as main
+from dispatcher.deps import Deps
 from dispatcher import containers, github
 from dispatcher.sessions import session_name
 from dispatcher.state import Stage, load_all, task_key
@@ -99,7 +100,7 @@ def world_of(tmp_path, monkeypatch, ready, app=FakeApp):
 
 def spawn_pass(world):
     sessions = TokenSessions({r.name: r.clone_path for r in world.cfg.repositories})
-    deps = main.Deps(github=github.GitHubClient(), sessions=sessions, notifier=FakeNotifier(),
+    deps = Deps(github=github.GitHubClient(), sessions=sessions, notifier=FakeNotifier(),
                      app=world.app)
     world.calls.clear()
     main.run_pass(world.cfg, deps)
@@ -334,7 +335,7 @@ def poll(tmp_path, monkeypatch, home, comments):
     world.comments = comments
     world.pr_task(world.cfg.repositories[1])            # analytics
     sessions = TokenSessions({r.name: r.clone_path for r in world.cfg.repositories})
-    deps = main.Deps(github=github.GitHubClient(), sessions=sessions, notifier=FakeNotifier(),
+    deps = Deps(github=github.GitHubClient(), sessions=sessions, notifier=FakeNotifier(),
                      app=world.app)
     world.calls.clear()
     main.run_pass(world.cfg, deps)

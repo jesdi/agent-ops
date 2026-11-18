@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 import dispatcher.main as main
+from dispatcher.deps import Deps
 from dispatcher import eventlog, messages
 from dispatcher.models import parse_policy
 from dispatcher.state import (SessionRecord, Stage, at_gate, load, write_session)
@@ -152,7 +153,7 @@ def _arrange(tmp_path, monkeypatch, model, kind="wake", record="absent",
         # Each retry policy permits exactly one bounce for its rejection.
         sessions.alive_set.add(issue)
     notifier = FakeNotifier()
-    dependencies = main.Deps(github=FakeGitHub(), sessions=sessions, notifier=notifier,
+    dependencies = Deps(github=FakeGitHub(), sessions=sessions, notifier=notifier,
                              app=EveryRepoApp())
     before = load(c.state_dir, "portfolio_eval", issue)
     return c, dependencies, before, (queued, second)

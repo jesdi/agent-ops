@@ -8,7 +8,7 @@ recorded (argv, cwd, the GH_TOKEN the child would see) and `gh` is answered by a
 stateful fake of GitHub. Git runs for real against bare "origin" repositories in
 tmp_path. Sessions and the notifier are the fakes of tests/dispatchfakes.py.
 
-Interface defined here: `main.Deps` takes `app=`, the GitHub App as the
+Interface defined here: `Deps` takes `app=`, the GitHub App as the
 dispatcher sees it, duck-typed exactly like the one onboarding takes
 (`onboard.run(app=)`, see tests/test_onboard_app.py):
 
@@ -30,6 +30,7 @@ from pathlib import Path
 import pytest
 
 import dispatcher.main as main
+from dispatcher.deps import Deps
 from dispatcher import github, github_app
 from dispatcher.state import NO_SLOT, Stage, TaskState, load_all, save
 from tests.statuses import PR
@@ -182,7 +183,7 @@ class World:
         for repository in self.cfg.repositories:   # a PR-open task per project
             self.pr_task(repository)
         self.calls.clear()
-        deps = main.Deps(github=github.GitHubClient(), sessions=FakeSessions(),
+        deps = Deps(github=github.GitHubClient(), sessions=FakeSessions(),
                          notifier=FakeNotifier(), app=self.app if app == "default" else app)
         main.run_pass(self.cfg, deps)
         return deps

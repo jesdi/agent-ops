@@ -10,7 +10,7 @@ mints expire `lifetime` minutes after the injected clock.
 
 Interface defined here:
 
-* `main.Deps(clock=<callable returning an aware datetime>)`: the time the pass
+* `Deps(clock=<callable returning an aware datetime>)`: the time the pass
   measures a token's remaining life against. None (the default) is the real now.
 * A pass re-mints, for each task holding a session, the token whose `expires_at`
   is under 20 minutes from `deps.clock()` (exactly 20 is not under).
@@ -27,6 +27,7 @@ from pathlib import Path
 import pytest
 
 import dispatcher.main as main
+from dispatcher.deps import Deps
 from dispatcher import containers, github, github_app
 from dispatcher.sessions import session_name
 from dispatcher.state import (NO_SLOT, Stage, TaskState, load_all, save, task_key, write_session, SessionRecord)
@@ -118,7 +119,7 @@ class Box:
         self.sessions = Sessions({r.name: r.clone_path for r in self.cfg.repositories})
 
     def run(self):
-        deps = main.Deps(github=github.GitHubClient(), sessions=self.sessions,
+        deps = Deps(github=github.GitHubClient(), sessions=self.sessions,
                          notifier=FakeNotifier(), app=self.app, clock=self.clock)
         self.world.calls.clear()
         main.run_pass(self.cfg, deps)
