@@ -236,7 +236,7 @@ def test_plan_parked_note_says_local_only_when_publish_fails(
     gate_signal(wt)
     arm_gate(c)
     monkeypatch.setattr(
-        main.spec_publish, "ensure_published",
+        spec_publish, "ensure_published",
         lambda **kw: spec_publish.PublishResult(error="git push failed: auth"))
     d = deps(sess=FakeSessions(alive={42}))
     main.run_pass(c, d)
@@ -262,7 +262,7 @@ def test_spec_error_redacts_tokenized_url_in_note(tmp_path, monkeypatch):
         "The requested URL returned error: 403"
     )
     monkeypatch.setattr(
-        main.spec_publish, "ensure_published",
+        spec_publish, "ensure_published",
         lambda **kw: spec_publish.PublishResult(error=token_error))
     d = deps(sess=FakeSessions(alive={42}))
     main.run_pass(c, d)

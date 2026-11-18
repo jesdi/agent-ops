@@ -38,7 +38,7 @@ WORK = {"id": "b1", "type": "shell", "command": "make crap-gate"}
 def c(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
-    monkeypatch.setattr(main.spec_publish, "ensure_published",
+    monkeypatch.setattr(spec_publish, "ensure_published",
                         lambda **kw: spec_publish.PublishResult(url="https://x/spec"))
     return cfg(tmp_path)
 

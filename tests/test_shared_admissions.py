@@ -8,7 +8,7 @@ from dataclasses import replace as dc_replace
 import pytest
 
 import dispatcher.main as main
-from dispatcher import execution_overrides
+from dispatcher import execution_overrides, executor
 from dispatcher.state import (NO_SLOT, SessionRecord, Stage, TaskState, load, save,
                               write_session)
 from tests.dispatchfakes import (ADMIT_ALL, DENY_ALL, FakeGitHub, FakeSessions, cfg,
@@ -138,7 +138,7 @@ def test_a_denied_launch_waits_without_a_mark(tmp_path):
 def test_a_failed_task_token_skips_without_a_mark(tmp_path, monkeypatch):
     c = cfg(tmp_path)
     woken(c, "portfolio_eval", 3)
-    monkeypatch.setattr(main, "_task_token", lambda *a, **kw: None)
+    monkeypatch.setattr(executor, "_task_token", lambda *a, **kw: None)
     d = deps()
 
     main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)

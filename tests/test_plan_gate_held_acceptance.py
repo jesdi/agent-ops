@@ -38,7 +38,7 @@ def published(monkeypatch):
         asked.append(kw)
         return spec_publish.PublishResult(url="https://x/spec")
 
-    monkeypatch.setattr(main.spec_publish, "ensure_published", publish)
+    monkeypatch.setattr(spec_publish, "ensure_published", publish)
     return asked
 
 

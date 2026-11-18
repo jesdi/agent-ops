@@ -45,7 +45,7 @@ def test_skip_publishes_the_spec_folder_and_asks_nobody(tmp_path, monkeypatch):
 def test_push_failure_does_not_block_the_skip_and_is_named(tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
     wt, sess = _task_at_ready(c, tmp_path)
-    monkeypatch.setattr(main.spec_publish, "ensure_published",
+    monkeypatch.setattr(spec_publish, "ensure_published",
                         lambda **k: spec_publish.PublishResult(error="git push failed: auth"))
     d = _pass(c, sess)
     assert _task(c).stage is Stage.IMPLEMENT

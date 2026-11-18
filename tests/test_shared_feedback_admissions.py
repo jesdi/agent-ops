@@ -7,7 +7,7 @@ from datetime import datetime
 
 
 import dispatcher.main as main
-from dispatcher import execution_overrides, state
+from dispatcher import execution_overrides, executor, state
 from dispatcher.state import NO_SLOT, Stage, load
 from dispatcher.status import HumanReason, Kind
 from tests.dispatchfakes import (ADMIT_ALL, DENY_ALL, FakeSessions, cfg, deps,
@@ -112,7 +112,7 @@ def test_a_denied_launch_waits_without_a_mark(tmp_path):
 def test_a_failed_task_token_skips_without_a_mark(tmp_path, monkeypatch):
     c = cfg(tmp_path)
     pending(c, "portfolio_eval", 5)
-    monkeypatch.setattr(main, "_task_token", lambda *a, **kw: None)
+    monkeypatch.setattr(executor, "_task_token", lambda *a, **kw: None)
     d = deps()
 
     main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)

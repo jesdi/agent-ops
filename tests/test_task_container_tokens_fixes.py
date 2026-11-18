@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 import dispatcher.main as main
+from dispatcher import executor
 from dispatcher import launch_choice, stage_launch
 from dispatcher.deps import Deps
 from dispatcher import github_app, task_tokens
@@ -234,7 +235,7 @@ def test_a_rejected_signal_retry_touches_nothing_without_a_token(tmp_path, monke
                      worktree="w", branch="b", title="t", updated_at="")
     touched = []
     for name in ("_write_working", "_end_session", "_continued", "save", "_fail_task_crash"):
-        monkeypatch.setattr(main, name, lambda *a, _n=name, **k: touched.append(_n))
+        monkeypatch.setattr(executor, name, lambda *a, _n=name, **k: touched.append(_n))
     # main's _task_token parks an unreached repository from stage_launch.
     monkeypatch.setattr(stage_launch, "_park_for_input",
                         lambda *a, **k: touched.append("_park_for_input"))
@@ -243,10 +244,10 @@ def test_a_rejected_signal_retry_touches_nothing_without_a_token(tmp_path, monke
     from dispatcher.state import StageSignal
     from tests.test_lifecycle import admitted, report
     deps = SimpleNamespace(access=github_app.Access(app))
-    turn = main._Turn(SimpleNamespace(state_dir=str(tmp_path)), deps, REPO, None, None, False,
+    turn = executor._Turn(SimpleNamespace(state_dir=str(tmp_path)), deps, REPO, None, None, False,
                       launches={Stage.PLAN: SimpleNamespace(entry=None)})
     bounced = Event(EventType.SESSION_SIGNAL, report(
         StageSignal("plan", "done"), retries=frozenset({Retry.PLAN_SIGNAL}),
         launches=admitted(Stage.PLAN)))
-    main._apply(turn, task, bounced)
+    executor._apply(turn, task, bounced)
     assert touched == ([] if failure == "app error" else ["_park_for_input"])

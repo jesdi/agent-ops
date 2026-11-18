@@ -9,7 +9,7 @@ from pathlib import Path
 
 import dispatcher.main as main
 from dispatcher import deps as deps_mod
-from dispatcher import launch_choice, stage_launch
+from dispatcher import executor, launch_choice, stage_launch
 from dispatcher.deps import Deps
 from dispatcher import github_app, host_auth
 from dispatcher.config import Board, Config, Project, Repository
@@ -436,7 +436,7 @@ def patch_teardown(monkeypatch):
     on the pass surviving."""
     removed = []
     monkeypatch.setattr(
-        main, "remove_workspace",
+        executor, "remove_workspace",
         lambda repository, wt, branch, dry_run=False: removed.append(
             (wt, branch, dry_run)))
     return removed
@@ -460,3 +460,23 @@ def write_tickets(wt, n, page=True):
         (wt / ".agent" / "review.html").write_text(REVIEW_PAGE_STUB)
     for i in range(1, n + 1):
         (d / f"{i:02d}-t{i}.md").write_text(GOOD_TICKET)
+
+
+SPEC_URL = ("https://github.com/jesdi/portfolio_eval/tree/agent/task-42/"
+            "specs/2026-10-12-x")
+
+
+def _plan_ready_task(c, **kw):
+    """A plan session that reports its plan ready: valid tickets on disk and
+    the review summary as the signal's artifact."""
+    wt = make_task(c, stage=Stage.PLAN, spec_path=SPEC_PATH, **kw)
+    write_tickets(wt, 2)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "plan", "status": "awaiting-review", "note": "plan ready",
+         "artifact": PLAN_SUMMARY}))
+    return wt
+
+
+def _events(c, name):
+    from dispatcher import eventlog
+    return [e for e in eventlog.read_tail(c.state_dir) if e["event"] == name]

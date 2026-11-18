@@ -8,7 +8,7 @@ import json
 from dataclasses import replace
 
 import dispatcher.main as main
-from dispatcher import state
+from dispatcher import spec_publish, state
 from dispatcher.models import parse_policy
 from dispatcher.state import NO_SLOT, Stage, launch_entries, launch_track, next_stage
 from tests import webfakes
@@ -145,7 +145,7 @@ def test_a_turn_that_fails_after_it_saved_the_plan_gate_stays_resumable(
 
     def boom(**kw):
         raise RuntimeError("git push failed hard")
-    monkeypatch.setattr(main.spec_publish, "ensure_published", boom)
+    monkeypatch.setattr(spec_publish, "ensure_published", boom)
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     t = saved(c)
     assert t.status == failed("task-crash") and crashed(t.status)
