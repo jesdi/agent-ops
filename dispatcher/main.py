@@ -45,7 +45,7 @@ from dispatcher.lifecycle import (Attempt, Feedback, Event, EventType,
 from dispatcher.models import (Order, override_refusal,
                                track_from_labels)
 from dispatcher.sessions import Sessions
-from dispatcher.state import (NO_SLOT, UNREADABLE_TASK_FILE, WAKE_BLOCKED_PREFIX, Stage, TaskState, allocate_slot,
+from dispatcher.state import (NO_SLOT, WAKE_BLOCKED_PREFIX, Stage, TaskState, allocate_slot,
                               load,
                               load_all, max_slots,
                               next_stage, end, save, _clear_wake_blocked, _rank_rejected, _rank_rejected_path,
@@ -64,8 +64,7 @@ from dispatcher.executor import (_OPERATOR_ENDS, _Turn, _apply, _cancel_issue,
                                  _fail_task_crash, _report_provisioning_failure)
 from dispatcher.launch_choice import (ClaimCandidate, Launch, _candidate_launch,
                                       _consume_execution_choice, _display_entry)
-from dispatcher.stage_launch import (_end_session, _inject_login_code, _mark_wake_blocked,
-                                     _queue_message, _ref,
+from dispatcher.stage_launch import (_end_session, _inject_login_code, _queue_message, _ref,
                                      _spawn_stage, _sync_task_tokens, _task_token,
                                      _wake)
 
@@ -543,49 +542,6 @@ def _pr_detail(cfg: Config, task: TaskState, res: "pr_poll.PollResult"
         return Feedback(f"PR #{task.pr_number}, newest feedback {res.latest_ts}")
     return Attempt(loops.evaluate(
         task, loops.PRAttention(f"{res.kind} on PR #{task.pr_number}"), cfg.loop_caps))
-
-
-def _seat(cfg: Config, repository: Repository, task: TaskState) -> TaskState | None:
-    """The task on a slot it may run in, under box capacity; None when it
-    must wait (marked wake-blocked). Nothing is seated while a task file
-    cannot be read: the task it holds may own a unit and a slot no count sees."""
-    tasks = _readable_tasks(cfg)
-    blocked = _seat_blocker(cfg, tasks)
-    if tasks is None or blocked:
-        _mark_wake_blocked(cfg, repository, task, blocked)
-        return None
-    return _seated(cfg, repository, task, tasks)
-
-
-def _seat_blocker(cfg: Config, tasks: list[TaskState] | None) -> str:
-    """Why no task can be seated now: "" when the box has room."""
-    if tasks is None:
-        return UNREADABLE_TASK_FILE
-    return "capacity full" if _box_free(cfg, tasks) <= 0 else ""
-
-
-def _seated(cfg: Config, repository: Repository, task: TaskState,
-            tasks: list[TaskState]) -> TaskState | None:
-    """The task on its own slot, or a free one; None (marked wake-blocked)
-    when no slot is free."""
-    others = [t for t in tasks
-              if (t.repository, t.issue) != (task.repository, task.issue)]
-    if not _slot_lost(task, others):
-        return task
-    # Parked tasks gave their slot back, and a recorded slot another
-    # holder took is not ours. Take any free one: worktrees are
-    # per-issue, so the number need not be the original.
-    slot = allocate_slot(others, max_slots(cfg.capacity))
-    if slot is None:
-        _mark_wake_blocked(cfg, repository, task, "no free slot")
-        return None
-    return replace(task, slot=slot)
-
-
-def _slot_lost(task: TaskState, others: list[TaskState]) -> bool:
-    """Whether the task has no slot, or another holder took its recorded one."""
-    return task.slot == NO_SLOT or any(occupies(t.status) and t.slot == task.slot
-                                       for t in others)
 
 
 def _reconcile_boards(cfg: Config, deps: Deps) -> None:
