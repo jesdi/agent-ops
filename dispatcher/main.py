@@ -47,7 +47,7 @@ from dispatcher.classify import (BackgroundView, Look, Observation, Reads, artif
 from dispatcher.lifecycle import (AcquireSlot, Admission, ApplyRound, At, Attempt, ClearTurnMarkers,
                                   ContinueSession, SpawnAddressReview,
                                   EndPokeStretch, EndSession, EnterGate, Event, EventType,
-                                  LaunchFailure, LinkPR, MarkAsked, Notify,
+                                  Flush, LaunchFailure, LinkPR, MarkAsked, Notify,
                                   CancelIssue, Ignore, Pane, Poke, PublishSpec, RecordBackgroundWait,
                                   ReleaseCard, ReleaseSlot, Reject, ReportCrash, ReportTaskCrash,
                                   ResetRounds, RespawnStage, RetryStage, SetResumeOverride,
@@ -1405,26 +1405,16 @@ def _expired(task: TaskState, cutoff_seconds: int) -> bool:
     return (datetime.now(timezone.utc) - since).total_seconds() >= cutoff_seconds
 
 
-def _flush_finished(cfg: Config, dry_run: bool = False) -> None:
-    """Retire finished tasks (done, failed, won't do) past the retention
-    window: worktree and local branch go (the remote branch, PR and issue
-    are the record), then the state file. A done task's teardown already
-    ran at merge; remove_workspace is best-effort, so repeating it is a
-    no-op. A task whose repository left the config keeps its worktree: nothing
-    knows its clone any more."""
+def _flush_finished(cfg: Config, deps: Deps, dry_run: bool = False) -> None:
+    """Each finished task (done, failed, won't do) past the retention window
+    hears `flush-due`; the table retires it."""
     by_name = {t.name: t for t in cfg.repositories}
     for task in load_all(cfg.state_dir):
         if not _expired(task, cfg.done_retention_days * 86400):
             continue
-        repository = by_name.get(task.repository)
-        if repository is not None and task.worktree:
-            remove_workspace(repository, task.worktree, task.branch, dry_run=dry_run)
-        _clear_wake_blocked(cfg, task.repository, task.issue)
-        clear_session(cfg.state_dir, task.repository, task.issue)
-        delete(cfg.state_dir, task.repository, task.issue)
-        eventlog.append_event(cfg.state_dir, "flushed",
-                              repository=task.repository, issue=task.issue,
-                              stage=task.stage.value)
+        turn = _Turn(cfg, deps, by_name.get(task.repository), admit=None, order=None,
+                     dry_run=dry_run)
+        _apply(turn, task, Event(EventType.FLUSH_DUE))
 
 
 def _oldest_first(cfg: Config):
@@ -1735,7 +1725,7 @@ def _execute(turn: _Turn, task: TaskState, t: Transition) -> None:
         turn.event = Event(EventType.LAUNCH_FAILED, LaunchFailure(failed.stage))
         t = decide(task, turn.event)
         after = _act(turn, failed.accepted, t)
-    _settle(turn, _commit(turn, before, after, t), t)
+    _settle(turn, _commit(turn, before, after, t), t, before)
 
 
 def _look(turn: _Turn, task: TaskState) -> Look:
@@ -1877,10 +1867,12 @@ def _discard_stale_answers(before: At, t: Transition, task: TaskState) -> None:
         answers.discard_stale(task.worktree, request.kind, request.fingerprint)
 
 
-def _settle(turn: _Turn, saved: TaskState, t: Transition) -> None:
+def _settle(turn: _Turn, saved: TaskState, t: Transition, before: At) -> None:
     """After the commit: the history events, then the notices in the order
-    the actions named them; a park keeps the message that asked."""
-    _legacy_event(turn, saved, t)
+    the actions named them; a park keeps the message that asked. A stay in
+    the same status (a flush, a swept tombstone) is no new history."""
+    if before.status != t.status:
+        _legacy_event(turn, saved, t)
     for effect in turn.after:
         effect(saved)
     _remember_question(turn, saved)
@@ -2304,6 +2296,25 @@ def _tombstone_swept(turn: _Turn, task: TaskState, act: SweepTombstone) -> TaskS
     return task
 
 
+def _flushed(turn: _Turn, task: TaskState, act: Flush) -> TaskState:
+    """The worktree and local branch go (the remote branch, PR and issue are
+    the record), then, after the commit, the state file. A done task's
+    teardown already ran at merge; remove_workspace is best-effort, so
+    repeating it is a no-op. A task whose repository left the config keeps
+    its worktree: nothing knows its clone any more."""
+    if turn.repository is not None and task.worktree:
+        remove_workspace(turn.repository, task.worktree, task.branch, dry_run=turn.dry_run)
+
+    def retire(saved: TaskState) -> None:
+        _clear_wake_blocked(turn.cfg, saved.repository, saved.issue)
+        clear_session(turn.cfg.state_dir, saved.repository, saved.issue)
+        delete(turn.cfg.state_dir, saved.repository, saved.issue)
+        eventlog.append_event(turn.cfg.state_dir, "flushed", repository=saved.repository,
+                              issue=saved.issue, stage=saved.stage.value)
+    turn.after.append(retire)
+    return task
+
+
 # The actions a session event emits; the other event families wire theirs
 # with their own tickets (#132).
 _ACT: dict[type, Callable[..., TaskState]] = {
@@ -2316,6 +2327,7 @@ _ACT: dict[type, Callable[..., TaskState]] = {
     LinkPR: _pr_linked, ClearTurnMarkers: _markers_cleared, Notify: _noticed,
     WakeBlocked: _wake_blocked, ResetRounds: _rounds_reset, SetResumeOverride: _override_set,
     ReleaseCard: _card_released, CancelIssue: _issue_canceled, SweepTombstone: _tombstone_swept,
+    Flush: _flushed,
 }
 
 
@@ -3272,7 +3284,7 @@ def _sandboxed_state(cfg: Config):
     the per-provider usage cache — and those writes were unguarded, so a dry run advanced
     tasks to terminal stages and wrote history for real. Guarding each call
     site is what already rotted: `dry_run` is threaded by hand into some
-    functions and was never added to _flush_done or the wake path.
+    functions and was never added to the flush or the wake path.
 
     Redirecting the one directory they all write through is the guard that
     cannot be forgotten, and it covers write sites added later for free. The
@@ -3410,7 +3422,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     if not claims_paused:
         _claim_new(eff, deps, eff.repositories, admit, order, dry_run, pass_started)
     _sync_artifacts(cfg, dry_run=dry_run, auth=deps.github.auth)
-    _flush_finished(cfg, dry_run)
+    _flush_finished(cfg, deps, dry_run)
     _write_heartbeat(cfg, pass_started)
 
 

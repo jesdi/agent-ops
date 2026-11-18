@@ -234,7 +234,7 @@ def end(t: TaskState, status: Status) -> TaskState:
 
 
 def launch_track(t: TaskState, policy: ModelPolicy) -> str:
-    """The track whose list t's next launch (next_launch) reads, or "" when
+    """The track whose list t's next launch reads, or "" when
     it has none: the task track. A task with no track (claimed before tracks
     existed) is untracked work."""
     track = t.track or policy.untracked

@@ -112,7 +112,7 @@ def expired(requested_at: str, now_iso: str) -> bool:
     hand-edited request file must expire (tick then clears it), not raise out
     of every dispatcher pass and have guarded_pass file a pass-crash issue
     until someone deletes the file by hand. Same idiom as main._grace_elapsed
-    and main._flush_done."""
+    and main._expired."""
     try:
         delta = (datetime.fromisoformat(now_iso)
                  - datetime.fromisoformat(requested_at))

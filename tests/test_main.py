@@ -965,7 +965,7 @@ def test_every_action_a_session_event_emits_has_a_handler():
     other event families wire theirs with their own tickets."""
     import typing
     from dispatcher import lifecycle as lc
-    later = {lc.FinishMerged, lc.Flush, lc.TypeLoginCode}
+    later = {lc.FinishMerged, lc.TypeLoginCode}
     assert set(typing.get_args(lc.Action)) - later == set(main._ACT)
 
 
@@ -2859,7 +2859,7 @@ def test_kill_intent_does_not_reclaim_released_issue_same_pass(tmp_path, monkeyp
 
 def test_kill_intent_with_repository_ends_a_stray_session_with_no_state_file(tmp_path):
     """A repository-carrying kill intent must be able to end a session even when
-    there is no task file to resolve — e.g. _flush_done deleted a DONE
+    there is no task file to resolve — e.g. the flush deleted a DONE
     task's state while its tmux session leaked (never actually ended). The
     operator's kill intent still names its repository, so nothing stops the
     session from being ended even though there is no task left to
@@ -2923,7 +2923,7 @@ def test_cancel_intent_does_not_reclaim_issue_same_pass(tmp_path, monkeypatch):
 
 def test_cancel_tombstone_releases_the_slot_immediately(tmp_path, monkeypatch):
     # Same contract as parking: a transition that ends the session gives the
-    # slot back at transition time, not a pass later via _reconcile_slots —
+    # slot back at transition time, not a pass later —
     # the web capacity view reads the state file as-is.
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
@@ -4344,7 +4344,8 @@ def test_flush_deletes_only_old_finished_tasks(tmp_path, monkeypatch):
     removed = patch_teardown(monkeypatch)
     c = cfg(tmp_path)
     make_task(c, issue=1, stage=Stage.QUEUED, status=DONE, slot=NO_SLOT)       # ancient
-    make_task(c, issue=4, stage=Stage.QUEUED, status=failed("unknown"), slot=NO_SLOT)     # ancient
+    make_task(c, issue=4, stage=Stage.QUEUED, status=failed("session-crash"),
+              slot=NO_SLOT)                                                     # ancient
     make_task(c, issue=5, stage=Stage.QUEUED, status=CANCELED, slot=NO_SLOT)   # ancient
     fresh = datetime.now(timezone.utc).isoformat()
     make_task(c, issue=2, stage=Stage.QUEUED, status=DONE, slot=NO_SLOT, updated_at=fresh)
@@ -4356,6 +4357,11 @@ def test_flush_deletes_only_old_finished_tasks(tmp_path, monkeypatch):
     assert load(c.state_dir, "portfolio_eval", 3) is not None
     assert sorted(branch for _wt, branch, _dry in removed) == [
         "agent/task-1", "agent/task-4", "agent/task-5"]
+    flushed = [e for e in _events(c, "transition") if e["transition"]["event"] == "flush-due"]
+    assert sorted(e["issue"] for e in flushed) == [1, 4, 5]
+    assert all(e["transition"]["from"] == e["transition"]["to"] for e in flushed)
+    assert sorted(e["issue"] for e in _events(c, "flushed")) == [1, 4, 5]
+    assert _events(c, "failed") == []      # the flush is no new failure
 
 
 def test_claims_stop_at_max_open_even_with_capacity_free(tmp_path, monkeypatch):

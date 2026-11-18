@@ -182,7 +182,7 @@ def test_dispatcher_archives_before_workspace_teardown_and_done_flush(tmp_path, 
     )
     main._finish_merged(cfg, deps, repository, task)
     main._sync_artifacts(cfg)
-    main._flush_finished(cfg)
+    main._flush_finished(cfg, deps)
     assert load(state, task.repository, task.issue) is None
     assert load_archived(state, task.repository, task.issue).status.kind is Kind.DONE
     assert artifacts.content_path(state, task.repository, task.issue, 'prototype')
