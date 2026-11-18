@@ -7,7 +7,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from dispatcher import base_line, execution_overrides, intents, main, state, triage
+from dispatcher import base_line, execution_overrides, intents, state, triage, upkeep
 from dispatcher.config import Config
 from dispatcher.state import Stage, TaskState
 from dispatcher.status import Kind, Status
@@ -125,7 +125,7 @@ def queue_write(sd):
 def heartbeat(sd):
     cfg = Config(state_dir=str(sd), capacity=1, session_memory="2g", session_cpus="2",
                  repositories=[], pass_interval_minutes=5)
-    main._write_heartbeat(cfg, STAMP)
+    upkeep._write_heartbeat(cfg, STAMP)
     p = sd / "pass.json"
     finished = json.loads(p.read_bytes())["finished_at"]
     return p, (f'{{"started_at": "{STAMP}", "finished_at": "{finished}", '
@@ -209,7 +209,7 @@ def test_a_heartbeat_that_cannot_be_written_warns_and_leaves_no_temp_file(tmp_pa
     (sd / "pass.json").mkdir(parents=True)
     cfg = Config(state_dir=str(sd), capacity=1, session_memory="2g",
                  session_cpus="2", repositories=[])
-    main._write_heartbeat(cfg, STAMP)
+    upkeep._write_heartbeat(cfg, STAMP)
     assert "[warn] heartbeat write failed:" in capsys.readouterr().err
     assert [p.name for p in sd.iterdir()] == ["pass.json"]
     assert (sd / "pass.json").is_dir()

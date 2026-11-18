@@ -11,7 +11,7 @@ import dispatcher.main as main
 import telegram.inbound as inbound
 from dispatcher.usage import Verdict
 from dispatcher import deps as deps_mod
-from dispatcher import claiming, drive, executor, launch_choice, stage_launch
+from dispatcher import claiming, drive, executor, launch_choice, stage_launch, upkeep
 from dispatcher.deps import Deps
 from dispatcher import github_app, host_auth
 from dispatcher.config import Board, Config, Project, Repository
@@ -23,7 +23,7 @@ from tests.statuses import PR, RUNNING, held
 from tests.usagefakes import session_usage
 
 # Every dispatcher module that reads the `datetime` name at runtime.
-_CLOCK_READERS = (main, deps_mod, launch_choice, stage_launch, drive)
+_CLOCK_READERS = (main, deps_mod, launch_choice, stage_launch, drive, upkeep)
 
 
 def _ago(**kw):
