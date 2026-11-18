@@ -17,6 +17,7 @@ import pytest
 
 import dispatcher.main as main
 from dispatcher import intents as intents_mod
+from dispatcher import stage_launch
 from dispatcher.github import Candidate
 from dispatcher.models import parse_policy
 from dispatcher.state import (NO_SLOT, Stage, load, save)
@@ -356,7 +357,7 @@ def test_respawn_ready_report_reuses_its_round_and_starts_a_fresh_grace_clock(
     assert t.unattended_rounds == used + 1
     assert t.status.kind is Kind.HELD_PLAN_APPROVAL and t.slot != NO_SLOT
     assert operator_request(t) == armed_request(t, SUMMARY)
-    assert t.updated_at > old_clock and not main._grace_elapsed(c, t)
+    assert t.updated_at > old_clock and not stage_launch._grace_elapsed(c, t)
     assert d.notifier.sent == ["awaiting_plan_review"]
 
     # A repeated report preserves the new clock; only its expiry parks the task.

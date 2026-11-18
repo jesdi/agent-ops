@@ -3,8 +3,8 @@ import json
 
 import pytest
 
-from dispatcher import main, containers, implementation_grants
-from dispatcher import launch_choice
+from dispatcher import containers, implementation_grants
+from dispatcher import launch_choice, stage_launch
 from dispatcher.models import Entry
 from dispatcher.state import Stage, load
 from tests.dispatchfakes import deps, make_task
@@ -24,11 +24,11 @@ def test_implement_launch_bounds_driver_roles_to_current_grants(tmp_path, monkey
     (wt / '.agent' / 'ledger.md').write_text('ticket 1 merged\n')
     (wt / '.agent' / 'runtime-models.json').write_text('{"stale": ["openai/denied@high"]}')
     if resume:
-        main._continue_or_restart(c, deps(sess=sess), c.repositories[0], task, launch,
+        stage_launch._continue_or_restart(c, deps(sess=sess), c.repositories[0], task, launch,
                                   message='Retry the approved failing ticket.', gh_config='')
         prompt = sess.resumed[0][1]
     else:
-        main._launch_stage(c, deps(sess=sess), c.repositories[0], task, launch,
+        stage_launch._launch_stage(c, deps(sess=sess), c.repositories[0], task, launch,
                            message='Retry the approved failing ticket.', gh_config='')
         prompt = sess.spawned[0][3]
     runtime_grant = sess.resume_seconds[0] if resume else sess.spawn_seconds[0][1]

@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 import dispatcher.main as main
-from dispatcher import eventlog, spec_publish
+from dispatcher import eventlog, spec_publish, stage_launch
 from dispatcher.state import (NO_SLOT, PlanApprovalRequest, Stage, load, load_all, mark_background, mark_waiting, save)
 from dispatcher.artifacts import plan_revision
 from tests.test_herdr_liveness_poke_acceptance import HerdrSessions
@@ -672,14 +672,14 @@ def test_a_launch_that_raises_fails_at_the_stage_that_could_not_start(c):
 def test_any_other_error_in_a_turn_fails_the_task_and_the_pass_goes_on(c, monkeypatch):
     task(c)
     make_task(c, issue=43, stage=Stage.REVIEW, updated_at=NOW, slot=1)
-    real = main.read_stage_signal
+    real = stage_launch.read_stage_signal
 
     def boom(worktree):
         if worktree.endswith(f"task-{N}"):
             raise RuntimeError("disk on fire")
         return real(worktree)
 
-    monkeypatch.setattr(main, "read_stage_signal", boom)
+    monkeypatch.setattr(stage_launch, "read_stage_signal", boom)
     d = run(c, FakeSessions(alive={N, 43}))
     t = now(c)
     assert (t.stage, t.status) == (Stage.IMPLEMENT, failed("task-crash"))
