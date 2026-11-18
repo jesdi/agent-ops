@@ -3175,14 +3175,14 @@ def test_failed_intent_does_not_abort_pass_or_remaining_intents(tmp_path, monkey
     make_task(c, issue=43, status=human(), park_msg_id=56)
     make_task(c, issue=44)  # active; keeps 42/43 waking... capacity 2 → one resumes
 
-    real_wake = main._wake
+    real_apply = main._apply_operator_intent
 
-    def wake_or_boom(cfg_, task, text, hold=False, actor="dispatcher", **kwargs):
+    def apply_or_boom(cfg_, deps_, by_name, task, intent):
         if task.issue == 42:
             raise RuntimeError("disk full")
-        real_wake(cfg_, task, text, hold=hold, actor=actor, **kwargs)
+        real_apply(cfg_, deps_, by_name, task, intent)
 
-    monkeypatch.setattr(main, "_wake", wake_or_boom)
+    monkeypatch.setattr(main, "_apply_operator_intent", apply_or_boom)
     intents_mod.write_intent(c.state_dir, "resume", "portfolio_eval", 42, {}, "op", 1)
     intents_mod.write_intent(c.state_dir, "resume", "portfolio_eval", 43, {}, "op", 2)
     main.run_pass(c, deps(sess=FakeSessions(alive={44})))  # must not raise
@@ -6277,7 +6277,7 @@ def test_resume_respawns_the_crashed_stage_fresh(tmp_path, monkeypatch):
     assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
 
 
-def test_resume_of_a_killed_task_is_still_skipped(tmp_path, monkeypatch):
+def test_resume_of_a_migrated_failure_with_no_known_stage_is_rejected(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
     make_task(c, issue=42, stage=Stage.QUEUED, status=failed("unknown"), slot=NO_SLOT,
@@ -6287,6 +6287,8 @@ def test_resume_of_a_killed_task_is_still_skipped(tmp_path, monkeypatch):
     main.run_pass(c, deps(sess=sess))
     assert sess.spawned == [] and sess.resumed == []
     assert load(c.state_dir, "portfolio_eval", 42).status.kind is Kind.FAILED
+    [e] = _events(c, "transition-rejected")
+    assert e["detail"] == "re-queue the issue instead"
 
 
 def test_a_launch_that_raises_on_resume_fails_resumable_again(tmp_path, monkeypatch):
@@ -7282,3 +7284,57 @@ def test_op_resume_sets_the_wakes_model_override_and_usage_bypass(tmp_path):
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.status.kind is Kind.WAKING
     assert (t.resume_model_override, t.resume_bypass_usage) == ("m-x", True)
+
+
+def _resume_pass(c, **payload):
+    """A resume intent the way the web writes it, then one pass whose usage
+    gate holds every wake back, so the pass leaves what the intent made."""
+    intents_mod.write_intent(c.state_dir, "resume", "portfolio_eval", 42, payload,
+                             "jesdi@github", 1)
+    main.run_pass(c, deps(sess=FakeSessions()))
+    return load(c.state_dir, "portfolio_eval", 42)
+
+
+@pytest.mark.parametrize("stage,reason", [(Stage.PLAN, "killed"),
+                                          (Stage.IMPLEMENT, "session-crash")])
+def test_resume_of_a_killed_or_crashed_task_wakes_it(tmp_path, monkeypatch, stage, reason):
+    patch_usage(monkeypatch, util=0.95)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, stage=stage, status=failed(reason), slot=NO_SLOT,
+              updated_at=datetime.now(timezone.utc).isoformat())  # inside retention
+    t = _resume_pass(c)
+    assert (t.stage, t.status) == (stage, waking(failed(reason), "resume"))
+    from dispatcher import messages
+    assert [m.text for m in messages.undelivered(c.state_dir, "portfolio_eval", 42)] == [
+        "The operator resumed this task. Continue."]
+    assert [e["transition"]["event"] for e in _events(c, "transition")] == ["op-resume"]
+
+
+def test_resume_on_a_task_that_is_already_waking_replaces_its_model(tmp_path, monkeypatch):
+    patch_usage(monkeypatch, util=0.95)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    status = waking(human("decision"), "reply")
+    make_task(c, stage=Stage.IMPLEMENT, status=status, resume_model_override="old/model")
+    before = load(c.state_dir, "portfolio_eval", 42)
+    t = _resume_pass(c, model="anthropic/claude-opus-5")
+    assert (t.status, t.resume_model_override, t.updated_at) == (
+        status, "anthropic/claude-opus-5", before.updated_at)
+    from dispatcher import messages
+    assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
+
+
+def test_resume_of_a_closed_pr_failure_the_web_accepted_is_rejected(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.PR_OPEN, status=failed("pr-closed"), slot=NO_SLOT,
+              updated_at=datetime.now(timezone.utc).isoformat())  # inside retention
+    t = _resume_pass(c)
+    assert t.status == failed("pr-closed")
+    [e] = _events(c, "transition-rejected")
+    assert (e["transition"]["event"], e["detail"]) == (
+        "op-resume", "reopen the PR on GitHub or re-queue the issue")
+    from dispatcher import messages
+    assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []

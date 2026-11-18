@@ -49,7 +49,7 @@ from dispatcher.lifecycle import (AcquireSlot, Admission, ApplyRound, At, ClearT
                                   LaunchFailure, LinkPR, MarkAsked, Notify,
                                   CancelIssue, Pane, Poke, PublishSpec, RecordBackgroundWait,
                                   ReleaseCard, ReleaseSlot, Reject, ReportCrash, ReportTaskCrash,
-                                  ResetRounds, RespawnStage, RetryStage, SetResumeOverride,
+                                  ResetRounds, ResumeChoice, RespawnStage, RetryStage, SetResumeOverride,
                                   Stranded, Transition, WakeBlocked, Woken, decide,
                                   login_at, operator_request)
 from dispatcher.loops import Decision, Outcome, ResetCause
@@ -70,7 +70,7 @@ from dispatcher.state import (NO_POKES, NO_SLOT, WAKE_BLOCKED_PREFIX,
                               read_stage_doc, read_stage_signal, scan, stage_signal,
                               at_gate, end, park, save, task_key, unpark,
                               wake)
-from dispatcher.status import (Cause, FailReason, HumanReason, Kind, Status, crashed, ended,
+from dispatcher.status import (Cause, FailReason, HumanReason, Kind, Status, ended,
                                occupies)
 from dispatcher.workspace import (MissingBaseError, append_worktree_file, create_workspace,
                                   exclude_local_state, remove_workspace,
@@ -327,12 +327,10 @@ def _drain(cfg: Config, repository: str, issue: int) -> tuple[str, list[str]]:
 
 
 def _wake(cfg: Config, task: TaskState, text: str, hold: bool = False,
-          actor: str = "dispatcher", *, cause: Cause = Cause.REPLY, model_override: str = "",
-          bypass_usage: bool = False) -> None:
+          actor: str = "dispatcher") -> None:
     _queue_message(cfg, task.repository, task.issue, text, actor)
     task = loops.reset(task, ResetCause.OPERATOR_WAKE)
-    task = _with_resume_override(wake(task, cause, hold=hold), model_override, bypass_usage)
-    save(cfg.state_dir, replace(task, updated_at=_now()))
+    save(cfg.state_dir, replace(wake(task, Cause.REPLY, hold=hold), updated_at=_now()))
 
 
 def _signal_working_again(cfg: Config, task: TaskState) -> None:
@@ -2997,7 +2995,16 @@ def _apply_answers_intent(cfg: Config, deps: Deps, by_name: dict, task: TaskStat
 # The operator intents the table decides (ticket 08).
 _OPERATOR_INTENTS = {"park": EventType.OP_PARK, "kill": EventType.OP_KILL,
                      "cancel": EventType.OP_CANCEL, "reply": EventType.OP_REPLY,
-                     "answers": EventType.OP_ANSWERS}
+                     "answers": EventType.OP_ANSWERS, "resume": EventType.OP_RESUME}
+
+
+def _operator_event(intent: intents.Intent) -> Event:
+    """The table's event for an operator intent; a resume carries its choice."""
+    kind = _OPERATOR_INTENTS[intent.action]
+    if kind is not EventType.OP_RESUME:
+        return Event(kind)
+    return Event(kind, ResumeChoice(str(intent.payload.get("model") or ""),
+                                    intent.payload.get("bypass_usage") is True))
 
 
 def _apply_operator_intent(cfg: Config, deps: Deps, by_name: dict,
@@ -3009,7 +3016,7 @@ def _apply_operator_intent(cfg: Config, deps: Deps, by_name: dict,
     repository = by_name.get(task.repository) if task is not None else None
     if repository is not None:
         turn = _Turn(cfg, deps, repository, None, None, False, actor=intent.actor or "operator")
-        _apply(turn, task, Event(_OPERATOR_INTENTS[intent.action]))
+        _apply(turn, task, _operator_event(intent))
     elif intent.action in _UNTRACKED_ENDS:
         _end_untracked(cfg, deps, by_name, task, intent)
     else:
@@ -3089,11 +3096,11 @@ class IntentDropped(Exception):
 
 
 def _require_resume_model(cfg: Config, by_name: dict,
-                          task: TaskState, model: str) -> None:
+                          task: TaskState | None, model: str) -> None:
     """The authoritative check of a resume intent's model (an intent file can
     bypass the console's 422): configured for the repository, and of the stage
     pick's provider. Raises IntentDropped."""
-    if not model:
+    if not model or task is None:
         return
     repository = by_name.get(task.repository)
     policy = policy_for(cfg, repository)
@@ -3105,47 +3112,30 @@ def _require_resume_model(cfg: Config, by_name: dict,
         raise IntentDropped(refusal, model)
 
 
-def _save_queued_resume(cfg: Config, task: TaskState, model: str,
-                        bypass_usage: bool) -> None:
-    save(cfg.state_dir, _with_resume_override(task, model, bypass_usage))
-
-
 def _with_resume_override(task: TaskState, model: str, bypass_usage: bool) -> TaskState:
     """The model the next wake runs on, and whether it launches past the
     usage gate."""
     return replace(task, resume_model_override=model, resume_bypass_usage=bypass_usage)
 
 
-def _to_resume(task: TaskState | None, issue: int) -> TaskState | None:
-    """The task a resume wakes; None (skipped) unless it is parked or a
-    crash. A crash is queued like any wake, so capacity, slots and admission
-    still decide when; it wakes from failed, so _resume_one respawns its
-    stage instead of continuing a transcript."""
-    if task is not None and crashed(task.status):
-        return task
-    if task is None or not _parked(task):
-        print(f"[warn] resume intent for #{issue}: task not parked — skipped",
-              file=sys.stderr)
-        return None
-    return task
-
-
-def _apply_resume_intent(cfg: Config, by_name: dict,
+def _apply_resume_intent(cfg: Config, deps: Deps, by_name: dict,
                          task: TaskState | None, intent: intents.Intent) -> None:
-    task = _to_resume(task, intent.issue)
-    if task is None:
-        return
-    requested_model = str(intent.payload.get("model") or "")
-    _require_resume_model(cfg, by_name, task, requested_model)
-    bypass_usage = intent.payload.get("bypass_usage") is True
-    if task.status.kind is Kind.WAKING:
-        _save_queued_resume(cfg, task, requested_model, bypass_usage)
-        return
-    _wake(cfg, task,
-          intent.payload.get("text")
-          or "The operator resumed this task. Continue.",
-          hold=False, actor=intent.actor or "operator", cause=Cause.RESUME,
-          model_override=requested_model, bypass_usage=bypass_usage)
+    """Let the table decide the resume; a task it wakes (not one already
+    waking) gets the resume text queued for the session it launches."""
+    _require_resume_model(cfg, by_name, task, _operator_event(intent).detail.model)
+    _apply_operator_intent(cfg, deps, by_name, task, intent)
+    if _woke(cfg, task):
+        _queue_message(cfg, task.repository, task.issue,
+                       intent.payload.get("text") or "The operator resumed this task. Continue.",
+                       intent.actor or "operator")
+
+
+def _woke(cfg: Config, before: TaskState | None) -> bool:
+    """The intent just moved the task into waking."""
+    if before is None or before.status.kind is Kind.WAKING:
+        return False
+    after = load(cfg.state_dir, before.repository, before.issue)
+    return after is not None and after.status.kind is Kind.WAKING
 
 
 def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
@@ -3157,12 +3147,12 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
         _apply_reply_intent(cfg, deps, by_name, task, intent)
     elif intent.action == "answers":
         _apply_answers_intent(cfg, deps, by_name, task, intent)
+    elif intent.action == "resume":
+        _apply_resume_intent(cfg, deps, by_name, task, intent)
     elif intent.action in _OPERATOR_INTENTS:
         _apply_operator_intent(cfg, deps, by_name, task, intent)
     elif intent.action == "retry":
         _apply_retry_intent(cfg, issue)
-    elif intent.action == "resume":
-        _apply_resume_intent(cfg, by_name, task, intent)
     else:
         print(f"[warn] unknown intent action {intent.action!r} for #{issue}",
               file=sys.stderr)
