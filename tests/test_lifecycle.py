@@ -20,7 +20,7 @@ from dispatcher.lifecycle import (TABLE, AcquireSlot, ApplyRound, At, CancelIssu
                                   decide, graph, next_transitions,
                                   occupies, operator_request)
 from dispatcher.classify import Look
-from dispatcher.lifecycle import (Admission, Attempt, Death, Gate, LaunchFailure, LoginCode, Notify, Pane,
+from dispatcher.lifecycle import (Admission, Attempt, Death, Feedback, Gate, LaunchFailure, LoginCode, Notify, Pane,
                                   Ranked, Report, ResumeChoice, Silence, Stranded, Wait,
                                   Woken)
 from dispatcher.loops import Decision, Loop, Outcome as Rounds
@@ -140,6 +140,7 @@ DETAILS = {
     E.CANDIDATE_RANKED: [Ranked(False), Ranked(True)],
     E.OP_RESUME: [ResumeChoice("", False), ResumeChoice("anthropic/claude-opus-5", True)],
     E.OP_LOGIN_CODE: [LoginCode("ABCD-1234", False), LoginCode("ABCD-1234", True)],
+    E.PR_FEEDBACK: [Feedback("PR #12, newest feedback 2026-09-07T09:00:00Z")],
     **{e: [Attempt(None), Attempt(SPENT), Attempt(CAPPED)]
        for e in (E.CI_FINISHED, E.PR_CHECK_FAILED, E.PR_CONFLICT)},
 }
@@ -304,7 +305,7 @@ def test_a_pr_open_ends_the_session_once_then_gives_the_slot_back(stage):
 
 
 def test_pr_feedback_wakes_an_address_review_round():
-    got = decide(At(S.PR_OPEN, PR), Event(E.PR_FEEDBACK))
+    got = decide(At(S.PR_OPEN, PR), Event(E.PR_FEEDBACK, Feedback("PR #12")))
     assert got.status == waking(PR, "attention(feedback)")
     got = decide(At(S.PR_OPEN, got.status), Event(E.RESUME_ADMITTED, Woken("")))
     assert got == Transition(RUNNING, S.ADDRESS_REVIEW, (AcquireSlot(), SpawnAddressReview()))

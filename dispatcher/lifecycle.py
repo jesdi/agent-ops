@@ -185,8 +185,14 @@ class Attempt:
     round: Decision | None    # the round a failure spends; None: a success spends none
 
 
+@dataclass(frozen=True)
+class Feedback:
+    """pr-feedback."""
+    note: str                 # what the pr_feedback notice says of it
+
+
 Detail = (Report | Silence | Wait | Death | Stranded | LaunchFailure | Woken | Ranked
-          | ResumeChoice | LoginCode | Attempt)
+          | ResumeChoice | LoginCode | Attempt | Feedback)
 _DETAIL: dict[EventType, type] = {
     EventType.SESSION_SIGNAL: Report, EventType.SESSION_IDLE: Silence,
     EventType.SESSION_WAITING: Wait, EventType.SESSION_DIED: Death,
@@ -194,7 +200,7 @@ _DETAIL: dict[EventType, type] = {
     EventType.RESUME_ADMITTED: Woken, EventType.CANDIDATE_RANKED: Ranked,
     EventType.OP_RESUME: ResumeChoice, EventType.OP_LOGIN_CODE: LoginCode,
     EventType.CI_FINISHED: Attempt, EventType.PR_CHECK_FAILED: Attempt,
-    EventType.PR_CONFLICT: Attempt}
+    EventType.PR_CONFLICT: Attempt, EventType.PR_FEEDBACK: Feedback}
 # The facts a live session's park reads: the login prompt its pane shows.
 _LOGIN_FACTS = (Report, Silence, Wait, Stranded)
 
@@ -519,6 +525,14 @@ _PR_ATTENTION = {EventType.PR_FEEDBACK: Cause.ATTENTION_FEEDBACK,
 
 def _wake_for_pr(f: Facts) -> Status:
     return Status(Kind.WAKING, origin=f.status, cause=_PR_ATTENTION[f.event.type])
+
+
+def _feedback_told(f: Facts) -> Notify:
+    return Notify("pr_feedback", f.event.detail.note)
+
+
+def _attention_told(f: Facts) -> Notify:
+    return Notify("pr_attention", f.event.detail.round.detail)
 
 
 def _stay(f: Facts) -> Status:
@@ -1116,12 +1130,12 @@ TABLE: tuple[Row, ...] = _complete([
     *_rest([E.ACCESS_REACHED], Ignore("not waiting for access")),
 
     # PR events (requirement 13)
-    Row(K.PARKED_PR, E.PR_FEEDBACK, K.WAKING, build=_wake_for_pr,
-        actions=(Notify("pr_feedback"),)),
+    Row(K.PARKED_PR, E.PR_FEEDBACK, K.WAKING, build=_wake_for_pr, derive=(_feedback_told,)),
+    # a red check or a conflict spends a ci round (loops) the row counts.
     *_rows([K.PARKED_PR], (E.PR_CHECK_FAILED, E.PR_CONFLICT), K.PARKED_HUMAN,
-           guard=loop_exhausted, build=_capped, derive=(_ask_capped,)),
-    *_rows([K.PARKED_PR], (E.PR_CHECK_FAILED, E.PR_CONFLICT), K.WAKING, build=_wake_for_pr,
-           actions=(Notify("pr_attention"),)),
+           guard=loop_exhausted, build=_capped, derive=(_round, _ask_capped)),
+    *_rows([K.PARKED_PR], (E.PR_CHECK_FAILED, E.PR_CONFLICT), K.WAKING, guard=counted,
+           build=_wake_for_pr, derive=(_round, _attention_told)),
     *_rest(_PR_POKES, Ignore("the PR is acted on only while parked on it")),
     *_rows(_LIVE, [E.PR_MERGED], K.DONE, actions=(EndSession(), FinishMerged(),
                                                  Notify("task_done"))),

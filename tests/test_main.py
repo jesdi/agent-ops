@@ -5885,6 +5885,59 @@ def test_human_feedback_resets_ci_rounds(tmp_path, monkeypatch):
     assert (t.attention, t.ci_rounds) == ("feedback", 0)
 
 
+def test_pr_feedback_wakes_address_review(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = dc_replace(replace_capacity(cfg(tmp_path), 0), loop_caps=LoopCaps(ci=3))
+    pr_open_task(c, status=PR)
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload(comments=[{"createdAt": "2026-09-07T09:00:00Z",
+                                           "author": {"login": "alice"}}])
+    notif = FakeNotifier()
+    main.run_pass(c, deps(gh, notifier=notif))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert (t.stage, t.status, t.ci_rounds) == (
+        Stage.PR_OPEN, waking(PR, "attention(feedback)"), 0)
+    assert events(c, "transition")[-1]["transition"]["event"] == "pr-feedback"
+    note = next(ctx["note"] for tmpl, ctx in notif.calls if tmpl == "pr_feedback")
+    assert "2026-09-07T09:00:00Z" in note
+
+
+def test_ci_loop_exhausted_at_pr_open(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = dc_replace(cfg(tmp_path), loop_caps=LoopCaps(ci=3))
+    pr_open_task(c, status=PR, ci_rounds=3)
+    gh = FakeGitHub(); gh.pr_payloads[12] = payload(head="abc")
+    gh.ci = [CIStatus("failure", "2026-09-07T10:00:00Z")]
+    notif = FakeNotifier(); sess = FakeSessions()
+    main.run_pass(c, deps(gh, sess, notifier=notif))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert (t.stage, t.status.kind, t.status.reason, t.ci_rounds) == (
+        Stage.PR_OPEN, Kind.PARKED_HUMAN, HumanReason.LOOP_CAP, 4)
+    assert t.check_cursor == "2026-09-07T10:00:00Z"
+    assert "parked_question" in notif.sent and not sess.spawned
+    # A later conflict is ignored: the task waits for the operator.
+    gh.pr_payloads[12] = payload(mergeable="CONFLICTING", head="def")
+    main.run_pass(c, deps(gh, sess))
+    assert load(c.state_dir, "portfolio_eval", 42) == t
+
+
+def test_one_red_check_seen_across_two_passes_charges_one_round(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = replace_capacity(cfg(tmp_path), 0)   # the round is not launched
+    pr_open_task(c, status=PR)
+    gh = FakeGitHub(); gh.pr_payloads[12] = payload()
+    gh.ci = [CIStatus("failure", "2026-09-07T10:00:00Z")]
+    notif = FakeNotifier()
+    main.run_pass(c, deps(gh, notifier=notif))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert (t.status, t.ci_rounds) == (waking(PR, "attention(check-failed)"), 1)
+    save(c.state_dir, dc_replace(t, status=PR))   # back on GitHub, same red check
+    main.run_pass(c, deps(gh, notifier=notif))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert (t.status, t.ci_rounds) == (PR, 1)
+    assert notif.sent.count("pr_attention") == 1 and len(events(c, "round")) == 1
+
+
 def test_console_reply_operator_wake_clears_all_four_counters(tmp_path, monkeypatch):
     from dispatcher import intents as intents_mod
     patch_usage(monkeypatch)
@@ -6099,25 +6152,6 @@ def test_ordinary_park_at_the_gate_drops_the_request(tmp_path):
     assert t.status == human("decision", "blocked by test")
     assert (t.review_rounds, t.gate_rounds, t.e2e_rounds, t.ci_rounds) == (1, 2, 0, 1), (
         "loop counters must be unchanged")
-
-
-def test_loop_exhaustion_park_asks_no_page(tmp_path):
-    """Slice 13: _park_exhausted parks for the operator with no request.
-    spec_path and loop counters must be preserved."""
-    c = cfg(tmp_path)
-    make_task(c, stage=Stage.REVIEW, status=ci(7), slot=NO_SLOT,
-              spec_path="docs/specs/design.md",
-              review_rounds=1, gate_rounds=0, e2e_rounds=2, ci_rounds=0)
-    task = load(c.state_dir, "portfolio_eval", 42)
-    main._park_exhausted(c, deps(notifier=FakeNotifier()), c.repositories[0],
-                         task, "e2e loop exceeded its cap of 2 rounds")
-    t = load(c.state_dir, "portfolio_eval", 42)
-    assert operator_request(t) is None, (
-        f"exhaustion park must ask no page, got {operator_request(t)!r}")
-    assert t.spec_path == "docs/specs/design.md", "spec_path must be preserved"
-    assert t.status == human("loop-cap", "e2e loop exceeded its cap of 2 rounds")
-    assert (t.review_rounds, t.gate_rounds, t.e2e_rounds, t.ci_rounds) == (1, 0, 2, 0), (
-        "loop counters must be unchanged by the clear")
 
 
 # ---------------------------------------------------------------------------

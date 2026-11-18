@@ -45,7 +45,7 @@ from dispatcher.artifacts import (REVIEW_PAGE, TICKETS_DIR, check_spec, check_ti
 from dispatcher.classify import (BackgroundView, Look, Observation, Reads, artifact_path,
                                  classify, config_note)
 from dispatcher.lifecycle import (AcquireSlot, Admission, ApplyRound, At, Attempt, ClearTurnMarkers,
-                                  ContinueSession, SpawnAddressReview,
+                                  ContinueSession, Feedback, SpawnAddressReview,
                                   EndPokeStretch, EndSession, EnterGate, Event, EventType,
                                   Flush, LaunchFailure, LinkPR, MarkAsked, Notify,
                                   CancelIssue, Ignore, Pane, Poke, PublishSpec, RecordBackgroundWait,
@@ -1007,47 +1007,6 @@ def _park_for_input(cfg: Config, deps: Deps, repository: Repository, task: TaskS
                           issue=task.issue, stage=task.stage.value, detail=note)
 
 
-def _park_exhausted(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
-                    note: str) -> None:
-    """A bounded loop hit its cap with no live session to end (a CI park, or
-    a pr-open task): park for the operator. Their reply wakes it with a
-    fresh budget (_wake / the reply intent zero the counters)."""
-    msg_id = deps.notifier.send(
-        "parked_question", issue=task.issue, title=task.title,
-        url=_url(repository, task.issue), repository=repository.name, note=note)
-    parked = park(task, Status(Kind.PARKED_HUMAN, reason=HumanReason.LOOP_CAP, note=note),
-                  msg_id=msg_id)
-    save(cfg.state_dir, replace(parked, updated_at=_now()))
-    eventlog.append_event(cfg.state_dir, "parked", repository=repository.name,
-                          issue=task.issue, stage=task.stage.value,
-                          detail="loop exhausted: " + note)
-
-
-def _apply_loop_decision(cfg: Config, deps: Deps, repository: Repository,
-                         task: TaskState, decision: Decision,
-                         park_exhausted) -> tuple[TaskState, bool]:
-    """Shared executor for a loop policy Decision (from machine.ApplyDecision).
-    Returns (updated_task, parked). Parked=True means the caller must return.
-
-    park_exhausted(task, note) is injected by the caller: session path passes
-    _park_for_input (live container — ends session, clears waiting, captures tail);
-    CI/PR paths pass _park_exhausted (no live session)."""
-    if decision.outcome is Outcome.UNCHANGED:
-        return task, False
-    task = replace(decision.apply_to(task), updated_at=_now())
-    save(cfg.state_dir, task)
-    eventlog.append_event(cfg.state_dir, "round", repository=repository.name,
-                          issue=task.issue, stage=task.stage.value,
-                          detail=decision.description)
-    if decision.outcome is Outcome.EXHAUSTED:
-        park_exhausted(task, decision.cap_note)
-        return task, True
-    if decision.outcome is Outcome.LAST_ROUND:
-        _notify(deps, repository, task, "last_round",
-                f"{decision.loop.value} round {decision.round}/{decision.cap}")
-    return task, False
-
-
 def _park_for_login(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
                     note: str, tail: str, login: relogin.LoginPrompt) -> bool:
     """Unlike every other park, the session is NOT ended: the reply path
@@ -1250,16 +1209,33 @@ def _react_to_pr(cfg: Config, deps: Deps, repository: Repository, task: TaskStat
         _react_to_open_pr(cfg, deps, repository, task, res)
 
 
+# A PR event and the cursor it advances first, so the same red check or
+# conflict never raises it twice (feedback's cursor moves at the launch).
+_PR_EVENTS = {"feedback": (EventType.PR_FEEDBACK, None),
+              "check-failed": (EventType.PR_CHECK_FAILED, "check_cursor"),
+              "conflict": (EventType.PR_CONFLICT, "conflict_cursor")}
+
+
 def _react_to_open_pr(cfg: Config, deps: Deps, repository: Repository,
                       task: TaskState, res: "pr_poll.PollResult") -> None:
-    if task.status.kind is not Kind.PARKED_PR:
-        # Parked otherwise: only merge/close still matter. Woken: the round
-        # already queued reads the PR afresh, so new feedback waits for it.
+    """The table decides: only a task parked on its PR acts on it. Woken,
+    the round already queued reads the PR afresh; parked otherwise, only
+    merge/close still matter."""
+    if res.kind not in _PR_EVENTS:
         return
+    kind, cursor = _PR_EVENTS[res.kind]
+    task = replace(task, attention=res.kind, **({cursor: res.latest_ts} if cursor else {}))
+    turn = _Turn(cfg, deps, repository, admit=None, order=None, dry_run=False)
+    _apply(turn, task, Event(kind, _pr_detail(cfg, task, res)))
+
+
+def _pr_detail(cfg: Config, task: TaskState, res: "pr_poll.PollResult"
+               ) -> Feedback | Attempt:
+    """Feedback spends no round; a red check or a conflict spends a ci round."""
     if res.kind == "feedback":
-        _pr_feedback(cfg, deps, repository, task, res)
-    elif res.kind in ("check-failed", "conflict"):
-        _pr_attention(cfg, deps, repository, task, res)
+        return Feedback(f"PR #{task.pr_number}, newest feedback {res.latest_ts}")
+    return Attempt(loops.evaluate(
+        task, loops.PRAttention(f"{res.kind} on PR #{task.pr_number}"), cfg.loop_caps))
 
 
 def _finish_merged_or_warn(cfg: Config, deps: Deps, repository: Repository,
@@ -1285,47 +1261,6 @@ def _fail_closed_pr(cfg: Config, deps: Deps, repository: Repository,
                           detail=f"PR #{task.pr_number} closed unmerged")
     _notify(deps, repository, task, "pr_closed",
             f"PR #{task.pr_number}. Worktree preserved for autopsy.")
-
-
-def _pr_feedback(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
-                 res: "pr_poll.PollResult") -> None:
-    task = loops.reset(task, ResetCause.PR_CYCLE_STARTED)
-    save(cfg.state_dir, replace(wake(task, Cause.ATTENTION_FEEDBACK), attention="feedback",
-                                updated_at=_now()))
-    eventlog.append_event(cfg.state_dir, "pr-feedback",
-                          repository=repository.name, issue=task.issue,
-                          stage=Stage.PR_OPEN.value,
-                          detail=f"newest {res.latest_ts}")
-    _notify(deps, repository, task, "pr_feedback",
-            f"PR #{task.pr_number}, newest feedback {res.latest_ts}")
-
-
-_PR_ATTENTION = {"check-failed": Cause.ATTENTION_CHECK_FAILED,
-                 "conflict": Cause.ATTENTION_CONFLICT}
-
-
-def _pr_attention(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
-                  res: "pr_poll.PollResult") -> None:
-    """A red check or a conflict on the open PR: one round of the ci loop,
-    address-review queued with the reason, cursor advanced so the same
-    condition never re-triggers."""
-    cursor = ({"check-failed": dict(check_cursor=res.latest_ts),
-               "conflict": dict(conflict_cursor=res.latest_ts)}[res.kind])
-    task = replace(task, **cursor)          # advance cursor FIRST
-    dec = loops.evaluate(task, loops.PRAttention(f"{res.kind} on PR #{task.pr_number}"),
-                         cfg.loop_caps)
-    task, parked = _apply_loop_decision(
-        cfg, deps, repository, task, dec,
-        park_exhausted=lambda t, note: _park_exhausted(cfg, deps, repository, t, note))
-    if parked:
-        return          # cursor already applied; _park_exhausted saved the cursor-advanced task
-    # not exhausted: woken for the attention, pr-attention event, pr_attention notify
-    save(cfg.state_dir, replace(wake(task, _PR_ATTENTION[res.kind]), attention=res.kind,
-                                updated_at=_now()))
-    eventlog.append_event(cfg.state_dir, "pr-attention", repository=repository.name,
-                          issue=task.issue, stage=Stage.PR_OPEN.value,
-                          detail=res.kind)
-    _notify(deps, repository, task, "pr_attention", f"{res.kind} on PR #{task.pr_number}")
 
 
 def _finish_merged(cfg: Config, deps: Deps, repository: Repository,
@@ -1637,6 +1572,8 @@ def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit,
         # and pr_poll's trigger is a strict `>`, so the cursor has to be
         # quantised to seconds or a comment from the spawn second is lost.
         task = replace(task, feedback_cursor=_cursor_now())
+        if task.status.cause is Cause.ATTENTION_FEEDBACK:
+            task = loops.reset(task, ResetCause.PR_CYCLE_STARTED)
         _spawn_stage(cfg, deps, repository, task, launch, gh_config=gh_config)
         _consume_execution_choice(cfg, task.repository, task.issue)
 
