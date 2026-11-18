@@ -48,7 +48,7 @@ from dispatcher.lifecycle import (AcquireSlot, Admission, ApplyRound, At, ClearT
                                   EndPokeStretch, EndSession, EnterGate, Event, EventType,
                                   LaunchFailure, LinkPR, MarkAsked, Notify,
                                   Pane, Poke, PublishSpec, RecordBackgroundWait, ReleaseSlot,
-                                  ReportCrash, ReportTaskCrash, RespawnStage, RetryStage,
+                                  Reject, ReportCrash, ReportTaskCrash, RespawnStage, RetryStage,
                                   Stranded, Transition, WakeBlocked, Woken, decide,
                                   login_at, operator_request)
 from dispatcher.loops import Decision, Outcome, ResetCause
@@ -1775,6 +1775,7 @@ class _Turn:
     launched: bool = False              # a launch went through: the choice is used up
     event: Event | None = None
     msg_id: int = 0                     # the park question's message
+    actor: str = "dispatcher"           # who sent the event: the dispatcher or the operator
     after: list[Callable[[TaskState], None]] = field(default_factory=list)
 
 
@@ -1792,6 +1793,8 @@ def _apply(turn: _Turn, task: TaskState, event: Event) -> None:
     actions that end or start a session, then one commit and its
     `transition` event, then the notices (ADR 0015)."""
     outcome = decide(task, event)
+    if isinstance(outcome, Reject):
+        _rejected(turn, task, event, outcome.reason)
     if not isinstance(outcome, Transition):
         log.debug("#%s %s: %s", task.issue, event.type.value, outcome.reason)
         return
@@ -1801,6 +1804,15 @@ def _apply(turn: _Turn, task: TaskState, event: Event) -> None:
     _execute(turn, task, outcome)
     if turn.launched:
         _consume_execution_choice(turn.cfg, task.repository, task.issue)
+
+
+def _rejected(turn: _Turn, task: TaskState, event: Event, reason: str) -> None:
+    """The table refused `event`: a `transition-rejected` event says why."""
+    eventlog.append_event(turn.cfg.state_dir, "transition-rejected", repository=task.repository,
+                          issue=task.issue, stage=task.stage.value, actor=turn.actor,
+                          detail=reason,
+                          transition={"from": task.status.kind.value,
+                                      "event": event.type.value, "stage": task.stage.value})
 
 
 def _execute(turn: _Turn, task: TaskState, t: Transition) -> None:
@@ -1913,7 +1925,7 @@ def _commit(turn: _Turn, before: At, after: TaskState, t: Transition) -> TaskSta
     _discard_stale_answers(before, t, stored)
     save(turn.cfg.state_dir, stored)
     eventlog.append_event(turn.cfg.state_dir, "transition", repository=stored.repository,
-                          issue=stored.issue, stage=t.stage.value,
+                          issue=stored.issue, stage=t.stage.value, actor=turn.actor,
                           transition={"from": before.status.kind.value,
                                       "event": turn.event.type.value,
                                       "to": t.status.kind.value, "stage": t.stage.value})

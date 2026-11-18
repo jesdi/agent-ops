@@ -26,7 +26,8 @@ def append_event(state_dir: str | Path, event: str, *, repository: str = "",
                  issue: int = 0, stage: str = "", model: str = "",
                  actor: str = "dispatcher", detail: str = "",
                  transition: dict | None = None) -> None:
-    """`transition`: a `transition` event's {from, event, to, stage}."""
+    """`transition`: a `transition` event's {from, event, to, stage}, or a
+    `transition-rejected` event's {from, event, stage}."""
     try:
         p = _events_path(state_dir)
         p.parent.mkdir(parents=True, exist_ok=True)

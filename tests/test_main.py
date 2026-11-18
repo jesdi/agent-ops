@@ -7062,3 +7062,43 @@ def test_same_summary_bytes_at_another_path_is_a_new_review_round(tmp_path, monk
     t = load(c.state_dir, "portfolio_eval", 42)
     assert d.notifier.sent == ["awaiting_plan_review"]
     assert operator_request(t).path == ".agent/v2/review.html"
+
+
+def _turn(c, **kw):
+    return main._Turn(c, deps(), c.repositories[0], None, None, False, **kw)
+
+
+def _events(c, name):
+    from dispatcher import eventlog
+    return [e for e in eventlog.read_tail(c.state_dir) if e["event"] == name]
+
+
+def test_a_refused_event_writes_transition_rejected_with_the_reason(tmp_path):
+    from dispatcher.lifecycle import Event, EventType
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.PR_OPEN)
+    task = load(c.state_dir, "portfolio_eval", 42)
+    main._apply(_turn(c, actor="operator"), task, Event(EventType.OP_PARK))
+    [e] = _events(c, "transition-rejected")
+    assert (e["issue"], e["actor"]) == (42, "operator")
+    assert e["transition"] == {"event": "op-park", "from": "parked-pr", "stage": "pr-open"}
+    assert e["detail"] == "only a running task or one at the plan gate can be parked"
+    assert load(c.state_dir, "portfolio_eval", 42) == task
+
+
+def test_an_ignored_event_writes_nothing(tmp_path):
+    from dispatcher.lifecycle import Event, EventType
+    c = cfg(tmp_path)
+    make_task(c)
+    main._apply(_turn(c), load(c.state_dir, "portfolio_eval", 42), Event(EventType.GRACE_EXPIRED))
+    assert _events(c, "transition-rejected") == [] and _events(c, "transition") == []
+
+
+def test_a_transition_event_records_the_turns_actor(tmp_path):
+    from dispatcher.lifecycle import Event, EventType
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.REVIEW)
+    main._apply(_turn(c, actor="operator"), load(c.state_dir, "portfolio_eval", 42),
+                Event(EventType.OP_PARK))
+    [e] = _events(c, "transition")
+    assert (e["actor"], e["transition"]["to"]) == ("operator", "parked-human")
