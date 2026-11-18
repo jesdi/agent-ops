@@ -144,7 +144,7 @@ def test_a_feedback_spawn_starts_a_fresh_round(tmp_path):
 
     log = [(kind, repo, issue) for kind, repo, issue in d.sessions.call_log
            if kind in ("end", "spawn")]
-    assert log == [("spawn", "portfolio_eval", 5)]  # pr-open ended the session already
+    assert log == [("end", "portfolio_eval", 5), ("spawn", "portfolio_eval", 5)]
     t = load(c.state_dir, "portfolio_eval", 5)
     assert t.stage is Stage.ADDRESS_REVIEW
     assert t.status.kind is Kind.RUNNING

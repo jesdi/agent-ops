@@ -1137,7 +1137,7 @@ TABLE: tuple[Row, ...] = _complete([
     *_rows([K.PARKED_PR], (E.PR_CHECK_FAILED, E.PR_CONFLICT), K.WAKING, guard=counted,
            build=_wake_for_pr, derive=(_round, _attention_told)),
     *_rest(_PR_POKES, Ignore("the PR is acted on only while parked on it")),
-    *_rows(_LIVE, [E.PR_MERGED], K.DONE, actions=(EndSession(), FinishMerged(),
+    *_rows(_LIVE, [E.PR_MERGED], K.DONE, actions=(FinishMerged(), EndSession(),
                                                  Notify("task_done"))),
     *_rows(_LIVE, [E.PR_CLOSED], K.FAILED, build=_failed(FailReason.PR_CLOSED),
            actions=(EndSession(), Notify("pr_closed"))),

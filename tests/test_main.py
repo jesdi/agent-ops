@@ -4429,6 +4429,82 @@ def test_merge_after_an_exhausted_park_ends_done(tmp_path, monkeypatch):
     assert (got.stage, got.status) == (Stage.PR_OPEN, DONE) and got.done_at
 
 
+class _RealPanes(FakeSessions):
+    """Panes as podman keeps them: ending one kills it, and a launch beside a
+    live one is refused (sessions._free_name)."""
+
+    def end(self, repository, issue):
+        super().end(repository, issue)
+        self.alive_set.discard(issue)
+
+    def spawn_stage(self, repository, issue, *a, **kw):
+        if issue in self.alive_set:
+            raise RuntimeError(f"container for #{issue} is still running")
+        super().spawn_stage(repository, issue, *a, **kw)
+        self.alive_set.add(issue)
+
+
+def test_merge_during_address_review_whose_teardown_fails_finishes_next_pass(
+        tmp_path, monkeypatch):
+    """The teardown runs before the pane is ended: a raise leaves the
+    address-review session alive, so the next pass finds no crash and the
+    still-merged PR finishes the task."""
+    patch_usage(monkeypatch)
+    removed = patch_teardown(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.ADDRESS_REVIEW, status=RUNNING, slot=0, pr_number=12)
+
+    class CloseFailsOnce(FakeGitHub):
+        failed = False
+
+        def close_issue(self, repo, issue):
+            if not self.failed:
+                self.failed = True
+                raise subprocess.CalledProcessError(1, ["gh"])
+            super().close_issue(repo, issue)
+
+    gh = CloseFailsOnce()
+    gh.pr_payloads[12] = payload(state="MERGED", merged_at="2026-07-30T10:00:00Z")
+    notif, sess = FakeNotifier(), _RealPanes(alive={42})
+    main.run_pass(c, deps(gh, sess, notifier=notif))
+    main.run_pass(c, deps(gh, sess, notifier=notif))
+    got = load(c.state_dir, "portfolio_eval", 42)
+    assert (got.status, got.slot) == (DONE, NO_SLOT) and got.done_at
+    assert len(removed) == 1 and sess.ended == [42]
+    assert "session_crashed" not in notif.sent and notif.sent.count("task_done") == 1
+
+
+def test_feedback_on_a_parked_pr_with_a_live_pane_ends_it_before_address_review(
+        tmp_path, monkeypatch):
+    """A task parked at pr-open before the pr-open transition ended its pane
+    still has a live review session: the address-review launch ends it."""
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    pr_open_task(c, status=PR)
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload(comments=[{"createdAt": "2026-09-07T09:00:00Z",
+                                           "author": {"login": "alice"}}])
+    notif, sess = FakeNotifier(), _RealPanes(alive={42})
+    main.run_pass(c, deps(gh, sess, notifier=notif))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert (t.stage, t.status) == (Stage.ADDRESS_REVIEW, RUNNING)
+    assert sess.ended == [42] and sess.spawned[-1][1] == "address-review"
+
+
+def test_conflicts_past_the_cap_park_the_pr_open_task_on_a_human(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = dc_replace(cfg(tmp_path), loop_caps=LoopCaps(ci=1))
+    pr_open_task(c, ci_rounds=1)
+    gh = FakeGitHub(); gh.pr_payloads[12] = payload(mergeable="CONFLICTING", head="abc")
+    notif, sess = FakeNotifier(), FakeSessions()
+    main.run_pass(c, deps(gh, sess, notifier=notif))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert (t.stage, t.status.kind, t.conflict_cursor) == (
+        Stage.PR_OPEN, Kind.PARKED_HUMAN, "abc")
+    assert t.status.reason is HumanReason.LOOP_CAP
+    assert "parked_question" in notif.sent and not sess.spawned
+
+
 def test_review_done_captures_pr_number(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
@@ -4500,7 +4576,7 @@ def test_pending_feedback_spawns_address_review_when_capacity_frees(
     assert got.feedback_cursor != ""      # cursor = spawn time
     assert got.slot != NO_SLOT
     assert [s for s in sess.spawned if s[1] == "address-review"]
-    assert sess.ended == []  # the pr-open transition already ended the review session
+    assert sess.ended == [42]  # any pane still there is ended before the launch
 
 
 def test_pending_feedback_not_spawned_over_capacity(tmp_path, monkeypatch):
@@ -5731,7 +5807,7 @@ def test_pr_opens_and_parks_on_github_ending_the_review_session_once(tmp_path, m
     main.run_pass(c, d)
     main.run_pass(c, d)
     assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.ADDRESS_REVIEW
-    assert sess.ended == [42]
+    assert sess.ended == [42, 42]  # the pr-open park, then the launch's own end
 
 
 def test_blocked_implement_session_parks_in_its_stage(tmp_path, monkeypatch):
@@ -7745,7 +7821,7 @@ def test_resume_admitted_on_pr_open_spawns_an_operator_address_review_round(tmp_
     t = _resume_admitted(_admitted_turn(c, sess, Stage.ADDRESS_REVIEW), c)
     [(issue, stage, _model, prompt, _)] = sess.spawned
     assert (issue, stage) == (42, "address-review") and "rename it" in prompt
-    assert sess.resumed == [] and sess.ended == []   # the pr-open transition ended it
+    assert sess.resumed == [] and sess.ended == [42]   # ended before the launch
     assert (t.stage, t.status.kind) == (Stage.ADDRESS_REVIEW, Kind.RUNNING)
     assert "Reason for this round: operator" in prompt
     assert t.feedback_cursor and t.ci_rounds == 0

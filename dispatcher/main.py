@@ -1210,7 +1210,7 @@ def _react_to_pr(cfg: Config, deps: Deps, repository: Repository, task: TaskStat
     teardown raises commits nothing and is retried next pass (a merged PR
     still reads merged)."""
     if res.kind not in _PR_ENDS:
-        _react_to_open_pr(cfg, deps, repository, task, res)
+        _react_to_open_pr(cfg, deps, repository, task, res, dry_run)
         return
     turn = _Turn(cfg, deps, repository, admit=None, order=None, dry_run=dry_run)
     try:
@@ -1232,7 +1232,7 @@ _PR_EVENTS = {"feedback": (EventType.PR_FEEDBACK, None),
 
 
 def _react_to_open_pr(cfg: Config, deps: Deps, repository: Repository,
-                      task: TaskState, res: "pr_poll.PollResult") -> None:
+                      task: TaskState, res: "pr_poll.PollResult", dry_run: bool) -> None:
     """The table decides: only a task parked on its PR acts on it. Woken,
     the round already queued reads the PR afresh; parked otherwise, only
     merge/close still matter."""
@@ -1240,7 +1240,7 @@ def _react_to_open_pr(cfg: Config, deps: Deps, repository: Repository,
         return
     kind, cursor = _PR_EVENTS[res.kind]
     task = replace(task, **({cursor: res.latest_ts} if cursor else {}))
-    turn = _Turn(cfg, deps, repository, admit=None, order=None, dry_run=False)
+    turn = _Turn(cfg, deps, repository, admit=None, order=None, dry_run=dry_run)
     _apply(turn, task, Event(kind, _pr_detail(cfg, task, res)))
 
 
@@ -1891,11 +1891,11 @@ def _session_continued(turn: _Turn, task: TaskState, act: ContinueSession) -> Ta
 
 
 def _address_review_spawned(turn: _Turn, task: TaskState, act: SpawnAddressReview) -> TaskState:
-    """An admitted wake at pr-open starts an address-review round. No
-    session runs at pr-open (the pr-open transition ended it), so none is
-    ended here."""
+    """An admitted wake at pr-open starts an address-review round. Its pane
+    is ended first: a task parked at pr-open before that transition ended
+    the session, or a legacy loop-cap park, may still hold a live one."""
     launch, message = turn.launches[Stage.ADDRESS_REVIEW], _resume_text(task)
-    return _started(turn, task, Stage.ADDRESS_REVIEW, lambda task: _address_review_round(
+    return _relaunched(turn, task, Stage.ADDRESS_REVIEW, lambda task: _address_review_round(
         turn.cfg, turn.deps, turn.repository, task, launch, message, turn.gh_config))
 
 
@@ -2148,8 +2148,9 @@ def _issue_canceled(turn: _Turn, task: TaskState, act: CancelIssue) -> TaskState
 
 
 def _merge_finished(turn: _Turn, task: TaskState, act: FinishMerged) -> TaskState:
-    """Before the commit, so a raise leaves the task parked on its PR. The
-    issue close comes first (an issue the operator closed, even as not
+    """Before the commit and before the pane is ended, so a raise leaves
+    the task as it was (parked on its PR, or its address-review session
+    still running, never read as crashed). The issue close comes first (an issue the operator closed, even as not
     planned, is left as it is), then the board (a board without Done is
     skipped with a warning), then the teardown."""
     deps, repository = turn.deps, turn.repository
