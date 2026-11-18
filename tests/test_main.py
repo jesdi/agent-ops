@@ -5907,8 +5907,8 @@ def test_conflict_queues_address_review_once_per_head(tmp_path, monkeypatch):
     gh = FakeGitHub(); gh.pr_payloads[12] = payload(mergeable="CONFLICTING", head="abc")
     sess = FakeSessions(); main.run_pass(c, deps(gh, sess))
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert (t.stage, t.conflict_cursor, t.attention) == (Stage.ADDRESS_REVIEW, "abc", "conflict")
-    assert "conflict" in sess.spawned[-1][3]
+    assert (t.stage, t.conflict_cursor) == (Stage.ADDRESS_REVIEW, "abc")
+    assert "Reason for this round: conflict" in sess.spawned[-1][3]
 
 
 def test_ci_rounds_past_the_cap_park_the_pr_open_task(tmp_path, monkeypatch):
@@ -5939,8 +5939,8 @@ def test_operator_wake_on_a_parked_pr_open_task_is_a_fresh_address_review_round(
     main._queue_message(c, "portfolio_eval", 42, "the flaky test is known — skip it", "operator")
     sess = FakeSessions(); main.run_pass(c, deps(sess=sess))
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert (t.stage, t.status.kind, t.ci_rounds, t.attention) == (
-        Stage.ADDRESS_REVIEW, Kind.RUNNING, 0, "operator")
+    assert (t.stage, t.status.kind, t.ci_rounds) == (Stage.ADDRESS_REVIEW, Kind.RUNNING, 0)
+    assert "Reason for this round: operator" in sess.spawned[-1][3]
     assert sess.spawned[-1][1] == "address-review" and "skip it" in sess.spawned[-1][3]
 
 
@@ -5951,9 +5951,10 @@ def test_human_feedback_resets_ci_rounds(tmp_path, monkeypatch):
     gh = FakeGitHub()
     gh.pr_payloads[12] = payload(comments=[{"createdAt": "2026-09-07T09:00:00Z",
                                            "author": {"login": "alice"}}])
-    main.run_pass(c, deps(gh))
+    sess = FakeSessions(); main.run_pass(c, deps(gh, sess))
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert (t.attention, t.ci_rounds) == ("feedback", 0)
+    assert t.ci_rounds == 0
+    assert "Reason for this round: feedback" in sess.spawned[-1][3]
 
 
 def test_pr_feedback_wakes_address_review(tmp_path, monkeypatch):
@@ -6532,7 +6533,7 @@ def test_ci_denial_does_not_block_feedback_or_conflicts(tmp_path, monkeypatch, c
     main._poll_prs(c, deps(gh), c.repositories[0])
     task = load(c.state_dir, "portfolio_eval", 42)
     assert feedback_pending(task)
-    assert task.attention == ("feedback" if feedback else "conflict")
+    assert task.status.cause is (Cause.ATTENTION_FEEDBACK if feedback else Cause.ATTENTION_CONFLICT)
     if not feedback:
         assert "CI denied" in caplog.text
         assert task.check_cursor == ""
@@ -7745,7 +7746,8 @@ def test_resume_admitted_on_pr_open_spawns_an_operator_address_review_round(tmp_
     [(issue, stage, _model, prompt, _)] = sess.spawned
     assert (issue, stage) == (42, "address-review") and "rename it" in prompt
     assert sess.resumed == [] and sess.ended == []   # the pr-open transition ended it
-    assert (t.stage, t.status.kind, t.attention) == (Stage.ADDRESS_REVIEW, Kind.RUNNING, "operator")
+    assert (t.stage, t.status.kind) == (Stage.ADDRESS_REVIEW, Kind.RUNNING)
+    assert "Reason for this round: operator" in prompt
     assert t.feedback_cursor and t.ci_rounds == 0
     assert (t.resume_text, t.resume_model_override) == ("", "")
     [e] = _events(c, "resumed")

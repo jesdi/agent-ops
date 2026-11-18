@@ -169,7 +169,6 @@ class TaskState:
     ci_rounds: int = 0
     check_cursor: str = ""               # completedAt of the newest red check acted on
     conflict_cursor: str = ""            # head sha of the last conflict acted on
-    attention: str = ""                  # why address-review is pending: feedback|check-failed|conflict|operator
     # One-shot operator choice for a wake already queued behind admission.
     # Cleared after the session successfully resumes.
     resume_model_override: str = ""
@@ -458,11 +457,12 @@ def _read_terminal(d: dict) -> None:
 
 # Retired fields, dropped on load (ADR 0004): the park fields the status
 # replaced (#132), the one implement session's ticket tracks, slice 24's
-# artifact and the pending reply the message queue replaced.
+# artifact, the pending reply the message queue replaced and the PR
+# attention the status cause carries.
 _RETIRED = ("park", "park_reason", "park_note", "ci_run_id", "crashed_stage",
             "unlaunched", "operator_request", "feedback_pending",
             "ticket_cursor", "ticket_tracks", "ticket_names", "ticket_without_pick",
-            "artifact", "pending_reply")
+            "artifact", "pending_reply", "attention")
 
 
 def _read(p: Path) -> TaskState | None:

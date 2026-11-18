@@ -92,8 +92,7 @@ def test_an_unreached_repository_at_a_stage_hand_over_parks_the_task_with_the_li
 def feedback_pending(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
-    make_task(c, issue=42, stage=Stage.PR_OPEN, status=FEEDBACK, slot=NO_SLOT, pr_number=12,
-              attention="feedback")
+    make_task(c, issue=42, stage=Stage.PR_OPEN, status=FEEDBACK, slot=NO_SLOT, pr_number=12)
     return c
 
 
@@ -119,8 +118,8 @@ def test_an_unreached_repository_at_a_feedback_spawn_parks_it_with_the_feedback_
     sess = FakeSessions(alive={42})
     main.run_pass(c, deps_of(App(reached=()), sess))
     task = load(c.state_dir, "portfolio_eval", 42)
-    # the park replaces the wake; the attention it answers stays on the task
-    assert (task.status.kind, task.attention) == (Kind.PARKED_ACCESS, "feedback")
+    # the park replaces the wake
+    assert task.status.kind is Kind.PARKED_ACCESS
     assert sess.spawned == []
 
 
