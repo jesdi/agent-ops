@@ -404,3 +404,32 @@ def test_force_run_on_a_running_task_is_refused(tmp_path):
                     json={"model": "anthropic/claude-opus-5"})
     assert r.status_code == 409
     assert fake.intents == [] and ("alpha", 7) not in fake.execution_overrides
+
+
+def test_reply_for_an_issue_with_no_task_file_writes_the_intent(tmp_path):
+    fake, client = rig(tmp_path)
+    fake.tasks_list = []
+    r = client.post("/api/task/alpha/7/reply", headers=HEADERS,
+                    json={"text": "pre-brief"})
+    assert r.status_code == 202
+    assert fake.intents == [("reply", "alpha", 7, {"text": "pre-brief"},
+                             "jesdi@github")]
+
+
+def test_resume_of_a_session_crash_at_implement_is_accepted(tmp_path):
+    fake, client = rig(tmp_path)
+    _at(fake, Stage.IMPLEMENT, failed("session-crash"))
+    assert client.post("/api/task/alpha/7/resume", headers=HEADERS,
+                       json={}).status_code == 202
+    assert fake.intents[-1][0] == "resume"
+
+
+def test_force_run_on_a_killed_task_sends_a_resume_intent(tmp_path):
+    fake, client = rig(tmp_path)
+    _at(fake, Stage.PLAN, failed("killed"))
+    r = client.post("/api/task/alpha/7/run", headers=HEADERS,
+                    json={"model": "anthropic/claude-opus-5"})
+    assert r.status_code == 202
+    assert fake.intents[-1][0] == "resume"
+    assert fake.intents[-1][3] == {"model": "anthropic/claude-opus-5"}
+    assert ("alpha", 7) not in fake.execution_overrides

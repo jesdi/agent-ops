@@ -894,7 +894,8 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
                     None)
         if task is None:
             return None, _queue_candidate(configured_repository, repository, issue)
-        if ended(task.status):
+        # A failed task is Resume's to judge; done and canceled stay terminal.
+        if ended(task.status) and task.status.kind is not Kind.FAILED:
             raise HTTPException(422, f"task {repository}/{issue} is terminal")
         return task, None
 
@@ -934,7 +935,9 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
             payload = {"model": model}
             if req.bypass_usage:
                 payload["bypass_usage"] = True
-            if read_model.shown(task).park:
+            # A parked or failed task wakes only on op-resume (the table may
+            # refuse it); a waking one only needs the override armed.
+            if read_model.shown(task).park or ended(task.status):
                 return _accepted("resume", repository, issue, payload, op)
             _require_applies("resume", repository, issue, payload)
         sources.set_execution_override(
