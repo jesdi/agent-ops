@@ -63,17 +63,19 @@ from dispatcher.models import (Admitted, Entry, ModelPolicy,
 from dispatcher.prompts import render_stage_prompt
 from dispatcher.runtimes import runtime_for
 from dispatcher.sessions import Sessions
-from dispatcher.state import (NO_POKES, NO_SLOT, RANK_REJECTED_PREFIX, WAKE_BLOCKED_PREFIX,
-                              Stage, StageSignal, TaskState, allocate_slot,
+from dispatcher.state import (NO_POKES, NO_SLOT, UNREADABLE_TASK_FILE,
+                              WAKE_BLOCKED_PREFIX, Stage, StageSignal, TaskState, allocate_slot,
                               clear_session, clear_turn_markers, delete, has_waiting,
                               launch_entries, load,
                               load_all, max_slots,
                               next_stage, read_background, read_session,
-                              read_stage_doc, read_stage_signal, scan, stage_signal,
+                              read_stage_doc, read_stage_signal, stage_signal,
                               at_gate, end, park, save, task_key, unpark,
-                              wake)
-from dispatcher.status import (Cause, FailReason, HumanReason, Kind, Status, ended,
-                               occupies)
+                              wake, _clear_wake_blocked, _rank_rejected, _rank_rejected_path,
+                              _readable_tasks, _wake_blocked_path)
+from dispatcher.status import (_REPLY_PARKS, _WAKEABLE, Cause, FailReason, HumanReason, Kind,
+                               Status, ended, occupies)
+from dispatcher.claims import _box_free
 from dispatcher.workspace import (MissingBaseError, append_worktree_file, create_workspace,
                                   exclude_local_state, remove_workspace,
                                   write_task_identity, write_worktree_file)
@@ -522,17 +524,10 @@ _COMMAND_ERRORS = (subprocess.CalledProcessError, OSError, LookupError,
                    ValueError, BoardError)
 
 
-# The parks a reply answers — text for the session.
-_REPLY_PARKS = frozenset({Kind.PARKED_HUMAN, Kind.PARKED_ANSWERS, Kind.PARKED_ACCESS,
-                          Kind.PARKED_REVIEW})
 
 
 def _reply_parked(tasks: list[TaskState]) -> list[TaskState]:
     return [t for t in tasks if t.status.kind in _REPLY_PARKS]
-
-
-# The statuses a Telegram wake (/attach, a reply) acts on: every park and hold.
-_WAKEABLE = _REPLY_PARKS | {Kind.HELD_LOGIN, Kind.PARKED_CI}
 
 
 def _parked(t: TaskState) -> bool:
@@ -1252,11 +1247,6 @@ def _pr_detail(cfg: Config, task: TaskState, res: "pr_poll.PollResult"
         task, loops.PRAttention(f"{res.kind} on PR #{task.pr_number}"), cfg.loop_caps))
 
 
-def _wake_blocked_path(cfg: Config, repository: str, issue: int) -> Path:
-    return (Path(cfg.state_dir)
-            / f"{WAKE_BLOCKED_PREFIX}{task_key(repository, issue)}")
-
-
 def _mark_wake_blocked(cfg: Config, repository: Repository, task: TaskState,
                        reason: str) -> None:
     """Edge-triggered: the event fires the pass a wake FIRST goes hungry, not
@@ -1270,10 +1260,6 @@ def _mark_wake_blocked(cfg: Config, repository: Repository, task: TaskState,
     eventlog.append_event(cfg.state_dir, "wake-blocked", repository=repository.name,
                           issue=task.issue, stage=task.stage.value,
                           detail=reason)
-
-
-def _clear_wake_blocked(cfg: Config, repository: str, issue: int) -> None:
-    _wake_blocked_path(cfg, repository, issue).unlink(missing_ok=True)
 
 
 def _expired(task: TaskState, cutoff_seconds: int) -> bool:
@@ -2521,12 +2507,6 @@ def _report_provisioning_failure(cfg: Config, deps: Deps, repository: Repository
                                   fp=failures.fingerprint(rep))
 
 
-def _box_free(cfg: Config, tasks: list[TaskState]) -> int:
-    """claims.box_free for this pass. `cfg` is the pass's effective config,
-    whose capacity already has a running triage sweep's unit taken off."""
-    return claims.box_free(cfg.capacity, tasks, triage_running=False)
-
-
 def _reconcile_boards(cfg: Config, deps: Deps) -> None:
     """Every project's board, paused ones too, gets a card for each new open
     issue and its repositories the label set (#230 D8). A failure skips
@@ -2598,19 +2578,6 @@ def _ranked_again(cfg: Config, deps: Deps, by_issue: dict, repository: Repositor
 def _swept(outcome: Transition | Ignore | Reject) -> bool:
     return isinstance(outcome, Transition) and any(
         isinstance(a, SweepTombstone) for a in outcome.actions)
-
-
-def _rank_rejected_path(cfg: Config, repository: str, issue: int) -> Path:
-    return Path(cfg.state_dir) / f"{RANK_REJECTED_PREFIX}{task_key(repository, issue)}"
-
-
-def _rank_rejected(cfg: Config, task: TaskState) -> bool:
-    """Edge-triggered like _mark_wake_blocked: the table already refused this
-    very task state on `candidate-ranked` (the marker holds its updated_at),
-    so a card left in Ready is not refused, and logged, every pass. Any
-    change to the task reopens the question."""
-    p = _rank_rejected_path(cfg, task.repository, task.issue)
-    return p.exists() and p.read_text() == task.updated_at
 
 
 def _claimable(cfg: Config, deps: Deps, members: list[Repository], tasks: list[TaskState],
@@ -2849,21 +2816,6 @@ def _claim_new(cfg: Config, deps: Deps, repositories: list[Repository],
                          pass_started, skipped)
     finally:
         failures.write_quarantine_verdict(cfg.state_dir, pass_started, skipped)
-
-
-UNREADABLE_TASK_FILE = "unreadable task file"
-
-
-def _readable_tasks(cfg: Config) -> list[TaskState] | None:
-    """Every task, or None (with a warning) when a task file cannot be read.
-    The one gate of every claim, wake and launch: the task it cannot see may
-    hold an issue, a capacity unit and a slot no count can see."""
-    all_tasks, unreadable = scan(cfg.state_dir)
-    if unreadable:
-        print(f"[warn] no claims, wakes or launches: task file(s) cannot be read: "
-              f"{', '.join(p.name for p in unreadable)}", file=sys.stderr)
-        return None
-    return all_tasks
 
 
 def _task_for_intent(cfg: Config, intent: intents.Intent) -> TaskState | None:

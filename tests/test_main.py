@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 import dispatcher.main as main
-from dispatcher import execution_overrides, failures, github_app, spec_publish
+from dispatcher import execution_overrides, failures, github_app, spec_publish, state
 from dispatcher.board import BoardError
 from dispatcher.github import Candidate
 from dispatcher.pr_poll import CIStatus
@@ -5047,7 +5047,7 @@ def test_blocked_wake_emits_one_event_not_one_per_pass(tmp_path):
     assert len(blocked) == 1
     assert blocked[0]["issue"] == 42
     assert blocked[0]["detail"] == "capacity full"
-    assert main._wake_blocked_path(c, "portfolio_eval", 42).exists()
+    assert state._wake_blocked_path(c, "portfolio_eval", 42).exists()
 
 
 def test_slot_exhaustion_is_reported_as_such(tmp_path, monkeypatch):
@@ -5122,10 +5122,10 @@ def test_marker_clears_once_the_wake_succeeds(tmp_path):
     make_task(c, issue=42, slot=NO_SLOT, status=waking())
     d = deps()
     main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
-    assert main._wake_blocked_path(c, "portfolio_eval", 42).exists()
+    assert state._wake_blocked_path(c, "portfolio_eval", 42).exists()
     main.delete(c.state_dir, "portfolio_eval", 41)                     # capacity frees up
     main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
-    assert not main._wake_blocked_path(c, "portfolio_eval", 42).exists()
+    assert not state._wake_blocked_path(c, "portfolio_eval", 42).exists()
     assert load(c.state_dir, "portfolio_eval", 42).status.kind is Kind.RUNNING
 
 
@@ -5153,14 +5153,14 @@ def test_kill_stops_the_task_waiting_for_a_slot_and_drops_its_marker(
     make_task(c, issue=42, slot=NO_SLOT, status=waking())
     d = deps(sess=FakeSessions(alive={41}))
     main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
-    assert main._wake_blocked_path(c, "portfolio_eval", 42).exists()
+    assert state._wake_blocked_path(c, "portfolio_eval", 42).exists()
 
     intents_mod.write_intent(c.state_dir, "kill", "portfolio_eval", 42, {}, "op", 1)
     main.run_pass(c, d)
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.status == failed("killed")          # no longer waiting for a wake
     main.run_pass(c, d)                          # the sweep heals it from disk
-    assert not main._wake_blocked_path(c, "portfolio_eval", 42).exists()
+    assert not state._wake_blocked_path(c, "portfolio_eval", 42).exists()
 
 
 def test_reconcile_keeps_the_marker_of_a_task_that_is_still_starving(tmp_path):
@@ -5168,11 +5168,11 @@ def test_reconcile_keeps_the_marker_of_a_task_that_is_still_starving(tmp_path):
     make_task(c, issue=41, slot=0, status=RUNNING)
     make_task(c, issue=42, slot=NO_SLOT, status=waking())
     make_task(c, issue=43, slot=NO_SLOT, stage=Stage.PR_OPEN, status=waking(PR, "attention(feedback)"))
-    main._wake_blocked_path(c, "portfolio_eval", 42).touch()
-    main._wake_blocked_path(c, "portfolio_eval", 43).touch()
+    state._wake_blocked_path(c, "portfolio_eval", 42).touch()
+    state._wake_blocked_path(c, "portfolio_eval", 43).touch()
     main._reconcile_wake_blocked(c)
-    assert main._wake_blocked_path(c, "portfolio_eval", 42).exists()   # wake still denied
-    assert main._wake_blocked_path(c, "portfolio_eval", 43).exists()   # feedback spawn still denied
+    assert state._wake_blocked_path(c, "portfolio_eval", 42).exists()   # wake still denied
+    assert state._wake_blocked_path(c, "portfolio_eval", 43).exists()   # feedback spawn still denied
 
 
 def test_reconcile_drops_the_marker_of_a_parked_task_with_pending_feedback(tmp_path):
@@ -5180,18 +5180,18 @@ def test_reconcile_drops_the_marker_of_a_parked_task_with_pending_feedback(tmp_p
     round): it waits for nothing."""
     c = cfg(tmp_path)
     make_task(c, issue=43, slot=NO_SLOT, stage=Stage.PR_OPEN, status=human())
-    main._wake_blocked_path(c, "portfolio_eval", 43).parent.mkdir(parents=True, exist_ok=True)
-    main._wake_blocked_path(c, "portfolio_eval", 43).touch()
+    state._wake_blocked_path(c, "portfolio_eval", 43).parent.mkdir(parents=True, exist_ok=True)
+    state._wake_blocked_path(c, "portfolio_eval", 43).touch()
     main._reconcile_wake_blocked(c)
-    assert not main._wake_blocked_path(c, "portfolio_eval", 43).exists()
+    assert not state._wake_blocked_path(c, "portfolio_eval", 43).exists()
 
 
 def test_reconcile_drops_a_marker_left_by_a_vanished_task(tmp_path):
     c = cfg(tmp_path)
-    main._wake_blocked_path(c, "portfolio_eval", 42).parent.mkdir(parents=True, exist_ok=True)
-    main._wake_blocked_path(c, "portfolio_eval", 42).touch()      # state file already flushed
+    state._wake_blocked_path(c, "portfolio_eval", 42).parent.mkdir(parents=True, exist_ok=True)
+    state._wake_blocked_path(c, "portfolio_eval", 42).touch()      # state file already flushed
     main._reconcile_wake_blocked(c)
-    assert not main._wake_blocked_path(c, "portfolio_eval", 42).exists()
+    assert not state._wake_blocked_path(c, "portfolio_eval", 42).exists()
 
 
 def test_legacy_wake_blocked_marker_is_rekeyed_with_one_repository(tmp_path):
@@ -5201,7 +5201,7 @@ def test_legacy_wake_blocked_marker_is_rekeyed_with_one_repository(tmp_path):
     legacy.touch()
     main._migrate_legacy_keys(c)
     assert not legacy.exists()
-    assert main._wake_blocked_path(c, "portfolio_eval", 42).exists()
+    assert state._wake_blocked_path(c, "portfolio_eval", 42).exists()
 
 
 def test_legacy_wake_blocked_marker_is_dropped_with_several_repositories(tmp_path):
@@ -5213,7 +5213,7 @@ def test_legacy_wake_blocked_marker_is_dropped_with_several_repositories(tmp_pat
     legacy.touch()
     main._migrate_legacy_keys(c)
     assert not legacy.exists()
-    assert not main._wake_blocked_path(c, "portfolio_eval", 42).exists()
+    assert not state._wake_blocked_path(c, "portfolio_eval", 42).exists()
 
 
 def test_console_reply_to_a_login_park_types_the_code(tmp_path, monkeypatch):

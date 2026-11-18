@@ -7,7 +7,7 @@ from datetime import datetime
 
 
 import dispatcher.main as main
-from dispatcher import execution_overrides
+from dispatcher import execution_overrides, state
 from dispatcher.state import NO_SLOT, Stage, load
 from dispatcher.status import HumanReason, Kind
 from tests.dispatchfakes import (ADMIT_ALL, DENY_ALL, FakeSessions, cfg, deps,
@@ -133,7 +133,7 @@ class LoggingSessions(FakeSessions):
 def test_a_feedback_spawn_starts_a_fresh_round(tmp_path):
     c = cfg(tmp_path)
     pending(c, "portfolio_eval", 5)
-    main._wake_blocked_path(c, "portfolio_eval", 5).touch()
+    state._wake_blocked_path(c, "portfolio_eval", 5).touch()
     execution_overrides.save(
         c.state_dir, "portfolio_eval", 5,
         execution_overrides.ExecutionOverride(model="claude-sonnet-4-6",
@@ -149,7 +149,7 @@ def test_a_feedback_spawn_starts_a_fresh_round(tmp_path):
     assert t.stage is Stage.ADDRESS_REVIEW
     assert t.status.kind is Kind.RUNNING
     assert datetime.fromisoformat(t.feedback_cursor).microsecond == 0
-    assert not main._wake_blocked_path(c, "portfolio_eval", 5).exists()
+    assert not state._wake_blocked_path(c, "portfolio_eval", 5).exists()
     assert execution_overrides.load(c.state_dir, "portfolio_eval", 5) is None
 
 

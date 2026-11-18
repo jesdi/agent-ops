@@ -216,3 +216,12 @@ def _waking_problem(status: Status) -> str:
     if status.origin is not None and status.origin.kind in _NO_ORIGIN:
         return f"waking from {status.origin.kind.value}"
     return _detail_problem(status.origin) if status.origin is not None else ""
+
+
+# The parks a reply answers — text for the session.
+_REPLY_PARKS = frozenset({Kind.PARKED_HUMAN, Kind.PARKED_ANSWERS, Kind.PARKED_ACCESS,
+                          Kind.PARKED_REVIEW})
+
+
+# The statuses a Telegram wake (/attach, a reply) acts on: every park and hold.
+_WAKEABLE = _REPLY_PARKS | {Kind.HELD_LOGIN, Kind.PARKED_CI}

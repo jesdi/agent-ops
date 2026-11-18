@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import stat
+import sys
 import tempfile
 import time
 from contextlib import contextmanager
@@ -14,12 +15,16 @@ from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType
+from typing import TYPE_CHECKING
 
 from dispatcher import status as statuses
 from dispatcher.models import (FEEDBACK_PICK, IMPLEMENT_PICK, Entry,
                                ModelPolicy, Order, candidates, pick_provider,
                                review_avoid)
 from dispatcher.status import RUNNING, Cause, Kind, Status, ended, occupies
+
+if TYPE_CHECKING:
+    from dispatcher.config import Config
 
 
 class Stage(str, Enum):
@@ -279,7 +284,7 @@ class StageSignal:
 # state_dir. Written by dispatcher.main, read by web.sources.
 WAKE_BLOCKED_PREFIX = "wake-blocked-"
 # rank-rejected-<repository>-<issue>: the done task's updated_at the table
-# last refused `candidate-ranked` for (dispatcher.main._rank_rejected).
+# last refused `candidate-ranked` for (dispatcher.state._rank_rejected).
 RANK_REJECTED_PREFIX = "rank-rejected-"
 
 
@@ -766,3 +771,40 @@ def archive(state_dir: str | Path, task: TaskState) -> None:
 def load_archived(state_dir: str | Path, repository: str, issue: int) -> TaskState | None:
     task = _read(archive_root(state_dir, repository, issue) / SNAPSHOT)
     return task if task and ended(task.status) else None
+
+
+def _wake_blocked_path(cfg: Config, repository: str, issue: int) -> Path:
+    return (Path(cfg.state_dir)
+            / f"{WAKE_BLOCKED_PREFIX}{task_key(repository, issue)}")
+
+
+def _clear_wake_blocked(cfg: Config, repository: str, issue: int) -> None:
+    _wake_blocked_path(cfg, repository, issue).unlink(missing_ok=True)
+
+
+def _rank_rejected_path(cfg: Config, repository: str, issue: int) -> Path:
+    return Path(cfg.state_dir) / f"{RANK_REJECTED_PREFIX}{task_key(repository, issue)}"
+
+
+def _rank_rejected(cfg: Config, task: TaskState) -> bool:
+    """Edge-triggered like _mark_wake_blocked: the table already refused this
+    very task state on `candidate-ranked` (the marker holds its updated_at),
+    so a card left in Ready is not refused, and logged, every pass. Any
+    change to the task reopens the question."""
+    p = _rank_rejected_path(cfg, task.repository, task.issue)
+    return p.exists() and p.read_text() == task.updated_at
+
+
+UNREADABLE_TASK_FILE = "unreadable task file"
+
+
+def _readable_tasks(cfg: Config) -> list[TaskState] | None:
+    """Every task, or None (with a warning) when a task file cannot be read.
+    The one gate of every claim, wake and launch: the task it cannot see may
+    hold an issue, a capacity unit and a slot no count can see."""
+    all_tasks, unreadable = scan(cfg.state_dir)
+    if unreadable:
+        print(f"[warn] no claims, wakes or launches: task file(s) cannot be read: "
+              f"{', '.join(p.name for p in unreadable)}", file=sys.stderr)
+        return None
+    return all_tasks
