@@ -528,7 +528,7 @@ def _mark_wake_blocked(cfg: Config, repository: Repository, task: TaskState,
     """Edge-triggered: the event fires the pass a wake FIRST goes hungry, not
     every pass thereafter — a resume that waits overnight must not write 144
     identical lines into events.jsonl. The marker is the edge."""
-    p = _wake_blocked_path(cfg, task.repository, task.issue)
+    p = _wake_blocked_path(cfg.state_dir, task.repository, task.issue)
     if p.exists():
         return
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -556,7 +556,7 @@ def _address_review_round(cfg: Config, deps: Deps, repository: Repository, task:
     task = replace(unpark(task), round_reason=_pr_reason(task.status.cause),
                    feedback_cursor=_cursor_now(),
                    resume_model_override="", resume_bypass_usage=False, resume_text="")
-    _clear_wake_blocked(cfg, task.repository, task.issue)
+    _clear_wake_blocked(cfg.state_dir, task.repository, task.issue)
     task = _spawn_stage(cfg, deps, repository, task, launch, message=message,
                         gh_config=gh_config)
     eventlog.append_event(cfg.state_dir, "resumed", repository=repository.name,
@@ -578,7 +578,7 @@ def _continue_woken(cfg: Config, deps: Deps, repository: Repository, task: TaskS
     _log_model(task.worktree, task.stage, str(entry))
     task, detail = _continue_or_restart(cfg, deps, repository, task, launch, message,
                                         gh_config=gh_config)
-    _clear_wake_blocked(cfg, task.repository, task.issue)
+    _clear_wake_blocked(cfg.state_dir, task.repository, task.issue)
     return replace(unpark(task),
                    resume_model_override="",
                    resume_bypass_usage=False,

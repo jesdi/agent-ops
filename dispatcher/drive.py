@@ -276,8 +276,8 @@ def _wake_room(turn: _Turn, task: TaskState) -> Event | None:
     once (WakeBlocked): no event while its marker stands."""
     blocked = _no_room(turn.cfg, task)
     if not blocked:
-        _clear_wake_blocked(turn.cfg, task.repository, task.issue)
-    elif _wake_blocked_path(turn.cfg, task.repository, task.issue).exists():
+        _clear_wake_blocked(turn.cfg.state_dir, task.repository, task.issue)
+    elif _wake_blocked_path(turn.cfg.state_dir, task.repository, task.issue).exists():
         return None
     return Event(EventType.RESUME_ADMITTED, Woken(blocked=blocked))
 
@@ -285,7 +285,7 @@ def _wake_room(turn: _Turn, task: TaskState) -> Event | None:
 def _no_room(cfg: Config, task: TaskState) -> str:
     """Why the wake has no room; its own file is left out of the capacity
     count (a waking task holds no slot, so the slot count may keep it)."""
-    all_tasks = _readable_tasks(cfg)
+    all_tasks = _readable_tasks(cfg.state_dir)
     if all_tasks is None:
         return UNREADABLE_TASK_FILE
     others = [t for t in all_tasks

@@ -424,11 +424,11 @@ def test_reconcile_keeps_the_marker_of_a_task_that_is_still_starving(tmp_path):
     make_task(c, issue=41, slot=0, status=RUNNING)
     make_task(c, issue=42, slot=NO_SLOT, status=waking())
     make_task(c, issue=43, slot=NO_SLOT, stage=Stage.PR_OPEN, status=waking(PR, "attention(feedback)"))
-    state._wake_blocked_path(c, "portfolio_eval", 42).touch()
-    state._wake_blocked_path(c, "portfolio_eval", 43).touch()
+    state._wake_blocked_path(c.state_dir, "portfolio_eval", 42).touch()
+    state._wake_blocked_path(c.state_dir, "portfolio_eval", 43).touch()
     upkeep._reconcile_wake_blocked(c)
-    assert state._wake_blocked_path(c, "portfolio_eval", 42).exists()   # wake still denied
-    assert state._wake_blocked_path(c, "portfolio_eval", 43).exists()   # feedback spawn still denied
+    assert state._wake_blocked_path(c.state_dir, "portfolio_eval", 42).exists()   # wake still denied
+    assert state._wake_blocked_path(c.state_dir, "portfolio_eval", 43).exists()   # feedback spawn still denied
 
 
 def test_reconcile_drops_the_marker_of_a_parked_task_with_pending_feedback(tmp_path):
@@ -436,18 +436,18 @@ def test_reconcile_drops_the_marker_of_a_parked_task_with_pending_feedback(tmp_p
     round): it waits for nothing."""
     c = cfg(tmp_path)
     make_task(c, issue=43, slot=NO_SLOT, stage=Stage.PR_OPEN, status=human())
-    state._wake_blocked_path(c, "portfolio_eval", 43).parent.mkdir(parents=True, exist_ok=True)
-    state._wake_blocked_path(c, "portfolio_eval", 43).touch()
+    state._wake_blocked_path(c.state_dir, "portfolio_eval", 43).parent.mkdir(parents=True, exist_ok=True)
+    state._wake_blocked_path(c.state_dir, "portfolio_eval", 43).touch()
     upkeep._reconcile_wake_blocked(c)
-    assert not state._wake_blocked_path(c, "portfolio_eval", 43).exists()
+    assert not state._wake_blocked_path(c.state_dir, "portfolio_eval", 43).exists()
 
 
 def test_reconcile_drops_a_marker_left_by_a_vanished_task(tmp_path):
     c = cfg(tmp_path)
-    state._wake_blocked_path(c, "portfolio_eval", 42).parent.mkdir(parents=True, exist_ok=True)
-    state._wake_blocked_path(c, "portfolio_eval", 42).touch()      # state file already flushed
+    state._wake_blocked_path(c.state_dir, "portfolio_eval", 42).parent.mkdir(parents=True, exist_ok=True)
+    state._wake_blocked_path(c.state_dir, "portfolio_eval", 42).touch()      # state file already flushed
     upkeep._reconcile_wake_blocked(c)
-    assert not state._wake_blocked_path(c, "portfolio_eval", 42).exists()
+    assert not state._wake_blocked_path(c.state_dir, "portfolio_eval", 42).exists()
 
 
 def test_legacy_wake_blocked_marker_is_rekeyed_with_one_repository(tmp_path):
@@ -457,7 +457,7 @@ def test_legacy_wake_blocked_marker_is_rekeyed_with_one_repository(tmp_path):
     legacy.touch()
     upkeep._migrate_legacy_keys(c)
     assert not legacy.exists()
-    assert state._wake_blocked_path(c, "portfolio_eval", 42).exists()
+    assert state._wake_blocked_path(c.state_dir, "portfolio_eval", 42).exists()
 
 
 def test_legacy_wake_blocked_marker_is_dropped_with_several_repositories(tmp_path):
@@ -469,7 +469,7 @@ def test_legacy_wake_blocked_marker_is_dropped_with_several_repositories(tmp_pat
     legacy.touch()
     upkeep._migrate_legacy_keys(c)
     assert not legacy.exists()
-    assert not state._wake_blocked_path(c, "portfolio_eval", 42).exists()
+    assert not state._wake_blocked_path(c.state_dir, "portfolio_eval", 42).exists()
 
 
 # --- CLI wiring: --migrate-tmux (delete with dispatcher/tmux_migration.py) ---

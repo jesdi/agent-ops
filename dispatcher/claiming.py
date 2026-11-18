@@ -85,13 +85,13 @@ def _ranked_again(cfg: Config, deps: Deps, by_issue: dict, repository: Repositor
     task = by_issue.get((repository.name, cand.number))
     if task is None:
         return True
-    if _rank_rejected(cfg, task):
+    if _rank_rejected(cfg.state_dir, task):
         return False
     this_pass = bool(pass_started) and task.updated_at >= pass_started
     turn = _Turn(cfg, deps, repository, admit=None, order=None, dry_run=False)
     outcome = _apply(turn, task, Event(EventType.CANDIDATE_RANKED, Ranked(this_pass)))
     if isinstance(outcome, Reject):
-        _rank_rejected_path(cfg, task.repository, task.issue).write_text(task.updated_at)
+        _rank_rejected_path(cfg.state_dir, task.repository, task.issue).write_text(task.updated_at)
     return _swept(outcome)
 
 
@@ -282,7 +282,7 @@ def _claim_generators(
 def _claim_room(cfg: Config) -> tuple[list[TaskState], int] | None:
     """Every task and the free claim room; None when nothing may be claimed:
     no room, or a task file cannot be read (_readable_tasks)."""
-    all_tasks = _readable_tasks(cfg)
+    all_tasks = _readable_tasks(cfg.state_dir)
     if all_tasks is None:
         return None
     free = claims.claim_room(cfg.capacity, cfg.max_open, all_tasks,

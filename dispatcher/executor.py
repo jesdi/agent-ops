@@ -367,7 +367,7 @@ def _acquire_slot(turn: _Turn, task: TaskState, act: AcquireSlot) -> TaskState:
     if task.slot != NO_SLOT:
         return task
     # The launch was checked for room (_no_room); this is the last guard.
-    tasks = _readable_tasks(turn.cfg)
+    tasks = _readable_tasks(turn.cfg.state_dir)
     slot = None if tasks is None else allocate_slot(tasks, max_slots(turn.cfg.capacity))
     if slot is None:
         raise RuntimeError(f"#{task.issue}: no free slot for its launch")
@@ -786,8 +786,8 @@ def _flushed(turn: _Turn, task: TaskState, act: Flush) -> TaskState:
         remove_workspace(turn.repository, task.worktree, task.branch, dry_run=turn.dry_run)
 
     def retire(saved: TaskState) -> None:
-        _clear_wake_blocked(turn.cfg, saved.repository, saved.issue)
-        _rank_rejected_path(turn.cfg, saved.repository, saved.issue).unlink(missing_ok=True)
+        _clear_wake_blocked(turn.cfg.state_dir, saved.repository, saved.issue)
+        _rank_rejected_path(turn.cfg.state_dir, saved.repository, saved.issue).unlink(missing_ok=True)
         clear_session(turn.cfg.state_dir, saved.repository, saved.issue)
         delete(turn.cfg.state_dir, saved.repository, saved.issue)
         eventlog.append_event(turn.cfg.state_dir, "flushed", repository=saved.repository,

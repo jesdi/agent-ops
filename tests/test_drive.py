@@ -327,7 +327,7 @@ def test_blocked_wake_emits_one_event_not_one_per_pass(tmp_path):
     assert len(blocked) == 1
     assert blocked[0]["issue"] == 42
     assert blocked[0]["detail"] == "capacity full"
-    assert state._wake_blocked_path(c, "portfolio_eval", 42).exists()
+    assert state._wake_blocked_path(c.state_dir, "portfolio_eval", 42).exists()
 
 
 def test_slot_exhaustion_is_reported_as_such(tmp_path, monkeypatch):
@@ -402,10 +402,10 @@ def test_marker_clears_once_the_wake_succeeds(tmp_path):
     make_task(c, issue=42, slot=NO_SLOT, status=waking())
     d = deps()
     main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
-    assert state._wake_blocked_path(c, "portfolio_eval", 42).exists()
+    assert state._wake_blocked_path(c.state_dir, "portfolio_eval", 42).exists()
     delete(c.state_dir, "portfolio_eval", 41)                     # capacity frees up
     main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
-    assert not state._wake_blocked_path(c, "portfolio_eval", 42).exists()
+    assert not state._wake_blocked_path(c.state_dir, "portfolio_eval", 42).exists()
     assert load(c.state_dir, "portfolio_eval", 42).status.kind is Kind.RUNNING
 
 
@@ -433,14 +433,14 @@ def test_kill_stops_the_task_waiting_for_a_slot_and_drops_its_marker(
     make_task(c, issue=42, slot=NO_SLOT, status=waking())
     d = deps(sess=FakeSessions(alive={41}))
     main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
-    assert state._wake_blocked_path(c, "portfolio_eval", 42).exists()
+    assert state._wake_blocked_path(c.state_dir, "portfolio_eval", 42).exists()
 
     intents_mod.write_intent(c.state_dir, "kill", "portfolio_eval", 42, {}, "op", 1)
     main.run_pass(c, d)
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.status == failed("killed")          # no longer waiting for a wake
     main.run_pass(c, d)                          # the sweep heals it from disk
-    assert not state._wake_blocked_path(c, "portfolio_eval", 42).exists()
+    assert not state._wake_blocked_path(c.state_dir, "portfolio_eval", 42).exists()
 
 
 def test_a_pr_wake_blocked_on_capacity_is_marked_once_and_launches_once_it_frees(

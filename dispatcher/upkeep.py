@@ -192,7 +192,7 @@ def _migrate_legacy_keys(cfg: Config) -> None:
         if not issue.isdigit():
             continue
         if len(names) == 1:
-            p.replace(_wake_blocked_path(cfg, names[0], int(issue)))
+            p.replace(_wake_blocked_path(cfg.state_dir, names[0], int(issue)))
         else:
             p.unlink(missing_ok=True)
 
@@ -206,9 +206,9 @@ def _reconcile_wake_blocked(cfg: Config) -> None:
     slot needs no such pass: the save gives it back with the status.)"""
     known: set[str] = set()
     for task in load_all(cfg.state_dir):
-        known.add(_wake_blocked_path(cfg, task.repository, task.issue).name)
+        known.add(_wake_blocked_path(cfg.state_dir, task.repository, task.issue).name)
         if not _starving(task):
-            _clear_wake_blocked(cfg, task.repository, task.issue)
+            _clear_wake_blocked(cfg.state_dir, task.repository, task.issue)
     for p in Path(cfg.state_dir).glob(f"{WAKE_BLOCKED_PREFIX}*"):
         if p.name not in known:  # state file flushed/deleted under the marker
             p.unlink(missing_ok=True)
