@@ -228,16 +228,6 @@ def _choose_launch(
     return _with_second(cfg, repository, launch, admit), bypass, ""
 
 
-def _action_launch(cfg: Config, repository: Repository, task: TaskState, stage: Stage | None,
-                   admit: Admit, order: Order) -> tuple[Launch | None, bool, str]:
-    """_choose_launch for the stage an action launches; nothing when it
-    launches none."""
-    if stage is None:
-        return None, False, ""
-    return _choose_launch(cfg, repository, task, stage, admit, order,
-                          _execution_override_for(cfg, task, stage))
-
-
 def _candidate_launch(cfg: Config, repository: Repository, cand: Candidate,
                       admit: Admit, order: Order) -> tuple[Launch | None, bool]:
     """An unclaimed candidate has no picks: its spec entry comes from the
@@ -365,7 +355,7 @@ def _inject_login_code(cfg: Config, deps: Deps, task: TaskState,
     back at the host shell, where send_text would execute the operator's text
     as a shell command outside the sandbox.
 
-    Un-parking then restores the same invariant _resume_woken and _retry_stage
+    Un-parking then restores the same invariant a wake's launch and _retry_stage
     enforce — no waiting marker, a `working` signal — or the very next pass
     re-reads blocked/awaiting-ci, re-parks, and ENDS the session that was
     just re-authenticated."""
@@ -1535,110 +1525,15 @@ def _slot_lost(task: TaskState, others: list[TaskState]) -> bool:
     return task.slot == NO_SLOT or any(occupies(t.status) and t.slot == task.slot
                                        for t in others)
 
-def _resume_woken(cfg: Config, deps: Deps, admit: Admit, order: Order,
-                  dry_run: bool = False) -> None:
-    """Resume every woken task the shared admission loop admits."""
-    admitted = _admissions(
-        cfg, deps, _woken,
-        lambda repository, task: _wake_launch(cfg, deps, repository, task,
-                                              admit, order))
-    for repository, task, launch, gh_config in admitted:
-        try:
-            _resume_one(cfg, deps, repository, task, launch, gh_config)
-            # The wake's launch is the next launch: a stored one-shot
-            # override is used up with it, whatever model the wake ran on.
-            _consume_execution_choice(cfg, task.repository, task.issue)
-        except Exception:
-            _fail_task_crash(cfg, deps, repository, task, dry_run)
 
-
-# The wakes the drive launches (a claim the App held back, review after
-# implement) and the ones _spawn_feedback launches (PR attention); every other
-# wake is an operator's or an event's, which _resume_woken launches.
-_DRIVEN_WAKES = frozenset({Cause.LAUNCH, Cause.NEXT_STAGE})
 _PR_WAKES = frozenset({Cause.ATTENTION_FEEDBACK, Cause.ATTENTION_CHECK_FAILED,
                        Cause.ATTENTION_CONFLICT, Cause.ATTENTION_OPERATOR})
 
 
 def _woken(task: TaskState) -> bool:
-    """Woken by the operator or an event, from the status that waited."""
-    return (task.status.kind is Kind.WAKING
-            and task.status.cause not in _DRIVEN_WAKES | _PR_WAKES)
-
-
-def _wake_launch(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
-                 admit: Admit, order: Order) -> tuple[Launch | None, str]:
-    """The launch a woken task resumes on: its next launch
-    (state.next_launch), chosen as every launch is (_choose_launch). Its
-    one-shot override is the model the resume named, else the stored
-    execution override: "the next launch runs on this model" holds for a
-    wake too. None: it waits (the gate denies the model; another task's may
-    be admitted), with why it never will (_choose_launch) or ""."""
-    stage = Stage(next_stage(task))
-    if stage is Stage.QUEUED:   # claimed before its first launch, which is spec
-        stage = Stage.SPEC
-    override = execution_overrides.pending(
-        _execution_override_for(cfg, task, stage),
-        task.resume_model_override, task.resume_bypass_usage)
-    launch, _, why = _choose_launch(cfg, repository, task, stage, admit, order, override)
-    return launch, why
-
-
-ATTACH_TEXT = ("The operator is attaching to talk to you directly. "
-               "Wait for their input.")
-
-
-def _resume_one(cfg: Config, deps: Deps, repository: Repository,
-                task: TaskState, launch: Launch, gh_config: str) -> None:
-    """Resume a woken task on `launch`. An attach wake tells the session to
-    wait for the operator: the notice is queued, so it rides with the
-    operator's messages in whatever the session reads first (the resume
-    text or a fresh stage prompt), and it is taken back, and the operator
-    is not pinged, when the launch fails."""
-    # End first, unconditionally. Most parks already stopped the session,
-    # but /attach on a login-held task reaches here with the pane still
-    # LIVE, and _launch would then type the podman command INTO the
-    # running session (the failure _retry_stage and SpawnStage guard).
-    _end_session(cfg, deps, task.repository, task.issue)
-    if not task.hold_for_attach:
-        _launch_woken(cfg, deps, repository, task, launch, gh_config)
-        return
-    notice = messages.append(cfg.state_dir, task.repository, task.issue,
-                             ATTACH_TEXT, "dispatcher")
-    try:
-        detail = _launch_woken(cfg, deps, repository, task, launch, gh_config)
-    except Exception:
-        messages.mark_delivered(cfg.state_dir, task.repository, task.issue,
-                                [notice.id])
-        raise
-    deps.notifier.send("resumed_for_attach", issue=task.issue,
-                       title=task.title, url=_url(repository, task.issue),
-                       repository=repository.name, note="new conversation" if detail else "")
-
-
-def _launch_woken(cfg: Config, deps: Deps, repository: Repository,
-                  task: TaskState, launch: Launch, gh_config: str) -> str:
-    """Launch a woken task. Returns why a new conversation replaced the
-    recorded one, else ""."""
-    message = _resume_text(task)
-    _heal_exclude(repository, task)
-    # The two fresh-spawn paths below write stage.json and the models.log
-    # line themselves (_spawn_stage), with the stage that is launched.
-    if task.status.origin.kind is Kind.FAILED:
-        # No session to continue: the stage it failed in starts afresh
-        # (state.next_stage).
-        _respawn(cfg, deps, repository, task, launch, gh_config, message)
-        return ""
-    if task.stage is Stage.QUEUED:   # claimed, then parked for access before its first launch
-        _spawn_stage(cfg, deps, repository, unpark(task), launch, message=message,
-                     gh_config=gh_config)
-        return ""
-    if task.stage is Stage.PR_OPEN:
-        _address_review_round(cfg, deps, repository, task, launch, message, gh_config)
-        return ""
-    task, detail = _continue_woken(cfg, deps, repository, task, launch, message, gh_config)
-    save(cfg.state_dir, task)
-    return detail
+    """Waiting to launch, which the table decides (resume-admitted): every
+    wake but a PR's attention, which _spawn_feedback launches."""
+    return task.status.kind is Kind.WAKING and task.status.cause not in _PR_WAKES
 
 
 def _address_review_round(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
@@ -1694,26 +1589,6 @@ def _crash_failed(task: TaskState) -> TaskState:
     afresh (state.next_stage)."""
     return replace(end(task, Status(Kind.FAILED, reason=FailReason.TASK_CRASH)),
                    updated_at=_now())
-
-
-def _respawn(cfg: Config, deps: Deps, repository: Repository,
-             task: TaskState, launch: Launch, gh_config: str, message: str) -> None:
-    """Resume of a crashed task, which has no session to continue; `launch`
-    is its next launch. The stage it died in starts afresh in the same
-    worktree; an implement session continues from its ledger there. A
-    fresh stage prompt, not a resume: the crashed launch may never have
-    started a conversation. The queued messages ride in the stage prompt,
-    an attach notice among them."""
-    deps.github.set_status(repository, task.issue, "In progress")
-    task = replace(unpark(task),
-                   resume_model_override="", resume_bypass_usage=False,
-                   **loops.crash_resume_fields(task))
-    _clear_wake_blocked(cfg, task.repository, task.issue)
-    task = _spawn_stage(cfg, deps, repository, task, launch, message=message,
-                        gh_config=gh_config)
-    eventlog.append_event(cfg.state_dir, "resumed", repository=repository.name,
-                          issue=task.issue, stage=task.stage.value,
-                          model=str(launch.entry), detail="after crash")
 
 
 def _fail_task_crash(cfg: Config, deps: Deps, repository: Repository,
@@ -1801,6 +1676,7 @@ class _Turn:
     launches: dict[Stage, Launch] = field(default_factory=dict)  # admitted, by stage
     gh_config: str = ""
     launched: bool = False              # a launch went through: the choice is used up
+    restarted: str = ""                 # why a new conversation replaced the recorded one
     event: Event | None = None
     msg_id: int = 0                     # the park question's message
     actor: str = "dispatcher"           # who sent the event: the dispatcher or the operator
@@ -1950,7 +1826,8 @@ def _commit(turn: _Turn, before: At, after: TaskState, t: Transition) -> TaskSta
     moves only with the stage or the status: the grace clock and the wake
     order read it."""
     changed = (before.stage, before.status) != (t.stage, t.status)
-    stored = replace(after, stage=t.stage, status=t.status, park_msg_id=0, hold_for_attach=False,
+    stored = replace(after, stage=t.stage, status=t.status, park_msg_id=0,
+                     hold_for_attach=after.hold_for_attach and t.status.kind is Kind.WAKING,
                      plan_approval=_kept_approval(after, t),
                      updated_at=_now() if changed else after.updated_at,
                      **_parked_choice(t.status))
@@ -2102,19 +1979,46 @@ def _respawned(turn: _Turn, task: TaskState, act: RespawnStage) -> TaskState:
     read again; it keeps the hand-over, so a dispatcher killed before the
     commit repeats the launch."""
     task, spec_path = _handover(turn, task, act)
+    task, message = _woken_respawn(turn, task)
     launch = turn.launches[act.stage]
     _end_session(turn.cfg, turn.deps, task.repository, task.issue)
     task = loops.reset(task, ResetCause.STAGE_STARTED)
     try:
         _write_launching(task.worktree, act.stage, launch.entry)
         task = _spawned(turn.cfg, turn.deps, turn.repository, task, launch, spec_path,
-                        gh_config=turn.gh_config)
+                        message, gh_config=turn.gh_config)
     except Exception as exc:
         raise _LaunchFailed(act.stage, replace(task, stage=act.stage,
                                                spec_path=spec_path or task.spec_path)) from exc
     turn.launched = True
     turn.after.append(lambda saved: _working_launched(turn, saved, launch))
     return task
+
+
+def _woken_respawn(turn: _Turn, task: TaskState) -> tuple[TaskState, str]:
+    """A wake's respawn uses up its one-shot model and resume text; the text
+    rides in the fresh stage prompt. A fresh prompt, not a resume: a crashed
+    launch may never have started a conversation."""
+    if task.status.kind is not Kind.WAKING:
+        return task, ""
+    message = _resume_text(task)
+    origin = task.status.origin
+    if origin is not None and origin.kind is Kind.FAILED:
+        task = _crash_resumed(turn, task)
+        message = f"This stage restarts after it failed ({origin.reason.value}).\n\n{message}"
+    return replace(task, resume_model_override="", resume_bypass_usage=False,
+                   resume_text=""), message.strip()
+
+
+def _crash_resumed(turn: _Turn, task: TaskState) -> TaskState:
+    """The resume of a failed task: its card is back in progress, and the
+    history says it resumed after the failure."""
+    turn.deps.github.set_status(turn.repository, task.issue, "In progress")
+    turn.after.append(lambda saved: eventlog.append_event(
+        turn.cfg.state_dir, "resumed", repository=saved.repository, issue=saved.issue,
+        stage=saved.stage.value, model=str(turn.launches[saved.stage].entry),
+        detail="after crash"))
+    return replace(task, **loops.crash_resume_fields(task))
 
 
 def _session_continued(turn: _Turn, task: TaskState, act: ContinueSession) -> TaskState:
@@ -2125,8 +2029,8 @@ def _session_continued(turn: _Turn, task: TaskState, act: ContinueSession) -> Ta
     _end_session(turn.cfg, turn.deps, task.repository, task.issue)
     try:
         _heal_exclude(turn.repository, task)
-        task, _ = _continue_woken(turn.cfg, turn.deps, turn.repository, task, launch,
-                                  message, turn.gh_config)
+        task, turn.restarted = _continue_woken(turn.cfg, turn.deps, turn.repository, task,
+                                               launch, message, turn.gh_config)
     except Exception as exc:
         raise _LaunchFailed(task.stage, task) from exc
     turn.launched = True
@@ -2470,11 +2374,8 @@ def _park_stranded(cfg: Config, deps: Deps, repository: Repository, task: TaskSt
 
 
 def _driven(task: TaskState) -> bool:
-    """A task whose turn a pass drives: a session runs that the pass
-    observes, or a launch waits on admission alone (_DRIVEN_WAKES)."""
-    status = task.status
-    return (status.kind in (Kind.RUNNING, Kind.HELD_PLAN_APPROVAL)
-            or (status.kind is Kind.WAKING and status.cause in _DRIVEN_WAKES))
+    """A task whose session a pass observes; its wakes are _drive_wakes'."""
+    return task.status.kind in (Kind.RUNNING, Kind.HELD_PLAN_APPROVAL)
 
 
 def _drive_task(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
@@ -2483,8 +2384,37 @@ def _drive_task(cfg: Config, deps: Deps, repository: Repository, task: TaskState
     execute."""
     turn = _Turn(cfg, deps, repository, admit, order, dry_run)
     task, event = _observed(turn, task)
-    if event is not None:
+    if event is None:
+        return
+    if task.hold_for_attach and _launch_admitted(event):
+        _attach(turn, task, event)
+    else:
         _apply(turn, task, event)
+
+
+def _launch_admitted(event: Event) -> bool:
+    return event.type is EventType.RESUME_ADMITTED and not event.detail.blocked
+
+
+ATTACH_TEXT = ("The operator is attaching to talk to you directly. "
+               "Wait for their input.")
+
+
+def _attach(turn: _Turn, task: TaskState, event: Event) -> None:
+    """An attach wake tells the session to wait for the operator: the notice
+    is queued, so it rides with the operator's messages in whatever the
+    session reads first, and it is taken back, and the operator is not
+    pinged, when nothing launched."""
+    notice = messages.append(turn.cfg.state_dir, task.repository, task.issue,
+                             ATTACH_TEXT, "dispatcher")
+    _apply(turn, task, event)
+    if not turn.launched:
+        messages.mark_delivered(turn.cfg.state_dir, task.repository, task.issue, [notice.id])
+        return
+    turn.deps.notifier.send("resumed_for_attach", issue=task.issue, title=task.title,
+                            url=_url(turn.repository, task.issue),
+                            repository=turn.repository.name,
+                            note="new conversation" if turn.restarted else "")
 
 
 def _observed(turn: _Turn, task: TaskState) -> tuple[TaskState, Event | None]:
@@ -2497,21 +2427,36 @@ def _observed(turn: _Turn, task: TaskState) -> tuple[TaskState, Event | None]:
 
 
 def _launch_due(turn: _Turn, task: TaskState, policy: ModelPolicy) -> Event | None:
-    """A driven task that waits to launch (a claim the App held back, review
-    after implement): resume-admitted once its launch is, nothing while it
-    is denied, parked when the config strands it."""
+    """A waking task: resume-admitted once its next launch (state.next_stage)
+    is, nothing while it is denied, parked when the config strands it."""
     why = track_gone(policy, task.track)
-    stage = Stage.SPEC if task.stage is Stage.QUEUED else task.stage
+    stage = _wake_stage(task)
     launch = None
     if not why:
-        launch, _bypass, why = _action_launch(turn.cfg, turn.repository, task, stage,
-                                              turn.admit, turn.order)
+        launch, _bypass, why = _choose_launch(turn.cfg, turn.repository, task, stage,
+                                              turn.admit, turn.order,
+                                              _wake_override(turn, task, stage))
     if why:
         return Event(EventType.TRACK_UNCONFIGURED, Stranded(config_note(why), login=""))
     if launch is None:
         return None
     turn.launches[stage] = launch
     return _wake_room(turn, task)
+
+
+def _wake_stage(task: TaskState) -> Stage:
+    """The stage a wake launches: its next one, spec for a claim held back
+    before its first launch."""
+    stage = Stage(next_stage(task))
+    return Stage.SPEC if stage is Stage.QUEUED else stage
+
+
+def _wake_override(turn: _Turn, task: TaskState,
+                   stage: Stage) -> execution_overrides.ExecutionOverride | None:
+    """The model the resume named, else the stored execution override: "the
+    next launch runs on this model" holds for a wake too."""
+    return execution_overrides.pending(_execution_override_for(turn.cfg, task, stage),
+                                       task.resume_model_override, task.resume_bypass_usage)
 
 
 def _wake_room(turn: _Turn, task: TaskState) -> Event | None:
@@ -3318,7 +3263,7 @@ def _sandboxed_state(cfg: Config):
     the per-provider usage cache — and those writes were unguarded, so a dry run advanced
     tasks to terminal stages and wrote history for real. Guarding each call
     site is what already rotted: `dry_run` is threaded by hand into some
-    functions and was never added to _flush_done or _resume_woken.
+    functions and was never added to _flush_done or the wake path.
 
     Redirecting the one directory they all write through is the guard that
     cannot be forgotten, and it covers write sites added later for free. The
@@ -3337,8 +3282,8 @@ def _sandboxed_state(cfg: Config):
 def _starving(task: TaskState) -> bool:
     """Is this task legitimately still waiting for the capacity/slot it was
     denied? Exactly the queues that mark the marker, which wake it: a
-    waking task (_resume_woken, _spawn_feedback, and the driven waits whose
-    wake the table blocks, _wake_room). Anything else is not waiting for
+    waking task (_spawn_feedback, and the wakes the table blocks,
+    _wake_room). Anything else is not waiting for
     anything."""
     return task.status.kind is Kind.WAKING
 
@@ -3444,7 +3389,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     # so one repository's new claims never starve another's approved spec.
     _drive_in_progress(eff, deps, admit, order, dry_run)
     _wake_reached(eff, deps)
-    _resume_woken(eff, deps, admit, order, dry_run)
+    _drive_wakes(eff, deps, admit, order, dry_run)
     _spawn_feedback(eff, deps, admit, order)
     if not dry_run:
         launched = onboarding_sessions.tick(
@@ -3480,6 +3425,14 @@ def _drive_in_progress(cfg: Config, deps: Deps, admit: Admit, order: Order,
             _drive_guarded(cfg, deps, repository, task, admit, order, dry_run)
         _wake_ci(cfg, deps, repository)
         _poll_prs(cfg, deps, repository, dry_run)
+
+
+def _drive_wakes(cfg: Config, deps: Deps, admit: Admit, order: Order,
+                 dry_run: bool = False) -> None:
+    """Drive every waking task box-wide, oldest first: capacity is shared,
+    so repository listing order must not decide whose wake waits."""
+    for repository, task in _admission_candidates(cfg, _woken):
+        _drive_guarded(cfg, deps, repository, task, admit, order, dry_run)
 
 
 def _drive_guarded(cfg: Config, deps: Deps, repository: Repository, task: TaskState,

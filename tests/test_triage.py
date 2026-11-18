@@ -818,15 +818,15 @@ def test_pass_skips_claims_and_reduces_capacity_while_triage(tmp_path,
         seen_resume["capacity"] = cfg_seen.capacity
 
     monkeypatch.setattr(dmain, "_claim_new", spy_claim)
-    monkeypatch.setattr(dmain, "_resume_woken", spy_resume)
-    # running → pending → no claim; _resume_woken sees the reduced capacity
+    monkeypatch.setattr(dmain, "_drive_wakes", spy_resume)
+    # running → pending → no claim; _drive_wakes sees the reduced capacity
     dmain.run_pass(cfg, deps)
     assert seen_claim == {}
     assert seen_resume["capacity"] == cfg.capacity - 1
 
     seen_resume.clear()
     monkeypatch.setattr(triage, "running", lambda: False)
-    # idle → claims run at full capacity; _resume_woken also sees full capacity
+    # idle → claims run at full capacity; _drive_wakes also sees full capacity
     dmain.run_pass(cfg, deps)
     assert seen_claim["capacity"] == cfg.capacity
     assert seen_resume["capacity"] == cfg.capacity

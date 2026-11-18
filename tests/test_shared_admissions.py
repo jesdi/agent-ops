@@ -1,5 +1,5 @@
 """Ticket 01 of the shared admission loop: woken tasks are admitted through
-one box-wide loop. Driven through `_resume_woken(cfg, deps, admit, order,
+one box-wide loop. Driven through `_drive_wakes(cfg, deps, admit, order,
 dry_run)` only."""
 import inspect
 import re
@@ -42,7 +42,7 @@ def test_oldest_wake_resumes_first_across_repositories(tmp_path):
     woken(c, "portfolio_eval", 3, updated_at="2026-07-21T10:05:00+00:00")
     d = deps()
 
-    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
 
     assert resumed(d) == [("factorial", 42)]
     assert load(c.state_dir, "factorial", 42).slot == 0
@@ -57,7 +57,7 @@ def test_a_resume_that_fills_the_box_refuses_the_next_wake(tmp_path):
     woken(c, "portfolio_eval", 4, updated_at="2026-07-21T10:05:00+00:00")
     d = deps()
 
-    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
 
     assert resumed(d) == [("portfolio_eval", 3)]
     assert load(c.state_dir, "portfolio_eval", 3).slot == 1
@@ -70,7 +70,7 @@ def test_two_slot_less_wakes_resume_in_slots_0_and_1(tmp_path):
     woken(c, "portfolio_eval", 4, updated_at="2026-07-21T10:05:00+00:00")
     d = deps()
 
-    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
 
     assert resumed(d) == [("portfolio_eval", 3), ("portfolio_eval", 4)]
     assert [load(c.state_dir, "portfolio_eval", i).slot for i in (3, 4)] == [0, 1]
@@ -86,8 +86,8 @@ def test_no_free_slot_with_capacity_left_is_marked_once(tmp_path, monkeypatch):
     woken(c, "portfolio_eval", 3)
     d = deps()
 
-    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
-    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
 
     assert resumed(d) == []
     assert load(c.state_dir, "portfolio_eval", 3).status == waking()
@@ -100,7 +100,7 @@ def test_a_recorded_slot_another_task_holds_is_replaced(tmp_path):
     woken(c, "portfolio_eval", 3, slot=0)
     d = deps()
 
-    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
 
     assert resumed(d) == [("portfolio_eval", 3)]
     slot = load(c.state_dir, "portfolio_eval", 3).slot
@@ -112,20 +112,13 @@ def test_a_stranded_launch_parks_the_wake_and_resumes_nothing(tmp_path, monkeypa
     c = cfg(tmp_path)
     woken(c, "portfolio_eval", 3)
     why = "no configured model can run this stage"
-    monkeypatch.setattr(main, "_wake_launch", lambda *a, **kw: (None, why))
-    parked = []
-    real_park = main._park_stranded
-
-    def spy(cfg_, deps_, repository, task, why_):
-        parked.append((repository.name, task.issue, why_))
-        return real_park(cfg_, deps_, repository, task, why_)
-
-    monkeypatch.setattr(main, "_park_stranded", spy)
+    monkeypatch.setattr(main, "_choose_launch", lambda *a, **kw: (None, False, why))
     d = deps()
 
-    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
 
-    assert parked == [("portfolio_eval", 3, why)]
+    status = load(c.state_dir, "portfolio_eval", 3).status
+    assert status.kind is Kind.PARKED_HUMAN and why in status.note
     assert resumed(d) == []
     assert details(c, "portfolio_eval", 3) == []
 
@@ -135,7 +128,7 @@ def test_a_denied_launch_waits_without_a_mark(tmp_path):
     woken(c, "portfolio_eval", 3)
     d = deps()
 
-    main._resume_woken(c, d, admit=DENY_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=DENY_ALL, order=tuple)
 
     assert resumed(d) == []
     assert load(c.state_dir, "portfolio_eval", 3).status == waking()
@@ -148,7 +141,7 @@ def test_a_failed_task_token_skips_without_a_mark(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "_task_token", lambda *a, **kw: None)
     d = deps()
 
-    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
 
     assert resumed(d) == []
     assert load(c.state_dir, "portfolio_eval", 3).status == waking()
@@ -179,7 +172,7 @@ def test_a_task_woken_during_the_call_waits_for_the_next(tmp_path):
                   SessionRecord("recorded-session", "implement"))
     d = deps(sess=WakingSessions(c))
 
-    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
 
     assert resumed(d) == [("portfolio_eval", 3)]
     assert load(c.state_dir, "factorial", 42).status == waking()
@@ -195,7 +188,7 @@ def test_a_resume_consumes_the_stored_execution_choice(tmp_path):
                                               bypass_usage=True))
     d = deps()
 
-    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
 
     assert resumed(d) == [("portfolio_eval", 3)]
     assert execution_overrides.load(c.state_dir, "portfolio_eval", 3) is None
@@ -209,7 +202,7 @@ def test_a_resume_crash_fails_only_that_task(tmp_path, capsys, dry_run):
     gh = FakeGitHub()
     d = deps(gh, FakeSessions(resume_raises={3}))
 
-    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple, dry_run=dry_run)
+    main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple, dry_run=dry_run)
 
     assert load(c.state_dir, "portfolio_eval", 3).status.kind is Kind.FAILED
     assert resumed(d) == [("portfolio_eval", 4)]
@@ -221,10 +214,10 @@ def test_a_resume_crash_fails_only_that_task(tmp_path, capsys, dry_run):
         assert len(titles) == 1 and "task-crash" in titles[0]
 
 
-def test_resume_woken_leaves_admission_to_the_shared_loop():
-    src = inspect.getsource(main._resume_woken)
+def test_drive_wakes_leaves_admission_to_the_shared_loop():
+    src = inspect.getsource(main._drive_wakes)
     called = {name for name in ("sorted", "_oldest_first", "_box_free",
                                 "allocate_slot", "_mark_wake_blocked",
                                 "_park_stranded", "_task_token")
               if re.search(rf"\b{name}\(", src)}
-    assert called == set(), f"_resume_woken still calls {sorted(called)}"
+    assert called == set(), f"_drive_wakes still calls {sorted(called)}"

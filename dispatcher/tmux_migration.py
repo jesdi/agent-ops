@@ -5,7 +5,7 @@ path, which resumes each in herdr with `claude --continue` on the next
 pass (one interrupted turn per in-flight task, once). Every other live
 session (a PR_OPEN implement session, a FAILED/DONE tombstone, a
 gate-parked task with an anomalous live session) is ended and left ended:
-`_resume_woken` has no stage filter, so waking those would run
+the wake path has no stage filter, so waking those would run
 `claude --continue` in a transcript nothing is waiting on — pushing to a
 PR under review, or standing a container up outside capacity accounting.
 Invoked by agent-ops-infra/provision/update.sh via `dispatcher.main --migrate-tmux` only

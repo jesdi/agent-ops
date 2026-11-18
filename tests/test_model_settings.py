@@ -280,7 +280,7 @@ def test_a_wake_picked_on_a_provider_no_entry_names_parks_again(tmp_path):
     make_saved_task(c, issue=42, stage=Stage.IMPLEMENT, status=waking(),
                     picks={"implement": "openai/gpt-luna@high"})
 
-    main._resume_woken(c, deps(), ANTHROPIC_ONLY, tuple)
+    main._drive_wakes(c, deps(), ANTHROPIC_ONLY, tuple)
 
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.status.kind, t.status.reason) == (Kind.PARKED_HUMAN, HumanReason.CONFIG)

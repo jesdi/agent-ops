@@ -156,7 +156,7 @@ def test_a_session_name_that_is_a_prefix_of_a_live_one_is_not_confused(
 
 def test_a_live_session_the_dispatcher_would_not_drive_is_ended_not_woken(
         tmp_path, shell):
-    """`_resume_woken` has no stage filter: waking a PR_OPEN task would run
+    """`_drive_wakes` has no stage filter: waking a PR_OPEN task would run
     `claude --continue` in the implement transcript of a PR under review
     (and could push to it), and waking a FAILED tombstone would stand a
     container up outside capacity accounting. Both are ended only."""

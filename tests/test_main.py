@@ -914,10 +914,10 @@ def test_woken_pr_open_task_is_gated_on_the_model_it_spawns(tmp_path):
               track="deep")
     opus_over_pace = lambda m: DENY_ALL(m) if "opus" in m else ADMIT_ALL(m)  # noqa: E731
     d = deps()
-    main._resume_woken(c, d, admit=opus_over_pace, order=tuple)
+    main._drive_wakes(c, d, admit=opus_over_pace, order=tuple)
     assert d.sessions.spawned == [] and d.sessions.resumed == []
     assert load(c.state_dir, "portfolio_eval", 42).status.kind is Kind.WAKING
-    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
     assert [s[:3] + (s[4],) for s in d.sessions.spawned] == [
         (42, Stage.ADDRESS_REVIEW.value, "anthropic/claude-opus-5", "medium")]
 
@@ -927,7 +927,7 @@ def test_operator_can_bypass_usage_gate_for_one_resume(tmp_path):
     write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "plan"))
     make_task(c, issue=42, stage=Stage.PLAN, status=waking(), resume_bypass_usage=True)
     d = deps()
-    main._resume_woken(c, d, admit=DENY_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=DENY_ALL, order=tuple)
     assert d.sessions.resumed == [(42, "Continue.", "anthropic/claude-opus-5", "")]
     saved = load(c.state_dir, "portfolio_eval", 42)
     assert saved.status.kind is Kind.RUNNING
@@ -941,7 +941,7 @@ def test_operator_can_resume_with_another_configured_model(tmp_path):
     make_task(c, issue=42, stage=Stage.PLAN, status=waking(), resume_model_override="claude-sonnet-4-6")
     d = deps()
     admit_sonnet = lambda model: ADMIT_ALL(model) if "sonnet" in model else DENY_ALL(model)  # noqa: E731
-    main._resume_woken(c, d, admit=admit_sonnet, order=tuple)
+    main._drive_wakes(c, d, admit=admit_sonnet, order=tuple)
     assert d.sessions.resumed == [
         (42, "Continue.", "anthropic/claude-sonnet-4-6", "")]
 
@@ -952,7 +952,7 @@ def test_resume_override_waits_for_capacity_without_losing_choice(tmp_path):
     make_task(c, issue=42, status=waking(),
               resume_model_override="claude-sonnet-4-6",
               resume_bypass_usage=True)
-    main._resume_woken(c, deps(), admit=DENY_ALL, order=tuple)
+    main._drive_wakes(c, deps(), admit=DENY_ALL, order=tuple)
     saved = load(c.state_dir, "portfolio_eval", 42)
     assert saved.status.kind is Kind.WAKING
     assert saved.resume_model_override == "claude-sonnet-4-6"
@@ -1956,7 +1956,7 @@ def test_broken_worktree_fails_that_task_and_pass_survives(tmp_path, monkeypatch
 
     The box wedged this way for hours: task-194's checkout was gone, so
     the launch raised inside sessions.resume, guarded_pass re-raised, and
-    _resume_woken never reached the tasks behind it — no claims, no spawns,
+    _drive_wakes never reached the tasks behind it — no claims, no spawns,
     nothing, every pass, until a human looked."""
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
@@ -3426,7 +3426,7 @@ def test_login_park_holds_capacity_against_new_claims(tmp_path, monkeypatch):
     assert gh.claimed == []
 
 
-def test_resume_woken_ends_session_before_resuming(tmp_path, monkeypatch):
+def test_drive_wakes_ends_session_before_resuming(tmp_path, monkeypatch):
     # /attach on a login park reaches resume with the pane still LIVE;
     # _launch would type the podman command into the running claude.
     patch_usage(monkeypatch)
@@ -3479,7 +3479,7 @@ def test_reply_to_human_park_still_wakes(tmp_path, monkeypatch):
     main.run_pass(c, deps(sess=sess))
     t = load(c.state_dir, "portfolio_eval", 42)
     assert sess.sent_text == []
-    # _wake marks PARK_WAKE and queues the text; _resume_woken delivers it into the prompt.
+    # _wake marks PARK_WAKE and queues the text; _drive_wakes delivers it into the prompt.
     from dispatcher import messages
     assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
     assert messages.all_messages(c.state_dir, "portfolio_eval", 42)[0].text == "hi"
@@ -3516,7 +3516,7 @@ def test_injection_refused_when_pane_left_the_login_prompt(tmp_path, monkeypatch
 
 
 def test_injection_restores_the_unpark_invariant(tmp_path, monkeypatch):
-    # Same invariant _resume_woken/_retry_stage enforce: a stale blocked signal
+    # Same invariant _drive_wakes/_retry_stage enforce: a stale blocked signal
     # or waiting marker would re-park (and END) the freshly re-authed session.
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
@@ -3752,7 +3752,7 @@ def test_slot_less_back_pressure_does_not_starve_other_woken_tasks(tmp_path, mon
     # a task that already holds a slot resumes in the same pass.
     # Issues 1 and 2 occupy slots 0 and 1; issue 43 already holds slot 2 and
     # sits second in the wake queue, behind slot-less issue 42. The invariant
-    # under test is the `continue` in _resume_woken: whatever the head of the
+    # under test is the `continue` in _drive_wakes: whatever the head of the
     # queue does, the rest of it is still processed in the same pass.
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
@@ -3893,7 +3893,7 @@ def test_which_task_prompt_names_the_project_when_multi_repository(
 
 def test_two_slot_less_woken_tasks_get_distinct_slots(tmp_path, monkeypatch):
     # Regression: two PARK_WAKE tasks with slot=NO_SLOT must not collide —
-    # _resume_woken re-reads load_all per iteration and saves each new slot
+    # _drive_wakes re-reads load_all per iteration and saves each new slot
     # before the next iteration allocates, so both should get distinct slots.
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
@@ -5042,7 +5042,7 @@ def test_resume_delivers_every_queued_message_oldest_first(tmp_path):
     messages.append(c.state_dir, "portfolio_eval", 42, "first", "jesdi@github")
     messages.append(c.state_dir, "portfolio_eval", 42, "second", "jesdi@github")
     d = deps()
-    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
     text = d.sessions.resumed[-1][1]
     assert text.index("first") < text.index("second")
     assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
@@ -5053,7 +5053,7 @@ def test_resume_with_an_empty_queue_still_says_continue(tmp_path):
     write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "implement"))
     make_task(c, issue=42, status=waking(), slot=NO_SLOT)
     d = deps()
-    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
     assert d.sessions.resumed[-1][1].split("\n\n")[0] == "Continue."
 
 
@@ -5080,7 +5080,7 @@ def test_delivery_does_not_stamp_messages_queued_after_the_drain(tmp_path):
     from dispatcher import messages
     messages.append(c.state_dir, "portfolio_eval", 42, "delivered now", "jesdi@github")
     d = deps()
-    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
     messages.append(c.state_dir, "portfolio_eval", 42, "arrived later", "jesdi@github")
     assert [m.text for m in messages.undelivered(c.state_dir, "portfolio_eval", 42)] == [
         "arrived later"]
@@ -5156,7 +5156,7 @@ def test_two_human_parks_no_longer_deadlock_a_resume(tmp_path):
     make_task(c, issue=240, slot=2, status=RUNNING)
     make_task(c, issue=198, slot=NO_SLOT, status=waking())
     d = deps()
-    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
     t = load(c.state_dir, "portfolio_eval", 198)
     assert t.status.kind is Kind.RUNNING and t.slot != NO_SLOT
 
@@ -5166,8 +5166,8 @@ def test_blocked_wake_emits_one_event_not_one_per_pass(tmp_path):
     make_task(c, issue=41, slot=0, status=RUNNING)          # holds the only capacity
     make_task(c, issue=42, slot=NO_SLOT, status=waking())
     d = deps()
-    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
-    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
     blocked = [e for e in main.eventlog.read_tail(c.state_dir)
                if e["event"] == "wake-blocked"]
     assert len(blocked) == 1
@@ -5183,7 +5183,7 @@ def test_slot_exhaustion_is_reported_as_such(tmp_path, monkeypatch):
     c = cfg(tmp_path)
     make_task(c, issue=42, slot=NO_SLOT, status=waking())
     monkeypatch.setattr(main, "allocate_slot", lambda *a, **kw: None)
-    main._resume_woken(c, deps(), admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, deps(), admit=ADMIT_ALL, order=tuple)
     blocked = [e for e in main.eventlog.read_tail(c.state_dir)
                if e["event"] == "wake-blocked"]
     assert [e["detail"] for e in blocked] == ["no free slot"]
@@ -5207,8 +5207,8 @@ def test_an_unreadable_task_file_blocks_a_wake(tmp_path):
     c = _one_live_task_and_an_unreadable_file(tmp_path)
     make_task(c, issue=42, slot=NO_SLOT, status=waking())
     d = deps(sess=FakeSessions(alive={41}))
-    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
-    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.status.kind, t.slot) == (Kind.WAKING, NO_SLOT)
     assert d.sessions.spawned == [] and d.sessions.resumed == []
@@ -5247,10 +5247,10 @@ def test_marker_clears_once_the_wake_succeeds(tmp_path):
     make_task(c, issue=41, slot=0, status=RUNNING)
     make_task(c, issue=42, slot=NO_SLOT, status=waking())
     d = deps()
-    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
     assert main._wake_blocked_path(c, "portfolio_eval", 42).exists()
     main.delete(c.state_dir, "portfolio_eval", 41)                     # capacity frees up
-    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
     assert not main._wake_blocked_path(c, "portfolio_eval", 42).exists()
     assert load(c.state_dir, "portfolio_eval", 42).status.kind is Kind.RUNNING
 
@@ -5278,7 +5278,7 @@ def test_kill_stops_the_task_waiting_for_a_slot_and_drops_its_marker(
     make_task(c, issue=41, slot=0, status=RUNNING)      # holds the only capacity unit
     make_task(c, issue=42, slot=NO_SLOT, status=waking())
     d = deps(sess=FakeSessions(alive={41}))
-    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
     assert main._wake_blocked_path(c, "portfolio_eval", 42).exists()
 
     intents_mod.write_intent(c.state_dir, "kill", "portfolio_eval", 42, {}, "op", 1)
@@ -5764,7 +5764,7 @@ def test_successful_ci_wake_preserves_all_counters(tmp_path):
     assert (t.review_rounds, t.gate_rounds, t.e2e_rounds, t.ci_rounds) == (1, 1, 2, 1)
 
 
-def test_resume_woken_does_not_reset_counters(tmp_path, monkeypatch):
+def test_drive_wakes_does_not_reset_counters(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
     write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "implement"))
@@ -5800,7 +5800,7 @@ def test_admission_budget_denied_retains_operator_request(tmp_path):
 
     Passes by construction:
     - _wake replaces only park/hold_for_attach/updated_at — operator_request untouched.
-    - _resume_woken skips every task when admit returns denied,
+    - _drive_wakes skips every task when admit returns denied,
       so no task state is modified at all.
     """
     c = cfg(tmp_path)
@@ -5809,7 +5809,7 @@ def test_admission_budget_denied_retains_operator_request(tmp_path):
     task = load(c.state_dir, "portfolio_eval", 42)
     main._wake(c, task, "please answer")
     d = deps()
-    main._resume_woken(c, d, admit=DENY_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=DENY_ALL, order=tuple)
     saved = load(c.state_dir, "portfolio_eval", 42)
     assert operator_request(saved) == req   # untouched
     assert saved.status.kind is Kind.WAKING         # woken, not resumed
@@ -5831,7 +5831,7 @@ def test_admission_capacity_full_retains_operator_request(tmp_path):
     task = load(c.state_dir, "portfolio_eval", 42)
     main._wake(c, task, "please answer")
     d = deps()
-    main._resume_woken(c, d, admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
     saved = load(c.state_dir, "portfolio_eval", 42)
     assert operator_request(saved) == req   # untouched
     assert saved.status.kind is Kind.WAKING         # still wake-queued, not resumed
@@ -7444,3 +7444,129 @@ def test_resume_admitted_respawn_never_continues_the_transcript(tmp_path):
     assert sess.resumed == [], "a respawn never passes --continue"
     assert [(i, s) for i, s, *_ in sess.spawned] == [(42, "implement")]
     assert (t.stage, t.status.kind) == (Stage.IMPLEMENT, Kind.RUNNING)
+
+
+# --- every wake launches through resume-admitted (ticket 09) ----------------
+
+def _task42(c):
+    return load(c.state_dir, "portfolio_eval", 42)
+
+
+def test_resume_after_a_crash_respawns_the_stage(tmp_path, monkeypatch):
+    from dispatcher import messages
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, slot=NO_SLOT, status=waking(failed("session-crash"), "resume"))
+    messages.append(c.state_dir, "portfolio_eval", 42, "use the v2 API", "jesdi@github")
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    assert sess.resumed == [], "a respawn never passes --continue"
+    [(issue, stage, _model, prompt, _effort)] = sess.spawned
+    assert (issue, stage) == (42, "implement")
+    assert "session-crash" in prompt and "use the v2 API" in prompt
+    t = _task42(c)
+    assert (t.stage, t.status.kind) == (Stage.IMPLEMENT, Kind.RUNNING) and t.slot != NO_SLOT
+    [e] = _events(c, "resumed")
+    assert e["detail"] == "after crash"
+
+
+def test_a_killed_task_at_plan_respawns_plan_once_admitted(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.PLAN, slot=NO_SLOT, status=waking(failed("killed"), "resume"))
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    assert [s[:2] for s in sess.spawned] == [(42, "plan")] and sess.resumed == []
+    assert (_task42(c).stage, _task42(c).status.kind) == (Stage.PLAN, Kind.RUNNING)
+
+
+def test_reply_to_a_parked_task_continues_the_transcript(tmp_path, monkeypatch):
+    from dispatcher import messages
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, slot=NO_SLOT, status=waking(human("decision", "which DB?"), "reply"))
+    messages.append(c.state_dir, "portfolio_eval", 42, "yes, Postgres", "jesdi@github")
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    [(issue, text, _model, _effort)] = sess.resumed
+    assert issue == 42 and "yes, Postgres" in text and sess.spawned == []
+    assert _task42(c).status.kind is Kind.RUNNING
+
+
+def test_capacity_boundary_on_resume_writes_one_wake_blocked(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = replace_capacity(cfg(tmp_path), 2)
+    make_task(c, issue=41, slot=0)
+    make_task(c, issue=43, slot=1)
+    make_task(c, slot=NO_SLOT, status=waking(failed("session-crash"), "resume"))
+    sess = FakeSessions(alive={41, 43})
+    for _ in range(2):
+        main.run_pass(c, deps(sess=sess))
+    assert _task42(c).status.kind is Kind.WAKING and sess.spawned == []
+    assert [(e["issue"], e["detail"]) for e in _events(c, "wake-blocked")] == [
+        (42, "capacity full")]
+
+
+def test_capacity_frees_and_the_waking_task_takes_a_slot(tmp_path, monkeypatch):
+    from dispatcher.status import occupies
+    patch_usage(monkeypatch)
+    c = replace_capacity(cfg(tmp_path), 2)
+    make_task(c, issue=41, slot=0)
+    make_task(c, slot=NO_SLOT, status=waking(failed("session-crash"), "resume"))
+    main.run_pass(c, deps(sess=FakeSessions(alive={41})))
+    t = _task42(c)
+    assert (t.status.kind, t.slot) == (Kind.RUNNING, 1)
+    assert sum(occupies(x.status) for x in load_all(c.state_dir)) == 2
+
+
+def test_a_claim_that_waits_on_the_app_spawns_spec_once_admitted(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    sess = FakeSessions()
+    d = deps(FakeGitHub([Candidate(42, "Add widget", "u42")]), sess)
+    real_issue = main.task_tokens.issue
+
+    def app_down(*a, **kw):
+        raise github_app.AppError("502")
+    monkeypatch.setattr(main.task_tokens, "issue", app_down)
+    main.run_pass(c, d)
+    monkeypatch.setattr(main.task_tokens, "issue", real_issue)
+    t = _task42(c)
+    assert (t.stage, t.status.kind, t.status.cause) == (
+        Stage.QUEUED, Kind.WAKING, waking(cause="launch").cause)
+    assert sess.spawned == []
+    main.run_pass(c, d)
+    assert [s[:2] for s in sess.spawned] == [(42, "spec")]
+    assert (_task42(c).stage, _task42(c).status.kind) == (Stage.SPEC, Kind.RUNNING)
+
+
+def test_implement_done_waits_for_the_review_launch(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = replace_capacity(cfg(tmp_path), 1)
+    wt = make_task(c, ticket_count=1)
+    (wt / ".agent" / "stage.json").write_text(json.dumps({"stage": "implement", "status": "done"}))
+    sess = FakeSessions(alive={42})
+    deny = lambda usages, model, now, pace: DENY_ALL(model)  # noqa: E731
+    monkeypatch.setattr(main, "admits", deny)
+    main.run_pass(c, deps(sess=sess))
+    t = _task42(c)
+    assert (t.stage, t.status, t.slot) == (Stage.REVIEW, waking(cause="next-stage"), NO_SLOT)
+    monkeypatch.setattr(main, "admits", lambda usages, model, now, pace: ADMIT_ALL(model))
+    main.run_pass(c, deps(sess=sess))
+    assert [s[:2] for s in sess.spawned] == [(42, "review")]
+    assert (_task42(c).stage, _task42(c).status.kind) == (Stage.REVIEW, Kind.RUNNING)
+
+
+@pytest.mark.parametrize("status,raises", [
+    (waking(failed("session-crash"), "resume"), "spawn_raises"),
+    (waking(human("decision", "which DB?"), "reply"), "resume_raises")])
+def test_a_waking_task_whose_launch_raises_fails_at_its_stage(tmp_path, monkeypatch,
+                                                              status, raises):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    make_task(c, slot=NO_SLOT, status=status)
+    main.run_pass(c, deps(sess=FakeSessions(**{raises: {42}})))
+    t = _task42(c)
+    assert (t.stage, t.status) == (Stage.IMPLEMENT, failed("task-crash"))
+    assert t.slot == NO_SLOT
