@@ -2740,10 +2740,9 @@ def test_park_intent_parks_a_live_task(tmp_path, monkeypatch):
     d = deps(sess=sess)
     main.run_pass(c, d)
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert t.status.kind is Kind.PARKED_HUMAN and t.park_msg_id == 77
-    assert t.status.reason is HumanReason.OPERATOR
+    assert t.status == human("operator", "parked by operator")
     assert sess.ended == [42]
-    assert "parked_question" in d.notifier.sent
+    assert "parked_question" not in d.notifier.sent   # the operator parked it: nothing to ask
     assert intents_mod.list_intents(c.state_dir) == []
 
 
@@ -2924,6 +2923,73 @@ def test_legacy_cancel_intent_with_no_matching_task_is_skipped(tmp_path, monkeyp
     main.run_pass(c, deps(gh, sess))
     assert gh.canceled == []
     assert sess.end_calls == []
+
+
+def _operator_intent_pass(c, action, sess=None, gh=None):
+    intents_mod.write_intent(c.state_dir, action, "portfolio_eval", 42, {}, "jesdi@github", 1)
+    main.run_pass(c, deps(gh or FakeGitHub(), sess or FakeSessions()))
+    return load(c.state_dir, "portfolio_eval", 42)
+
+
+def test_kill_ends_the_session_releases_the_card_and_fails_the_task(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.IMPLEMENT)
+    gh, sess = FakeGitHub(), FakeSessions(alive={42})
+    t = _operator_intent_pass(c, "kill", sess, gh)
+    assert (t.stage, t.status) == (Stage.IMPLEMENT, failed("killed"))
+    assert sess.ended == [42] and gh.released == [(42, "abandoned by operator")]
+    [e] = [e for e in _events(c, "transition") if e["transition"]["event"] == "op-kill"]
+    assert e["actor"] == "jesdi@github"
+
+
+def test_cancel_moves_the_card_to_wont_do_and_cancels_the_task(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.SPEC, status=human("decision"), slot=NO_SLOT)
+    gh = FakeGitHub()
+    t = _operator_intent_pass(c, "cancel", gh=gh)
+    assert (t.stage, t.status) == (Stage.SPEC, CANCELED)
+    assert gh.canceled == [42]
+    assert [e["transition"]["event"] for e in _events(c, "transition")] == ["op-cancel"]
+
+
+def test_park_intent_on_a_task_that_is_not_running_is_rejected(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.PLAN, status=human("operator"), slot=NO_SLOT)
+    before = load(c.state_dir, "portfolio_eval", 42)
+    assert _operator_intent_pass(c, "park") == before
+    [e] = _events(c, "transition-rejected")
+    assert e["transition"]["event"] == "op-park"
+
+
+def test_a_park_intent_the_pass_overtook_is_rejected_and_stays_parked_on_the_pr(
+        tmp_path, monkeypatch):
+    """Accepted by the web on a running review; by the time the pass applies
+    it the task is parked on its PR, so the pass refuses it out loud."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.PR_OPEN, status=PR, slot=NO_SLOT)
+    sess = FakeSessions()
+    t = _operator_intent_pass(c, "park", sess)
+    assert (t.stage, t.status) == (Stage.PR_OPEN, PR)
+    assert sess.ended == []
+    [e] = _events(c, "transition-rejected")
+    assert (e["transition"]["event"], e["actor"]) == ("op-park", "jesdi@github")
+
+
+def test_an_intent_of_an_unknown_action_is_warned_and_deleted(tmp_path, capsys):
+    c = cfg(tmp_path)
+    p = intents_mod.write_intent(c.state_dir, "park", "portfolio_eval", 42, {}, "op", 1)
+    p.write_text(json.dumps({**json.loads(p.read_text()), "action": "bogus"}))
+    main._apply_intents(c, deps())
+    assert "unknown intent action 'bogus'" in capsys.readouterr().err
+    assert intents_mod.list_intents(c.state_dir) == []
 
 
 def test_retry_intent_clears_quarantine_and_fingerprint(tmp_path, monkeypatch):

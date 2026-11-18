@@ -992,8 +992,8 @@ def _with_tail(note: str, tail: str) -> str:
 def _park_for_input(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
                     status: Status) -> None:
     """The park of the events the table does not take yet: an unreached
-    repository (access) and the operator's park intent (ticket 08). A
-    session's own parks, answers included, are the table's."""
+    repository (access). A session's own parks, answers included, and the
+    operator's park are the table's."""
     note = status.note
     tail = deps.sessions.capture_tail(task.repository, task.issue)
     login = relogin.classify_login(tail)
@@ -3016,36 +3016,58 @@ def _apply_answers_intent(cfg: Config, deps: Deps, task: TaskState | None,
         _wake_for_queued_message(cfg, deps, task)
 
 
-def _parkable_task(deps: Deps, task: TaskState | None, issue: int) -> bool:
-    return bool(task is not None
-                and task.status.kind in (Kind.RUNNING, Kind.HELD_PLAN_APPROVAL)
-                and deps.sessions.is_alive(task.repository, issue))
+# The operator intents the table decides (ticket 08).
+_OPERATOR_INTENTS = {"park": EventType.OP_PARK, "kill": EventType.OP_KILL,
+                     "cancel": EventType.OP_CANCEL}
 
 
-def _apply_park_intent(cfg: Config, deps: Deps, by_name: dict,
-                       task: TaskState | None, issue: int) -> None:
-    if not _parkable_task(deps, task, issue):
-        print(f"[warn] park intent for #{issue}: no live unparked task "
-              f"— skipped", file=sys.stderr)
-        return
-    assert task is not None
-    repository = by_name.get(task.repository)
-    if repository is None:
-        print(f"[warn] park intent for #{issue}: repository "
-              f"{task.repository!r} left the config — skipped", file=sys.stderr)
-        return
-    _park_for_input(cfg, deps, repository, task,
-                    Status(Kind.PARKED_HUMAN, reason=HumanReason.OPERATOR,
-                           note="parked by operator"))
-
-
-def _release_killed_task(cfg: Config, deps: Deps, by_name: dict,
-                         task: TaskState, issue: int) -> None:
-    repository = by_name.get(task.repository)
+def _apply_operator_intent(cfg: Config, deps: Deps, by_name: dict,
+                           task: TaskState | None, intent: intents.Intent) -> None:
+    """A park, kill or cancel: the table decides it for the task, and a
+    refusal is written as `transition-rejected`. Without a task file or a
+    configured repository the table has nothing to decide on: a kill or a
+    cancel still ends what it can (_end_untracked), a park is skipped."""
+    repository = by_name.get(task.repository) if task is not None else None
     if repository is not None:
-        _release_card(deps, repository, issue)
-    save(cfg.state_dir, replace(end(task, Status(Kind.FAILED, reason=FailReason.KILLED)),
-                                updated_at=_now()))
+        turn = _Turn(cfg, deps, repository, None, None, False, actor=intent.actor or "operator")
+        _apply(turn, task, Event(_OPERATOR_INTENTS[intent.action]))
+    elif intent.action == "park":
+        print(f"[warn] park intent for #{intent.issue}: no task in a configured "
+              f"repository — skipped", file=sys.stderr)
+    else:
+        _end_untracked(cfg, deps, by_name, task, intent)
+
+
+_UNTRACKED_ENDS = {"kill": Status(Kind.FAILED, reason=FailReason.KILLED),
+                   "cancel": Status(Kind.CANCELED)}
+
+
+def _end_untracked(cfg: Config, deps: Deps, by_name: dict,
+                   task: TaskState | None, intent: intents.Intent) -> None:
+    """A kill or a cancel the table cannot take: the session ends, and a
+    cancel still closes the issue of a configured repository."""
+    repository = _intent_repository(cfg, intent)
+    if not repository:
+        log.warning("%s intent for #%d: no unique matching task — skipped",
+                    intent.action, intent.issue)
+        return
+    _end_session(cfg, deps, repository, intent.issue)
+    if intent.action == "cancel" and repository in by_name:
+        _cancel_issue(deps, by_name[repository], intent.issue)
+    _record_untracked_end(cfg, task, intent, repository)
+
+
+def _record_untracked_end(cfg: Config, task: TaskState | None, intent: intents.Intent,
+                          repository: str) -> None:
+    """A task file (of a repository that left the config) is ended in place;
+    the console's history reads the end either way."""
+    stage = ""
+    if task is not None:
+        save(cfg.state_dir, replace(end(task, _UNTRACKED_ENDS[intent.action]), updated_at=_now()))
+        stage = task.stage.value
+    kind, detail = _OPERATOR_ENDS[_OPERATOR_INTENTS[intent.action]]
+    eventlog.append_event(cfg.state_dir, kind, repository=repository, issue=intent.issue,
+                          stage=stage, actor=intent.actor, detail=detail)
 
 
 def _release_card(deps: Deps, repository: Repository, issue: int) -> None:
@@ -3057,33 +3079,6 @@ def _release_card(deps: Deps, repository: Repository, issue: int) -> None:
               file=sys.stderr)
 
 
-def _apply_kill_intent(cfg: Config, deps: Deps, by_name: dict,
-                       task: TaskState | None, intent: intents.Intent) -> None:
-    issue = intent.issue
-    kill_repository = intent.repository or (task.repository if task is not None else "")
-    if not kill_repository:
-        print(f"[warn] kill intent for #{issue}: no unique matching task "
-              f"— skipped", file=sys.stderr)
-        return
-    _end_session(cfg, deps, kill_repository, issue)
-    if task is not None:
-        _release_killed_task(cfg, deps, by_name, task, issue)
-    eventlog.append_event(cfg.state_dir, "failed", repository=kill_repository,
-                          issue=issue,
-                          stage=task.stage.value if task is not None else "",
-                          actor=intent.actor, detail="killed by operator")
-
-
-def _cancel_board_issue(deps: Deps, by_name: dict, repository_name: str,
-                        issue: int) -> None:
-    repository = by_name.get(repository_name)
-    if repository is None:
-        log.warning("cancel intent for %s/#%d: repository left the config "
-                    "— board/issue untouched", repository_name, issue)
-        return
-    _cancel_issue(deps, repository, issue)
-
-
 def _cancel_issue(deps: Deps, repository: Repository, issue: int) -> None:
     """A cancel: the card to Wont do, the issue closed as not planned; a
     GitHub failure only warns."""
@@ -3092,23 +3087,6 @@ def _cancel_issue(deps: Deps, repository: Repository, issue: int) -> None:
     except Exception:
         log.warning("github cancel failed for %s/#%d", repository.name, issue,
                     exc_info=True)
-
-
-def _apply_cancel_intent(cfg: Config, deps: Deps, by_name: dict,
-                         task: TaskState | None, intent: intents.Intent) -> None:
-    issue = intent.issue
-    cancel_repository = intent.repository or (task.repository if task is not None else "")
-    if not cancel_repository:
-        log.warning("cancel intent for #%d: no unique matching task — skipped",
-                    issue)
-        return
-    _end_session(cfg, deps, cancel_repository, issue)
-    _cancel_board_issue(deps, by_name, cancel_repository, issue)
-    if task is not None:
-        save(cfg.state_dir, replace(end(task, Status(Kind.CANCELED)), updated_at=_now()))
-    eventlog.append_event(cfg.state_dir, "canceled", repository=cancel_repository,
-                          issue=issue, stage=task.stage.value if task else "",
-                          actor=intent.actor, detail="canceled by operator")
 
 
 def _apply_retry_intent(cfg: Config, issue: int) -> None:
@@ -3198,12 +3176,8 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
     task = _task_for_intent(cfg, intent)
     if intent.action == "reply":
         _apply_reply_intent(cfg, deps, task, intent)
-    elif intent.action == "park":
-        _apply_park_intent(cfg, deps, by_name, task, issue)
-    elif intent.action == "kill":
-        _apply_kill_intent(cfg, deps, by_name, task, intent)
-    elif intent.action == "cancel":
-        _apply_cancel_intent(cfg, deps, by_name, task, intent)
+    elif intent.action in _OPERATOR_INTENTS:
+        _apply_operator_intent(cfg, deps, by_name, task, intent)
     elif intent.action == "retry":
         _apply_retry_intent(cfg, issue)
     elif intent.action == "resume":
