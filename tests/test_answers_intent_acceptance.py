@@ -16,11 +16,11 @@ import shutil
 from dataclasses import replace as dc_replace
 
 import dispatcher.main as main
-from dispatcher import eventlog, intents, messages, operator_intents
-from dispatcher.state import (NO_SLOT, AnswersRequest, PlanApprovalRequest, Stage, load, save)
+from dispatcher import intents, messages, operator_intents
+from dispatcher.state import (NO_SLOT, PlanApprovalRequest, Stage, load, save)
 
 from tests.dispatchfakes import (FakeSessions, cfg, deps, make_task, patch_usage,
-                                 patch_workspace)
+                                 patch_workspace, _events)
 from tests.statuses import RUNNING, held, review
 from dispatcher.status import Kind
 from dispatcher.state import operator_request
@@ -63,10 +63,6 @@ def _drain(c):
 def _file(wt, name=PLAN_FILE):
     p = wt / name
     return json.loads(p.read_text()) if p.exists() else None
-
-
-def _events(c, name):
-    return [e for e in eventlog.read_tail(c.state_dir) if e["event"] == name]
 
 
 def _texts(c):

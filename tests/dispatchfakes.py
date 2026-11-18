@@ -490,6 +490,14 @@ def _events(c, name):
     return [e for e in eventlog.read_tail(c.state_dir) if e["event"] == name]
 
 
+def row(number=7, title="t", status="Ready", labels=("auto",), blocked=False,
+        score=1.0, boost=0):
+    """One board row as the project board reads it."""
+    return {"number": number, "title": title, "url": f"u{number}",
+            "status": status, "labels": list(labels), "blocked": blocked,
+            "score": score, "boost": boost}
+
+
 def parked(task):
     """No session runs for the task: it waits for the operator, a wake or an event."""
     return task.status.kind not in (Kind.RUNNING, Kind.HELD_PLAN_APPROVAL)

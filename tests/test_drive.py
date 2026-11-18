@@ -375,7 +375,7 @@ def test_an_unreadable_task_file_blocks_the_launch_of_the_next_stage(tmp_path):
               status=waking(cause="next-stage"))
     d = deps(sess=FakeSessions(alive={41}))
     for _ in range(2):
-        main._drive_task(c, d, c.repositories[0],
+        drive._drive_task(c, d, c.repositories[0],
                          load(c.state_dir, "portfolio_eval", 42), ADMIT_ALL, tuple)
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.status.kind, t.slot) == (Kind.WAKING, NO_SLOT)
@@ -389,7 +389,7 @@ def test_a_launch_with_no_free_slot_waits_instead_of_aborting(tmp_path, monkeypa
               status=waking(cause="next-stage"))
     monkeypatch.setattr(drive, "allocate_slot", lambda *a, **kw: None)
     d = deps()
-    main._drive_task(c, d, c.repositories[0],
+    drive._drive_task(c, d, c.repositories[0],
                      load(c.state_dir, "portfolio_eval", 42), ADMIT_ALL, tuple)
     assert load(c.state_dir, "portfolio_eval", 42).status.kind is Kind.WAKING
     assert d.sessions.spawned == []

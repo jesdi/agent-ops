@@ -1,12 +1,6 @@
 from dispatcher import queue_ops
 from dispatcher.queue_ops import NEXT_BOOST, QueuePlan
-
-
-def row(number=7, title="t", status="Ready", labels=("auto",), blocked=False,
-        score=1.0, boost=0):
-    return {"number": number, "title": title, "url": f"u{number}",
-            "status": status, "labels": list(labels), "blocked": blocked,
-            "score": score, "boost": boost}
+from tests.dispatchfakes import row
 
 
 class FakeGitHub:

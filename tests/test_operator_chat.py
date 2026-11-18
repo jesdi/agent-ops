@@ -11,16 +11,9 @@ from dispatcher.state import (NO_SLOT, Stage, TaskState, load, save, SessionReco
 from tests.configfakes import with_project
 from tests.dispatchfakes import (FakeGitHub, FakeSessions,
                                  cfg, deps, make_task, patch_events, patch_usage,
-                                 patch_workspace, replace_capacity)
+                                 patch_workspace, replace_capacity, row)
 from tests.statuses import human, review, login, ci
 from dispatcher.status import Kind
-
-
-def row(number, title="t", status="Ready", labels=("auto",), blocked=False,
-        score=1.0, boost=0):
-    return {"number": number, "title": title, "url": f"u{number}",
-            "status": status, "labels": list(labels), "blocked": blocked,
-            "score": score, "boost": boost}
 
 
 def test_reply_wakes_matching_parked_task(tmp_path, monkeypatch):

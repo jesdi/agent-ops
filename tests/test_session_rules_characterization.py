@@ -10,13 +10,13 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 import dispatcher.main as main
-from dispatcher import eventlog, spec_publish, stage_launch
+from dispatcher import spec_publish, stage_launch
 from dispatcher.state import (NO_SLOT, PlanApprovalRequest, Stage, load, load_all, mark_background, mark_waiting, save)
 from dispatcher.artifacts import plan_revision
 from tests.test_herdr_liveness_poke_acceptance import HerdrSessions
 from tests.dispatchfakes import (PLAN_SUMMARY, SPEC_PATH, FakeGitHub, FakeSessions,
                                  approve_plan, cfg, deps, make_task, patch_usage,
-                                 patch_workspace, write_tickets)
+                                 patch_workspace, write_tickets, _events)
 from tests.statuses import RUNNING, failed, held, waking
 from dispatcher.status import Kind, occupies
 from dispatcher.state import at_gate, operator_request
@@ -62,10 +62,6 @@ def run(c, sess=None, gh=None, passes=1):
 
 def now(c):
     return load(c.state_dir, T, N)
-
-
-def events(c, name):
-    return [e for e in eventlog.read_tail(c.state_dir) if e["event"] == name]
 
 
 def stopped(**kw):
@@ -208,7 +204,7 @@ def test_parking_releases_the_slot(c):
         Kind.PARKED_HUMAN, "decision", "which DB?", NO_SLOT)
     assert [t for t in load_all(c.state_dir) if occupies(t.status)] == []
     assert N in d.sessions.ended and "parked_question" in d.notifier.sent
-    assert [e["detail"] for e in events(c, "parked")] == ["which DB?"]
+    assert [e["detail"] for e in _events(c, "parked")] == ["which DB?"]
 
 
 def test_awaiting_answers_parks_with_the_page_as_the_request(c):
@@ -248,7 +244,7 @@ def test_a_new_loop_round_is_counted(c):
     d = run(c)
     t = now(c)
     assert (t.review_rounds, t.status.kind) == (1, Kind.RUNNING)
-    assert [e["detail"] for e in events(c, "round")] == ["review round 1/2"]
+    assert [e["detail"] for e in _events(c, "round")] == ["review round 1/2"]
     assert d.notifier.sent == []
 
 
@@ -298,7 +294,7 @@ def test_a_stopped_session_is_poked_then_parked(c):
         run(c, sess)
     t = now(c)
     assert (t.status.kind, t.pokes) == (Kind.RUNNING, 2) and len(sess.sent_text) == 2
-    assert [e["detail"] for e in events(c, "poked")] == ["poke 1", "poke 2"]
+    assert [e["detail"] for e in _events(c, "poked")] == ["poke 1", "poke 2"]
     save(c.state_dir, dc_replace(t, poked_since=time.time() - 2 * HOUR - 1))
     mark_waiting(c.state_dir, T, N)
     run(c, sess)
@@ -574,7 +570,7 @@ def test_review_done_opens_the_pr(c, stage, template):
     t = now(c)
     assert (t.stage, t.pr_number, t.status.kind) == (Stage.PR_OPEN, 88, Kind.PARKED_PR)
     assert template in d.notifier.sent
-    assert len(events(c, "pr-opened")) == 1
+    assert len(_events(c, "pr-opened")) == 1
 
 
 def test_an_unapproved_plan_done_is_bounced_then_parked(c):

@@ -12,7 +12,7 @@ from dispatcher.state import (NO_SLOT, AnswersRequest, LoopCaps, Stage, TaskStat
 from tests.dispatchfakes import (FakeGitHub, FakeNotifier, FakeSessions,
                                  approve_plan, cfg, deps, gate_signal,
                                  make_task, patch_events, patch_usage,
-                                 patch_workspace, payload, pr_open_task, replace_capacity, valid_spec, write_tickets)
+                                 patch_workspace, payload, pr_open_task, replace_capacity, valid_spec, write_tickets, _events)
 from tests.statuses import RUNNING, PR, human, waking
 from dispatcher.status import Kind
 from dispatcher.state import operator_request
@@ -290,10 +290,6 @@ def test_review_done_appends_pr_opened_event(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def events(c, name):
-    return [e for e in eventlog.read_tail(c.state_dir) if e["event"] == name]
-
-
 def test_approved_plan_starts_one_implement_session_over_the_tickets(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
@@ -312,7 +308,7 @@ def test_approved_plan_starts_one_implement_session_over_the_tickets(tmp_path, m
     assert "`.agent/tickets`" in prompt and "docs/specs/x-design.md" in prompt
     assert ".agent/tickets/0" not in prompt      # no ticket of its own
     assert "implement_started" in d.notifier.sent
-    assert [e["stage"] for e in events(c, "stage-started")] == ["implement"]
+    assert [e["stage"] for e in _events(c, "stage-started")] == ["implement"]
 
 
 def test_spec_approval_records_the_spec_path_for_later_stages(tmp_path, monkeypatch):
@@ -346,7 +342,7 @@ def test_implement_done_spawns_review_and_review_done_opens_pr(tmp_path, monkeyp
     main.run_pass(c, d2)
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.stage, t.pr_number) == (Stage.PR_OPEN, 9)
-    assert "pr_opened" in d2.notifier.sent and len(events(c, "pr-opened")) == 1
+    assert "pr_opened" in d2.notifier.sent and len(_events(c, "pr-opened")) == 1
 
 
 def test_pr_opens_and_parks_on_github_ending_the_review_session_once(tmp_path, monkeypatch):
@@ -450,7 +446,7 @@ def test_gate_round_is_counted_pinged_and_parked_past_the_cap(tmp_path, monkeypa
     sig.write_text(json.dumps({"stage": "review", "status": "working", "loop": "gate", "round": 1}))
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     assert load(c.state_dir, "portfolio_eval", 42).gate_rounds == 1
-    assert events(c, "round")[-1]["detail"] == "gate round 1/2"
+    assert _events(c, "round")[-1]["detail"] == "gate round 1/2"
     sig.write_text(json.dumps({"stage": "review", "status": "working", "loop": "gate", "round": 2}))
     d = deps(sess=FakeSessions(alive={42})); main.run_pass(c, d)
     assert "last_round" in d.notifier.sent
@@ -477,7 +473,7 @@ def test_session_exhaustion_ends_session_and_clears_waiting(tmp_path, monkeypatc
     assert t.status.kind is Kind.PARKED_HUMAN, "task must be parked"
     assert 42 in sess.ended, "session container must be ended on exhaustion"
     assert not has_waiting(c.state_dir, "portfolio_eval", 42), "waiting marker must be cleared"
-    parked_events = events(c, "parked")
+    parked_events = _events(c, "parked")
     assert parked_events, "parked event must be written"
     detail = parked_events[-1]["detail"]
     assert detail == "gate loop exceeded its cap of 2 rounds", (
@@ -523,7 +519,7 @@ def test_pr_feedback_wakes_address_review(tmp_path, monkeypatch):
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.stage, t.status, t.ci_rounds) == (
         Stage.PR_OPEN, waking(PR, "attention(feedback)"), 0)
-    assert [e["transition"]["event"] for e in events(c, "transition")] == [
+    assert [e["transition"]["event"] for e in _events(c, "transition")] == [
         "pr-feedback", "resume-admitted"]   # the round waits for capacity
     note = next(ctx["note"] for tmpl, ctx in notif.calls if tmpl == "pr_feedback")
     assert "2026-09-07T09:00:00Z" in note
