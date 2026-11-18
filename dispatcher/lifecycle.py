@@ -169,6 +169,7 @@ class ResumeChoice:
     """op-resume."""
     model: str                # the model override
     bypass_usage: bool        # launch past the usage gate
+    text: str = ""            # what the woken session reads; "" for the default
 
 
 @dataclass(frozen=True)
@@ -224,7 +225,8 @@ def operator_event(action: str, payload: Mapping) -> Event:
     if kind is not EventType.OP_RESUME:
         return Event(kind)
     return Event(kind, ResumeChoice(str(payload.get("model") or ""),
-                                    payload.get("bypass_usage") is True))
+                                    payload.get("bypass_usage") is True,
+                                    str(payload.get("text") or "")))
 
 
 def login_at(event: Event) -> str:
@@ -294,6 +296,7 @@ class WakeBlocked:
 class SetResumeOverride:
     model: str
     bypass_usage: bool
+    text: str = ""
 
 
 @dataclass(frozen=True)
@@ -521,7 +524,8 @@ def _wake_blocked(f: Facts) -> WakeBlocked:
 
 
 def _resume_override(f: Facts) -> SetResumeOverride:
-    return SetResumeOverride(f.event.detail.model, f.event.detail.bypass_usage)
+    choice = f.event.detail
+    return SetResumeOverride(choice.model, choice.bypass_usage, choice.text)
 
 
 def _login_code(f: Facts) -> TypeLoginCode:

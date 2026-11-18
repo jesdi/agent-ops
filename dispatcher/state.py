@@ -174,6 +174,7 @@ class TaskState:
     # Cleared after the session successfully resumes.
     resume_model_override: str = ""
     resume_bypass_usage: bool = False
+    resume_text: str = ""                # what a resume wake's launch tells the session
     # The background wait the dispatcher has seen (see machine.pass_actions):
     # the marker's `reported` it last recorded, and herdr's state-change
     # counter at that moment. A different counter later means a new turn.

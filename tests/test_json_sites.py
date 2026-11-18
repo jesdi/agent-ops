@@ -86,6 +86,7 @@ TASK_JSON = """{
   "attention": "",
   "resume_model_override": "",
   "resume_bypass_usage": false,
+  "resume_text": "",
   "background_reported": 0.0,
   "background_seq": 0,
   "poked_since": 0.0,

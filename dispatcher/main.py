@@ -47,7 +47,7 @@ from dispatcher.classify import (BackgroundView, Look, Observation, Reads, artif
 from dispatcher.lifecycle import (AcquireSlot, Admission, ApplyRound, At, ClearTurnMarkers,
                                   EndPokeStretch, EndSession, EnterGate, Event, EventType,
                                   LaunchFailure, LinkPR, MarkAsked, Notify,
-                                  CancelIssue, Pane, Poke, PublishSpec, RecordBackgroundWait,
+                                  CancelIssue, Ignore, Pane, Poke, PublishSpec, RecordBackgroundWait,
                                   ReleaseCard, ReleaseSlot, Reject, ReportCrash, ReportTaskCrash,
                                   ResetRounds, RespawnStage, RetryStage, SetResumeOverride,
                                   Stranded, Transition, WakeBlocked, Woken, decide,
@@ -732,11 +732,13 @@ def _with_implement_provider(task: TaskState, stage: Stage, entry) -> list[str]:
 
 
 def _spawn_stage(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
-                 launch: Launch, spec_path: str = "", *, gh_config: str) -> TaskState:
+                 launch: Launch, spec_path: str = "", message: str = "", *,
+                 gh_config: str) -> TaskState:
     # Logical stage boundaries reset loop budgets; a replacement conversation
     # calls the same launch I/O without creating a new allowance.
     task = loops.reset(task, ResetCause.STAGE_STARTED)
-    return _launch_stage(cfg, deps, repository, task, launch, spec_path, gh_config=gh_config)
+    return _launch_stage(cfg, deps, repository, task, launch, spec_path, message,
+                         gh_config=gh_config)
 
 
 def _task_token(cfg: Config, deps: Deps, repository: Repository,
@@ -1617,18 +1619,17 @@ def _launch_woken(cfg: Config, deps: Deps, repository: Repository,
                   task: TaskState, launch: Launch, gh_config: str) -> str:
     """Launch a woken task. Returns why a new conversation replaced the
     recorded one, else ""."""
-    entry = launch.entry
+    entry, message = launch.entry, _resume_text(task)
     _heal_exclude(repository, task)
     # The two fresh-spawn paths below write stage.json and the models.log
     # line themselves (_spawn_stage), with the stage that is launched.
     if task.status.origin.kind is Kind.FAILED:
         # No session to continue: the stage it failed in starts afresh
         # (state.next_stage).
-        _respawn(cfg, deps, repository, task, launch, gh_config)
+        _respawn(cfg, deps, repository, task, launch, gh_config, message)
         return ""
     if task.stage is Stage.QUEUED:   # claimed, then parked for access before its first launch
-        _spawn_stage(cfg, deps, repository,
-                     unpark(task), launch,
+        _spawn_stage(cfg, deps, repository, unpark(task), launch, message=message,
                      gh_config=gh_config)
         return ""
     if task.stage is Stage.PR_OPEN:
@@ -1638,7 +1639,7 @@ def _launch_woken(cfg: Config, deps: Deps, repository: Repository,
         task = replace(unpark(task), attention="operator", feedback_cursor=_cursor_now(),
                        resume_model_override="", resume_bypass_usage=False)
         _clear_wake_blocked(cfg, task.repository, task.issue)
-        _spawn_stage(cfg, deps, repository, task, launch, gh_config=gh_config)
+        _spawn_stage(cfg, deps, repository, task, launch, message=message, gh_config=gh_config)
         eventlog.append_event(cfg.state_dir, "resumed", repository=repository.name,
                               issue=task.issue, stage=Stage.ADDRESS_REVIEW.value,
                               model=str(entry))
@@ -1647,7 +1648,7 @@ def _launch_woken(cfg: Config, deps: Deps, repository: Repository,
     # and re-park the freshly resumed session.
     _write_working(task.worktree, task.stage, entry)
     _log_model(task.worktree, task.stage, str(entry))
-    task, detail = _continue_or_restart(cfg, deps, repository, task, launch,
+    task, detail = _continue_or_restart(cfg, deps, repository, task, launch, message,
                                         gh_config=gh_config)
     _clear_wake_blocked(cfg, task.repository, task.issue)
     save(cfg.state_dir, replace(unpark(task),
@@ -1659,6 +1660,17 @@ def _launch_woken(cfg: Config, deps: Deps, repository: Repository,
     return detail
 
 
+RESUME_TEXT = "The operator resumed this task. Continue."
+
+
+def _resume_text(task: TaskState) -> str:
+    """What the launch of an operator's resume tells the session, from the
+    wake's own save: nothing is queued between the wake and its launch."""
+    if task.status.cause is not Cause.RESUME:
+        return ""
+    return task.resume_text or RESUME_TEXT
+
+
 def _crash_failed(task: TaskState) -> TaskState:
     """Failed by a task crash at the stage it had, which Resume starts
     afresh (state.next_stage)."""
@@ -1667,7 +1679,7 @@ def _crash_failed(task: TaskState) -> TaskState:
 
 
 def _respawn(cfg: Config, deps: Deps, repository: Repository,
-             task: TaskState, launch: Launch, gh_config: str) -> None:
+             task: TaskState, launch: Launch, gh_config: str, message: str) -> None:
     """Resume of a crashed task, which has no session to continue; `launch`
     is its next launch. The stage it died in starts afresh in the same
     worktree; an implement session continues from its ledger there. A
@@ -1679,7 +1691,8 @@ def _respawn(cfg: Config, deps: Deps, repository: Repository,
                    resume_model_override="", resume_bypass_usage=False,
                    **loops.crash_resume_fields(task))
     _clear_wake_blocked(cfg, task.repository, task.issue)
-    task = _spawn_stage(cfg, deps, repository, task, launch, gh_config=gh_config)
+    task = _spawn_stage(cfg, deps, repository, task, launch, message=message,
+                        gh_config=gh_config)
     eventlog.append_event(cfg.state_dir, "resumed", repository=repository.name,
                           issue=task.issue, stage=task.stage.value,
                           model=str(launch.entry), detail="after crash")
@@ -1785,22 +1798,23 @@ class _LaunchFailed(Exception):
         self.stage, self.accepted = stage, accepted
 
 
-def _apply(turn: _Turn, task: TaskState, event: Event) -> None:
+def _apply(turn: _Turn, task: TaskState, event: Event) -> Transition | Ignore | Reject:
     """Decide `event` for `task` and execute what the table answers: the
     actions that end or start a session, then one commit and its
-    `transition` event, then the notices (ADR 0015)."""
+    `transition` event, then the notices (ADR 0015). Returns the answer."""
     outcome = decide(task, event)
     if isinstance(outcome, Reject):
         _rejected(turn, task, event, outcome.reason)
     if not isinstance(outcome, Transition):
         log.debug("#%s %s: %s", task.issue, event.type.value, outcome.reason)
-        return
+        return outcome
     turn.event = event
     if _launches(outcome) and not _token(turn, task):
-        return
+        return outcome
     _execute(turn, task, outcome)
     if turn.launched:
         _consume_execution_choice(turn.cfg, task.repository, task.issue)
+    return outcome
 
 
 def _rejected(turn: _Turn, task: TaskState, event: Event, reason: str) -> None:
@@ -1987,10 +2001,11 @@ _REVIEW_PARKED = {EventType.GRACE_EXPIRED: "plan review grace expired",
                                            "unattended rounds used up")}
 _FAILED = {FailReason.SESSION_CRASH: "session crashed mid-stage",
            FailReason.TASK_CRASH: "task crashed mid-pass"}
-# The operator's ends: a kill or a cancel writes the event the console's
-# history reads, as the intent paths did.
-_OPERATOR_ENDS = {EventType.OP_KILL: ("failed", "killed by operator"),
-                  EventType.OP_CANCEL: ("canceled", "canceled by operator")}
+# The operator's ends: the status a kill or a cancel leaves when the table
+# cannot take it (_end_untracked), and the history event the console reads.
+_OPERATOR_ENDS = {EventType.OP_KILL: (Status(Kind.FAILED, reason=FailReason.KILLED),
+                                      "killed by operator"),
+                  EventType.OP_CANCEL: (Status(Kind.CANCELED), "canceled by operator")}
 
 
 # The event the console's history reads for a park or a crash, by status.
@@ -2008,7 +2023,8 @@ def _history(event: Event, status: Status) -> tuple[str, str] | None:
         return "parked", _HISTORY[status.kind](event, status)
     if status.kind is Kind.FAILED and status.reason in _FAILED:
         return "failed", _FAILED[status.reason]
-    return _OPERATOR_ENDS.get(event.type)
+    end = _OPERATOR_ENDS.get(event.type)
+    return (end[0].kind.value, end[1]) if end else None
 
 
 def _legacy_event(turn: _Turn, saved: TaskState, t: Transition) -> None:
@@ -2302,7 +2318,10 @@ def _rounds_reset(turn: _Turn, task: TaskState, act: ResetRounds) -> TaskState:
 
 
 def _override_set(turn: _Turn, task: TaskState, act: SetResumeOverride) -> TaskState:
-    return _with_resume_override(task, act.model, act.bypass_usage)
+    """The model the next wake runs on, whether it launches past the usage
+    gate, and what a resume wake's launch tells the session."""
+    return replace(task, resume_model_override=act.model, resume_bypass_usage=act.bypass_usage,
+                   resume_text=act.text)
 
 
 def _card_released(turn: _Turn, task: TaskState, act: ReleaseCard) -> TaskState:
@@ -3001,17 +3020,21 @@ def _apply_operator_intent(cfg: Config, deps: Deps, by_name: dict,
     ends what it can (_end_untracked), any other intent is skipped."""
     repository = by_name.get(task.repository) if task is not None else None
     if repository is not None:
-        turn = _Turn(cfg, deps, repository, None, None, False, actor=intent.actor or "operator")
-        _apply(turn, task, operator_event(intent.action, intent.payload))
-    elif intent.action in _UNTRACKED_ENDS:
+        _decide_intent(cfg, deps, repository, task, intent)
+    elif OPERATOR_INTENTS[intent.action] in _OPERATOR_ENDS:
         _end_untracked(cfg, deps, by_name, task, intent)
     else:
         print(f"[warn] {intent.action} intent for #{intent.issue}: no task in a configured "
               f"repository — skipped", file=sys.stderr)
 
 
-_UNTRACKED_ENDS = {"kill": Status(Kind.FAILED, reason=FailReason.KILLED),
-                   "cancel": Status(Kind.CANCELED)}
+def _decide_intent(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
+                   intent: intents.Intent) -> None:
+    """The table's turn for the intent; raises IntentRefused when it refuses."""
+    turn = _Turn(cfg, deps, repository, admit=None, order=None, dry_run=False,
+                 actor=intent.actor or "operator")
+    if isinstance(_apply(turn, task, operator_event(intent.action, intent.payload)), Reject):
+        raise IntentRefused(intent.action)
 
 
 def _end_untracked(cfg: Config, deps: Deps, by_name: dict,
@@ -3034,10 +3057,11 @@ def _record_untracked_end(cfg: Config, task: TaskState | None, intent: intents.I
     """A task file (of a repository that left the config) is ended in place;
     the console's history reads the end either way."""
     stage = ""
+    status, detail = _OPERATOR_ENDS[OPERATOR_INTENTS[intent.action]]
     if task is not None:
-        save(cfg.state_dir, replace(end(task, _UNTRACKED_ENDS[intent.action]), updated_at=_now()))
+        save(cfg.state_dir, replace(end(task, status), updated_at=_now()))
         stage = task.stage.value
-    kind, detail = _OPERATOR_ENDS[OPERATOR_INTENTS[intent.action]]
+    kind = status.kind.value
     eventlog.append_event(cfg.state_dir, kind, repository=repository, issue=intent.issue,
                           stage=stage, actor=intent.actor, detail=detail)
 
@@ -3073,6 +3097,10 @@ def _apply_retry_intent(cfg: Config, issue: int) -> None:
         qp.unlink(missing_ok=True)
 
 
+class IntentRefused(Exception):
+    """The table refused the intent: its `transition-rejected` event says why."""
+
+
 class IntentDropped(Exception):
     """An intent the dispatcher refuses: dropped with an event naming why."""
 
@@ -3082,11 +3110,13 @@ class IntentDropped(Exception):
 
 
 def _require_resume_model(cfg: Config, by_name: dict,
-                          task: TaskState | None, model: str) -> None:
+                          task: TaskState | None, event: Event) -> None:
     """The authoritative check of a resume intent's model (an intent file can
     bypass the console's 422): configured for the repository, and of the stage
-    pick's provider. Raises IntentDropped."""
-    if not model or task is None:
+    pick's provider. Raises IntentDropped. A resume the table refuses is not
+    checked: its refusal is the one the operator reads."""
+    model = event.detail.model
+    if not model or task is None or isinstance(decide(task, event), Reject):
         return
     repository = by_name.get(task.repository)
     policy = policy_for(cfg, repository)
@@ -3098,31 +3128,12 @@ def _require_resume_model(cfg: Config, by_name: dict,
         raise IntentDropped(refusal, model)
 
 
-def _with_resume_override(task: TaskState, model: str, bypass_usage: bool) -> TaskState:
-    """The model the next wake runs on, and whether it launches past the
-    usage gate."""
-    return replace(task, resume_model_override=model, resume_bypass_usage=bypass_usage)
-
-
 def _apply_resume_intent(cfg: Config, deps: Deps, by_name: dict,
                          task: TaskState | None, intent: intents.Intent) -> None:
-    """Let the table decide the resume; a task it wakes (not one already
-    waking) gets the resume text queued for the session it launches."""
-    event = operator_event(intent.action, intent.payload)
-    _require_resume_model(cfg, by_name, task, event.detail.model)
+    """Let the table decide the resume; its wake's launch tells the session
+    (_resume_text)."""
+    _require_resume_model(cfg, by_name, task, operator_event(intent.action, intent.payload))
     _apply_operator_intent(cfg, deps, by_name, task, intent)
-    if _woke(cfg, task):
-        _queue_message(cfg, task.repository, task.issue,
-                       intent.payload.get("text") or "The operator resumed this task. Continue.",
-                       intent.actor or "operator")
-
-
-def _woke(cfg: Config, before: TaskState | None) -> bool:
-    """The intent just moved the task into waking."""
-    if before is None or before.status.kind is Kind.WAKING:
-        return False
-    after = load(cfg.state_dir, before.repository, before.issue)
-    return after is not None and after.status.kind is Kind.WAKING
 
 
 def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
@@ -3168,6 +3179,8 @@ def _apply_intents(cfg: Config, deps: Deps) -> None:
                                   repository=_intent_repository(cfg, intent),
                                   issue=intent.issue, actor=intent.actor,
                                   detail=intent.action)
+        except IntentRefused:
+            pass   # its transition-rejected event is the record
         except IntentDropped as dropped:
             print(f"[warn] intent {intent.path.name}: {dropped}",
                   file=sys.stderr)

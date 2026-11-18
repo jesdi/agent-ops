@@ -3099,10 +3099,8 @@ def test_resume_intent_wakes_with_default_text(tmp_path, monkeypatch):
     sess = FakeSessions()
     main.run_pass(c, deps(sess=sess))
     from dispatcher import messages
-    # Task 3: _resume_woken delivers the queued message into the resume prompt.
-    msgs = messages.all_messages(c.state_dir, "portfolio_eval", 42)
-    assert msgs[0].text == "The operator resumed this task. Continue."
-    assert msgs[0].delivered_at != ""
+    # The wake's launch writes the text itself: nothing is queued for it.
+    assert messages.all_messages(c.state_dir, "portfolio_eval", 42) == []
     assert "The operator resumed this task. Continue." in sess.resumed[0][1]
 
 
@@ -3117,10 +3115,8 @@ def test_resume_intent_carries_optional_text(tmp_path, monkeypatch):
     sess = FakeSessions()
     main.run_pass(c, deps(sess=sess))
     from dispatcher import messages
-    # Task 3: _resume_woken delivers the queued message into the resume prompt.
-    msgs = messages.all_messages(c.state_dir, "portfolio_eval", 42)
-    assert msgs[0].text == "ship it"
-    assert msgs[0].delivered_at != ""
+    # The wake's launch writes the text itself: nothing is queued for it.
+    assert messages.all_messages(c.state_dir, "portfolio_eval", 42) == []
     assert "ship it" in sess.resumed[0][1]
 
 
@@ -4989,14 +4985,13 @@ def test_reply_to_a_parked_task_queues_and_requests_a_wake(tmp_path):
     assert load(c.state_dir, "portfolio_eval", 42).status.kind is Kind.WAKING
 
 
-def test_resume_intent_queues_its_text_as_a_message(tmp_path):
+def test_resume_intent_queues_no_message(tmp_path):
     c = cfg(tmp_path)
     make_task(c, issue=42, status=human())
     main.intents.write_intent(c.state_dir, "resume", "portfolio_eval", 42, {}, "jesdi@github", 1)
     main._apply_intents(c, deps())
     from dispatcher import messages
-    texts = [m.text for m in messages.undelivered(c.state_dir, "portfolio_eval", 42)]
-    assert texts == ["The operator resumed this task. Continue."]
+    assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
     assert load(c.state_dir, "portfolio_eval", 42).status.kind is Kind.WAKING
 
 
@@ -7306,8 +7301,7 @@ def test_resume_of_a_killed_or_crashed_task_wakes_it(tmp_path, monkeypatch, stag
     t = _resume_pass(c)
     assert (t.stage, t.status) == (stage, waking(failed(reason), "resume"))
     from dispatcher import messages
-    assert [m.text for m in messages.undelivered(c.state_dir, "portfolio_eval", 42)] == [
-        "The operator resumed this task. Continue."]
+    assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
     assert [e["transition"]["event"] for e in _events(c, "transition")] == ["op-resume"]
 
 
@@ -7338,3 +7332,45 @@ def test_resume_of_a_closed_pr_failure_the_web_accepted_is_rejected(tmp_path, mo
         "op-resume", "reopen the PR on GitHub or re-queue the issue")
     from dispatcher import messages
     assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
+
+
+def test_a_refused_resume_is_rejected_whatever_its_model(tmp_path, monkeypatch):
+    """The table's refusal wins over the model check: transition-rejected,
+    and neither intent-dropped nor intent-applied."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, stage=Stage.PR_OPEN, status=failed("pr-closed"), slot=NO_SLOT,
+              updated_at=datetime.now(timezone.utc).isoformat())  # inside retention
+    t = _resume_pass(c, model="openai/gpt-nope")
+    assert t.status == failed("pr-closed")
+    [e] = _events(c, "transition-rejected")
+    assert e["detail"] == "reopen the PR on GitHub or re-queue the issue"
+    assert _events(c, "intent-dropped") == [] and _events(c, "intent-applied") == []
+
+
+def test_the_resume_text_is_stored_with_the_wake_and_sent_at_launch(tmp_path, monkeypatch):
+    """No message is queued between the wake's save and its launch: the
+    launch of a resume wake writes the text itself, so nothing is lost
+    between the two."""
+    patch_usage(monkeypatch, util=0.95)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    write_session(c.state_dir, "portfolio_eval", 42, SessionRecord("recorded-session", "implement"))
+    make_task(c, issue=42, status=human(), park_msg_id=55)
+    t = _resume_pass(c, text="ship it")
+    from dispatcher import messages
+    assert messages.all_messages(c.state_dir, "portfolio_eval", 42) == []
+    assert (t.status.kind, t.resume_text) == (Kind.WAKING, "ship it")
+    patch_usage(monkeypatch)
+    sess = FakeSessions()
+    main.run_pass(c, deps(sess=sess))
+    assert "ship it" in sess.resumed[0][1]
+
+
+def test_a_park_intent_without_a_task_is_skipped(tmp_path):
+    c = cfg(tmp_path)
+    intents_mod.write_intent(c.state_dir, "park", "portfolio_eval", 42, {}, "op", 1)
+    main._apply_intents(c, deps())
+    assert load(c.state_dir, "portfolio_eval", 42) is None
+    assert _events(c, "transition") == [] and _events(c, "transition-rejected") == []
