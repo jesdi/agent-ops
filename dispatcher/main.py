@@ -51,7 +51,8 @@ from dispatcher.lifecycle import (AcquireSlot, Admission, ApplyRound, At, Attemp
                                   CancelIssue, Ignore, Pane, Poke, PublishSpec, RecordBackgroundWait,
                                   ReleaseCard, ReleaseSlot, Reject, ReportCrash, ReportTaskCrash,
                                   ResetRounds, RespawnStage, RetryStage, SetResumeOverride,
-                                  Stranded, Transition, WakeBlocked, Woken, decide,
+                                  Ranked, Stranded, SweepTombstone, Transition, WakeBlocked,
+                                  Woken, decide,
                                   OPERATOR_INTENTS, login_at, operator_event, operator_request)
 from dispatcher.loops import Decision, Outcome, ResetCause
 from dispatcher.models import (Admitted, Entry, ModelPolicy,
@@ -2291,6 +2292,18 @@ def _issue_canceled(turn: _Turn, task: TaskState, act: CancelIssue) -> TaskState
     return task
 
 
+def _tombstone_swept(turn: _Turn, task: TaskState, act: SweepTombstone) -> TaskState:
+    """After the commit the ended task's file goes, so its ranked card is
+    claimed fresh."""
+    def sweep(saved: TaskState) -> None:
+        delete(turn.cfg.state_dir, saved.repository, saved.issue)
+        eventlog.append_event(turn.cfg.state_dir, "reopened", repository=saved.repository,
+                              issue=saved.issue,
+                              detail=f"{saved.status.kind.value} task ranked again")
+    turn.after.append(sweep)
+    return task
+
+
 # The actions a session event emits; the other event families wire theirs
 # with their own tickets (#132).
 _ACT: dict[type, Callable[..., TaskState]] = {
@@ -2302,7 +2315,7 @@ _ACT: dict[type, Callable[..., TaskState]] = {
     ReportTaskCrash: _task_crash_reported, MarkAsked: _marked_asked, EnterGate: _gate_entered,
     LinkPR: _pr_linked, ClearTurnMarkers: _markers_cleared, Notify: _noticed,
     WakeBlocked: _wake_blocked, ResetRounds: _rounds_reset, SetResumeOverride: _override_set,
-    ReleaseCard: _card_released, CancelIssue: _issue_canceled,
+    ReleaseCard: _card_released, CancelIssue: _issue_canceled, SweepTombstone: _tombstone_swept,
 }
 
 
@@ -2625,16 +2638,6 @@ def _box_free(cfg: Config, tasks: list[TaskState]) -> int:
     return claims.box_free(cfg.capacity, tasks, triage_running=False)
 
 
-def _reopened(stale: TaskState, pass_started: str) -> bool:
-    """Reopened won't-do: rank drops CLOSED issues, so a candidate row for a
-    canceled task proves the operator reopened the issue and moved the card
-    back to Ready; its tombstone is swept for a fresh claim. The pass_started
-    guard keeps a tombstone written by THIS pass's cancel intent (its board
-    write lagging or failed) from resurrecting the task it just retired."""
-    return (stale.status.kind is Kind.CANCELED
-            and not (pass_started and stale.updated_at >= pass_started))
-
-
 def _reconcile_boards(cfg: Config, deps: Deps) -> None:
     """Every project's board, paused ones too, gets a card for each new open
     issue and its repositories the label set (#230 D8). A failure skips
@@ -2677,34 +2680,26 @@ def _ranked_claim_candidates(deps: Deps, members: list[Repository]):
         return ()
 
 
-def _skip_stale_claim(cfg: Config, by_issue: dict,
-                      repository: Repository, cand: Candidate,
-                      pass_started: str) -> bool:
-    """Drop an already-known candidate unless it was reopened this pass."""
-    key = (repository.name, cand.number)
-    stale = by_issue.get(key)
-    if stale is None:
-        return False
-    if not _reopened(stale, pass_started):
-        return True
-    delete(cfg.state_dir, *key)
-    del by_issue[key]
-    eventlog.append_event(cfg.state_dir, "reopened", repository=repository.name,
-                          issue=cand.number,
-                          detail="canceled task ranked again — reopened by operator")
-    return False
-
-
-def _claim_launch(cfg: Config, deps: Deps, repository: Repository,
-                  cand: Candidate, admit: Admit, order: Order,
-                  skipped: set[tuple[str, int]]) -> Launch | None:
-    """Return a candidate's launch unless quarantine or policy rejects it."""
-    if failures.check_quarantine(cfg.state_dir, deps.github, repository.name,
-                                 cand.number):
+def _quarantined(cfg: Config, deps: Deps, repository: Repository, cand: Candidate,
+                 skipped: set[tuple[str, int]]) -> bool:
+    """A blocker issue holds the card back; it lands in `skipped`."""
+    held = failures.check_quarantine(cfg.state_dir, deps.github, repository.name, cand.number)
+    if held:
         skipped.add((repository.name, cand.number))
-        return None
-    launch, _bypass = _candidate_launch(cfg, repository, cand, admit, order)
-    return launch
+    return held
+
+
+def _ranked_again(cfg: Config, deps: Deps, by_issue: dict, repository: Repository,
+                  cand: Candidate, pass_started: str) -> bool:
+    """Whether a ranked card is claimed fresh: it has no task, or the table
+    swept its ended task's file on `candidate-ranked`."""
+    task = by_issue.get((repository.name, cand.number))
+    if task is None:
+        return True
+    this_pass = bool(pass_started) and task.updated_at >= pass_started
+    turn = _Turn(cfg, deps, repository, admit=None, order=None, dry_run=False)
+    outcome = _apply(turn, task, Event(EventType.CANDIDATE_RANKED, Ranked(this_pass)))
+    return isinstance(outcome, Transition) and SweepTombstone() in outcome.actions
 
 
 def _claimable(cfg: Config, deps: Deps, members: list[Repository], tasks: list[TaskState],
@@ -2712,18 +2707,30 @@ def _claimable(cfg: Config, deps: Deps, members: list[Repository], tasks: list[T
                skipped: set[tuple[str, int]]) -> Iterator[ClaimCandidate]:
     """One project's ranked candidates this pass may claim, across its member
     repositories in rank order, each with its repository and the spec launch it
-    would start. Skips issues that already have a task, quarantined issues,
+    would start. Skips quarantined issues, issues whose task stays (candidate-ranked),
     and candidates whose spec model has no headroom — a denied candidate
     leaves the next one eligible, since its model may differ."""
     by_name = {r.name: r for r in members}
     by_issue = {(t.repository, t.issue): t for t in tasks}
     for cand in _ranked_claim_candidates(deps, members):
         repository = by_name[cand.repository]
-        if _skip_stale_claim(cfg, by_issue, repository, cand, pass_started):
+        if _quarantined(cfg, deps, repository, cand, skipped):
             continue
-        launch = _claim_launch(cfg, deps, repository, cand, admit, order, skipped)
+        launch = _fresh_claim_launch(cfg, deps, by_issue, repository, cand, admit, order,
+                                     pass_started)
         if launch is not None:
             yield repository, cand, launch
+
+
+def _fresh_claim_launch(cfg: Config, deps: Deps, by_issue: dict, repository: Repository,
+                        cand: Candidate, admit: Admit, order: Order,
+                        pass_started: str) -> Launch | None:
+    """The spec launch a ranked card is claimed fresh with; None when its
+    task stays or policy rejects it."""
+    if not _ranked_again(cfg, deps, by_issue, repository, cand, pass_started):
+        return None
+    launch, _bypass = _candidate_launch(cfg, repository, cand, admit, order)
+    return launch
 
 
 class ClaimRoundOutcome(Enum):

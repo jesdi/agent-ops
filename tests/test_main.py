@@ -965,7 +965,7 @@ def test_every_action_a_session_event_emits_has_a_handler():
     other event families wire theirs with their own tickets."""
     import typing
     from dispatcher import lifecycle as lc
-    later = {lc.FinishMerged, lc.SweepTombstone, lc.Flush, lc.TypeLoginCode}
+    later = {lc.FinishMerged, lc.Flush, lc.TypeLoginCode}
     assert set(typing.get_args(lc.Action)) - later == set(main._ACT)
 
 
@@ -2944,7 +2944,7 @@ def test_reopened_canceled_issue_is_claimed_again(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = cfg(tmp_path)
-    make_task(c, issue=42, stage=Stage.QUEUED, status=CANCELED, slot=NO_SLOT,
+    make_task(c, issue=42, stage=Stage.PLAN, status=CANCELED, slot=NO_SLOT,
               updated_at="2026-07-21T00:00:00+00:00")  # canceled long ago
     gh = FakeGitHub([Candidate(42, "Conditions changed", "u42")])
     main.run_pass(c, deps(gh, FakeSessions()))
@@ -2954,6 +2954,64 @@ def test_reopened_canceled_issue_is_claimed_again(tmp_path, monkeypatch):
     reopened = [e for e in eventlog.read_tail(c.state_dir)
                 if e["event"] == "reopened"]
     assert reopened and reopened[0]["issue"] == 42
+    claimed = [e for e in eventlog.read_tail(c.state_dir) if e["event"] == "claimed"]
+    assert claimed and claimed[0]["stage"] == "queued"
+
+
+def test_canceled_this_pass_ranks_without_sweeping_its_tombstone(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.PLAN, status=CANCELED, slot=NO_SLOT,
+              updated_at="2999-01-01T00:00:00+00:00")   # written after the pass started
+    gh = FakeGitHub([Candidate(42, "Still on board", "u42")])
+    main.run_pass(c, deps(gh, FakeSessions()))
+    assert gh.claimed == []
+    assert load(c.state_dir, "portfolio_eval", 42).status.kind is Kind.CANCELED
+    assert not [e for e in eventlog.read_tail(c.state_dir) if e["event"] == "reopened"]
+
+
+def test_failed_task_ranked_again_wakes_in_place(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    made = []
+    monkeypatch.setattr(main, "create_workspace", lambda *a, **k: made.append(a))
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.REVIEW, status=failed("task-crash"), slot=NO_SLOT,
+              updated_at=_ago(minutes=1))
+    gh = FakeGitHub([Candidate(42, "Failure issue closed", "u42")])
+    main.run_pass(c, deps(gh, FakeSessions()))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.status == waking(failed("task-crash"), "ranked")
+    assert t.stage is Stage.REVIEW
+    assert gh.claimed == [] and made == []
+    assert [x.issue for x in load_all(c.state_dir)] == [42]
+
+
+def test_failed_this_pass_ranks_without_waking(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.REVIEW, status=failed("task-crash"), slot=NO_SLOT,
+              updated_at="2999-01-01T00:00:00+00:00")
+    gh = FakeGitHub([Candidate(42, "Still on board", "u42")])
+    main.run_pass(c, deps(gh, FakeSessions()))
+    assert load(c.state_dir, "portfolio_eval", 42).status == failed("task-crash")
+    assert gh.claimed == []
+
+
+def test_done_task_ranked_again_is_rejected(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.PR_OPEN, status=DONE, slot=NO_SLOT,
+              updated_at=_ago(minutes=1))
+    gh = FakeGitHub([Candidate(42, "Merged but Ready", "u42")])
+    main.run_pass(c, deps(gh, FakeSessions()))
+    assert gh.claimed == []
+    assert load(c.state_dir, "portfolio_eval", 42).status.kind is Kind.DONE
+    rejected = [e for e in eventlog.read_tail(c.state_dir) if e["event"] == "transition-rejected"]
+    assert rejected and rejected[0]["transition"]["event"] == "candidate-ranked"
 
 
 def test_cancel_intent_without_task_file_uses_intent_repository(tmp_path, monkeypatch):
