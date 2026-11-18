@@ -2945,18 +2945,20 @@ def _task_for_intent(cfg: Config, intent: intents.Intent) -> TaskState | None:
     return hits[0] if len(hits) == 1 else None   # ambiguous legacy → skip
 
 
-def _apply_reply_intent(cfg: Config, deps: Deps, task: TaskState | None,
+def _apply_reply_intent(cfg: Config, deps: Deps, by_name: dict, task: TaskState | None,
                         intent: intents.Intent) -> None:
-    """Deliver a reply, or inject it when a login prompt owns the pane."""
+    """Deliver a reply, or inject it when a login prompt owns the pane
+    (outside the table until ticket 11)."""
     if task is not None and task.status.kind is Kind.HELD_LOGIN:
         _inject_login_code(cfg, deps, task, intent.payload.get("text", ""))
     else:
-        _deliver_reply(cfg, deps, task, intent)
+        _deliver_reply(cfg, deps, by_name, task, intent)
 
 
-def _deliver_reply(cfg: Config, deps: Deps, task: TaskState | None,
+def _deliver_reply(cfg: Config, deps: Deps, by_name: dict, task: TaskState | None,
                    intent: intents.Intent) -> None:
-    """Queue the reply for its task's session and wake a task waiting for it."""
+    """Queue the reply for its task's session, then let the table decide
+    the reply: a rejected one leaves the message queued, undelivered."""
     repository = _reply_repository(cfg, task, intent)
     if not repository:
         print(f"[warn] reply for #{intent.issue} dropped: legacy intent "
@@ -2965,7 +2967,7 @@ def _deliver_reply(cfg: Config, deps: Deps, task: TaskState | None,
     _queue_message(cfg, repository, intent.issue, intent.payload.get("text", ""),
                    intent.actor or "operator")
     if task is not None:
-        _wake_for_queued_message(cfg, deps, task)
+        _apply_operator_intent(cfg, deps, by_name, task, intent)
 
 
 def _reply_repository(cfg: Config, task: TaskState | None,
@@ -2977,34 +2979,10 @@ def _reply_repository(cfg: Config, task: TaskState | None,
             or (cfg.repositories[0].name if len(cfg.repositories) == 1 else ""))
 
 
-def _wake_for_queued_message(cfg: Config, deps: Deps, task: TaskState) -> None:
-    """Wake a task that waits for the operator, so its session reads the
-    message just queued. Any other task reads it on its next resume."""
-    if at_gate(task):
-        # A gate task that has not parked yet waits for exactly this message,
-        # and only a resume hands the queue to its session: without the wake
-        # the grace park would end the session with the message undelivered.
-        # So it parks now, as the grace park would (session ended, slot
-        # freed), and wakes below.
-        _end_session(cfg, deps, task.repository, task.issue)
-        task = park(task, _review_park(task.status))
-    if task.status.kind in _REPLY_PARKS:
-        task = loops.reset(task, ResetCause.OPERATOR_WAKE)
-        save(cfg.state_dir, replace(wake(task, Cause.REPLY), updated_at=_now()))
-
-
-def _review_park(status: Status) -> Status:
-    """The gate's page parked for review: the held request, or for a session
-    reworking the plan the prescribed page armed for no revision."""
-    if status.kind is Kind.HELD_PLAN_APPROVAL:
-        return replace(status, kind=Kind.PARKED_REVIEW)
-    return Status(Kind.PARKED_REVIEW, path=REVIEW_PAGE)
-
-
-def _apply_answers_intent(cfg: Config, deps: Deps, task: TaskState | None,
+def _apply_answers_intent(cfg: Config, deps: Deps, by_name: dict, task: TaskState | None,
                           intent: intents.Intent) -> None:
     """Write the answers file of the task's open request; a submission
-    then wakes the session to read it."""
+    then queues its message and the table decides the wake."""
     reason = answers.drop_reason(task, intent)
     if reason:
         raise IntentDropped(reason)
@@ -3013,29 +2991,30 @@ def _apply_answers_intent(cfg: Config, deps: Deps, task: TaskState | None,
     if wake:
         task = replace(task, plan_approval=answers.approval(task, intent))
         _queue_message(cfg, task.repository, task.issue, wake, intent.actor or "operator")
-        _wake_for_queued_message(cfg, deps, task)
+        _apply_operator_intent(cfg, deps, by_name, task, intent)
 
 
 # The operator intents the table decides (ticket 08).
 _OPERATOR_INTENTS = {"park": EventType.OP_PARK, "kill": EventType.OP_KILL,
-                     "cancel": EventType.OP_CANCEL}
+                     "cancel": EventType.OP_CANCEL, "reply": EventType.OP_REPLY,
+                     "answers": EventType.OP_ANSWERS}
 
 
 def _apply_operator_intent(cfg: Config, deps: Deps, by_name: dict,
                            task: TaskState | None, intent: intents.Intent) -> None:
-    """A park, kill or cancel: the table decides it for the task, and a
-    refusal is written as `transition-rejected`. Without a task file or a
-    configured repository the table has nothing to decide on: a kill or a
-    cancel still ends what it can (_end_untracked), a park is skipped."""
+    """An operator intent the table decides for the task; a refusal is
+    written as `transition-rejected`. Without a task file or a configured
+    repository the table has nothing to decide on: a kill or a cancel still
+    ends what it can (_end_untracked), any other intent is skipped."""
     repository = by_name.get(task.repository) if task is not None else None
     if repository is not None:
         turn = _Turn(cfg, deps, repository, None, None, False, actor=intent.actor or "operator")
         _apply(turn, task, Event(_OPERATOR_INTENTS[intent.action]))
-    elif intent.action == "park":
-        print(f"[warn] park intent for #{intent.issue}: no task in a configured "
-              f"repository — skipped", file=sys.stderr)
-    else:
+    elif intent.action in _UNTRACKED_ENDS:
         _end_untracked(cfg, deps, by_name, task, intent)
+    else:
+        print(f"[warn] {intent.action} intent for #{intent.issue}: no task in a configured "
+              f"repository — skipped", file=sys.stderr)
 
 
 _UNTRACKED_ENDS = {"kill": Status(Kind.FAILED, reason=FailReason.KILLED),
@@ -3175,15 +3154,15 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
     issue = intent.issue
     task = _task_for_intent(cfg, intent)
     if intent.action == "reply":
-        _apply_reply_intent(cfg, deps, task, intent)
+        _apply_reply_intent(cfg, deps, by_name, task, intent)
+    elif intent.action == "answers":
+        _apply_answers_intent(cfg, deps, by_name, task, intent)
     elif intent.action in _OPERATOR_INTENTS:
         _apply_operator_intent(cfg, deps, by_name, task, intent)
     elif intent.action == "retry":
         _apply_retry_intent(cfg, issue)
     elif intent.action == "resume":
         _apply_resume_intent(cfg, by_name, task, intent)
-    elif intent.action == "answers":
-        _apply_answers_intent(cfg, deps, task, intent)
     else:
         print(f"[warn] unknown intent action {intent.action!r} for #{issue}",
               file=sys.stderr)

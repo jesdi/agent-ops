@@ -2730,6 +2730,68 @@ def test_reply_intent_on_gate_parked_task_wakes_it(tmp_path, monkeypatch):
     assert intents_mod.list_intents(c.state_dir) == []
 
 
+def _reply_pass(c, text, sess):
+    intents_mod.write_intent(c.state_dir, "reply", "portfolio_eval", 42, {"text": text},
+                             "jesdi@github", 1)
+    main.run_pass(c, deps(sess=sess))
+    return load(c.state_dir, "portfolio_eval", 42)
+
+
+def test_reply_while_the_gate_session_is_alive_ends_it_and_wakes_through_review(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = replace_capacity(cfg(tmp_path), 1)
+    page = PlanApprovalRequest(".agent/review.html", fingerprint="fp")
+    make_task(c, issue=42, stage=Stage.PLAN, status=held(page), slot=2)
+    make_task(c, issue=43)                      # holds the only capacity unit
+    sess = FakeSessions(alive={42, 43})
+    t = _reply_pass(c, "split ticket 3", sess)
+    assert 42 in sess.ended and t.slot == NO_SLOT
+    assert (t.stage, t.status) == (Stage.PLAN, waking(review(page)))
+    [e] = [e for e in _events(c, "transition") if e["transition"]["event"] == "op-reply"]
+    assert e["actor"] == "jesdi@github"
+
+
+def test_answers_request_survives_a_blocked_wake(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = replace_capacity(cfg(tmp_path), 1)
+    request = AnswersRequest(".agent/questions.html", fingerprint="fp")
+    make_task(c, issue=42, stage=Stage.SPEC, status=answers(request), slot=NO_SLOT)
+    make_task(c, issue=43)                      # the wake is blocked on capacity
+    t = _reply_pass(c, "see my answers", FakeSessions(alive={43}))
+    assert t.status == waking(answers(request))
+    assert operator_request(t) == request and operator_request(t).fingerprint == "fp"
+
+
+def test_a_rejected_reply_keeps_its_message(tmp_path, monkeypatch):
+    """Answered 202 on a loop-cap park; the pass in progress moved the task
+    to failed(pr-closed), so the next pass refuses the reply out loud."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    make_task(c, issue=42, stage=Stage.PR_OPEN, status=failed("pr-closed"), slot=NO_SLOT,
+              updated_at=main._now())    # inside the retention window
+    before = load(c.state_dir, "portfolio_eval", 42)
+    assert _reply_pass(c, "try once more", FakeSessions()) == before
+    [e] = _events(c, "transition-rejected")
+    assert e["transition"]["event"] == "op-reply"
+    from dispatcher import messages
+    assert [m.text for m in messages.undelivered(c.state_dir, "portfolio_eval", 42)] == [
+        "try once more"]
+
+
+def test_a_reply_for_an_issue_with_no_task_file_is_queued(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    assert _reply_pass(c, "hello", FakeSessions()) is None
+    from dispatcher import messages
+    assert [m.text for m in messages.undelivered(c.state_dir, "portfolio_eval", 42)] == ["hello"]
+    assert _events(c, "transition") == _events(c, "transition-rejected") == []
+
+
 def test_park_intent_parks_a_live_task(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
