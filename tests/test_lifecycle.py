@@ -23,7 +23,7 @@ from dispatcher.classify import Look
 from dispatcher.lifecycle import (Admission, Attempt, Death, Feedback, Gate, LaunchFailure, LoginCode, Notify, Pane,
                                   Ranked, Report, ResumeChoice, Silence, Stranded, Wait,
                                   Woken)
-from dispatcher.loops import Decision, Loop, Outcome as Rounds
+from dispatcher.loops import Decision, Loop, Outcome as Rounds, ResetCause
 from dispatcher.state import (AnswersRequest, PlanApprovalRequest, Stage, StageSignal,
                               TaskState)
 
@@ -307,6 +307,7 @@ def test_a_pr_open_ends_the_session_once_then_gives_the_slot_back(stage):
 def test_pr_feedback_wakes_an_address_review_round():
     got = decide(At(S.PR_OPEN, PR), Event(E.PR_FEEDBACK, Feedback("PR #12")))
     assert got.status == waking(PR, "attention(feedback)")
+    assert ResetRounds(ResetCause.PR_CYCLE_STARTED) in got.actions   # feedback gives the ci rounds back
     got = decide(At(S.PR_OPEN, got.status), Event(E.RESUME_ADMITTED, Woken("")))
     assert got == Transition(RUNNING, S.ADDRESS_REVIEW, (AcquireSlot(), SpawnAddressReview()))
 

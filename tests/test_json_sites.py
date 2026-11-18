@@ -83,6 +83,7 @@ TASK_JSON = """{
   "ci_rounds": 0,
   "check_cursor": "",
   "conflict_cursor": "",
+  "round_reason": "",
   "resume_model_override": "",
   "resume_bypass_usage": false,
   "resume_text": "",

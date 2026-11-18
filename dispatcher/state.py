@@ -169,6 +169,9 @@ class TaskState:
     ci_rounds: int = 0
     check_cursor: str = ""               # completedAt of the newest red check acted on
     conflict_cursor: str = ""            # head sha of the last conflict acted on
+    # Why the address-review round runs, as its prompt says: a PR attention
+    # kind or "operator". Set at the round's start, so a relaunch keeps it.
+    round_reason: str = ""
     # One-shot operator choice for a wake already queued behind admission.
     # Cleared after the session successfully resumes.
     resume_model_override: str = ""

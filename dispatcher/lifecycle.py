@@ -10,7 +10,7 @@ from enum import Enum
 from typing import Callable, Mapping, NamedTuple
 
 from dispatcher.artifacts import REVIEW_PAGE, CheckResult, PlanRevision
-from dispatcher.loops import Decision, Retry
+from dispatcher.loops import Decision, ResetCause, Retry
 from dispatcher.loops import Outcome as Rounds
 from dispatcher.state import Stage, StageSignal, TaskState, operator_request
 from dispatcher.status import Cause, FailReason, HumanReason, Kind, Status, occupies
@@ -307,7 +307,10 @@ class SetResumeOverride:
 
 @dataclass(frozen=True)
 class ResetRounds:
-    """An operator wake: loops.reset(task, ResetCause.OPERATOR_WAKE)."""
+    """loops.reset(task, cause): an operator wake, or a PR cycle that starts
+    (feedback gives the ci rounds back; a red check or a conflict, which
+    spends one, does not)."""
+    cause: ResetCause = ResetCause.OPERATOR_WAKE
 
 
 @dataclass(frozen=True)
@@ -518,13 +521,20 @@ def _wake_through_review(f: Facts) -> Status:
     return Status(Kind.WAKING, origin=_review_park(f), cause=Cause.REPLY)
 
 
-_PR_ATTENTION = {EventType.PR_FEEDBACK: Cause.ATTENTION_FEEDBACK,
-                 EventType.PR_CHECK_FAILED: Cause.ATTENTION_CHECK_FAILED,
-                 EventType.PR_CONFLICT: Cause.ATTENTION_CONFLICT}
+class Attention(NamedTuple):
+    """A kind of PR attention: the PR poll's name for it, which the
+    address-review prompt gives as its reason, and the cause its wake carries."""
+    kind: str
+    cause: Cause
+
+
+PR_ATTENTION = {EventType.PR_FEEDBACK: Attention("feedback", Cause.ATTENTION_FEEDBACK),
+                EventType.PR_CHECK_FAILED: Attention("check-failed", Cause.ATTENTION_CHECK_FAILED),
+                EventType.PR_CONFLICT: Attention("conflict", Cause.ATTENTION_CONFLICT)}
 
 
 def _wake_for_pr(f: Facts) -> Status:
-    return Status(Kind.WAKING, origin=f.status, cause=_PR_ATTENTION[f.event.type])
+    return Status(Kind.WAKING, origin=f.status, cause=PR_ATTENTION[f.event.type].cause)
 
 
 def _feedback_told(f: Facts) -> Notify:
@@ -1002,7 +1012,7 @@ _LIVE = tuple(k for k in K if k not in _ENDS)
 _WAITS = (K.PARKED_HUMAN, K.PARKED_ANSWERS, K.PARKED_REVIEW, K.PARKED_ACCESS)
 _REQUEST_WAITS = (K.PARKED_ANSWERS, K.PARKED_REVIEW)
 _RESUMABLE_PARKS = _WAITS + (K.PARKED_CI,)
-_PR_POKES = tuple(_PR_ATTENTION)
+_PR_POKES = tuple(PR_ATTENTION)
 _ENDED_REJECT = Reject("the task has ended")
 
 _SESSIONS = (K.RUNNING, K.HELD_PLAN_APPROVAL)   # a session runs that a pass drives
@@ -1130,7 +1140,8 @@ TABLE: tuple[Row, ...] = _complete([
     *_rest([E.ACCESS_REACHED], Ignore("not waiting for access")),
 
     # PR events (requirement 13)
-    Row(K.PARKED_PR, E.PR_FEEDBACK, K.WAKING, build=_wake_for_pr, derive=(_feedback_told,)),
+    Row(K.PARKED_PR, E.PR_FEEDBACK, K.WAKING, build=_wake_for_pr, derive=(_feedback_told,),
+        actions=(ResetRounds(ResetCause.PR_CYCLE_STARTED),)),
     # a red check or a conflict spends a ci round (loops) the row counts.
     *_rows([K.PARKED_PR], (E.PR_CHECK_FAILED, E.PR_CONFLICT), K.PARKED_HUMAN,
            guard=loop_exhausted, build=_capped, derive=(_round, _ask_capped)),

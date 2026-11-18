@@ -51,7 +51,7 @@ from dispatcher.lifecycle import (AcquireSlot, Admission, ApplyRound, At, Attemp
                                   CancelIssue, FinishMerged, Ignore, Pane, Poke, PublishSpec, RecordBackgroundWait,
                                   ReleaseCard, ReleaseSlot, Reject, ReportCrash, ReportTaskCrash,
                                   ResetRounds, RespawnStage, RetryStage, SetResumeOverride,
-                                  Ranked, Stranded, SweepTombstone, Transition, WakeBlocked,
+                                  PR_ATTENTION, Ranked, Stranded, SweepTombstone, Transition, WakeBlocked,
                                   Woken, decide,
                                   OPERATOR_INTENTS, login_at, operator_event, operator_request)
 from dispatcher.loops import Decision, Outcome, ResetCause
@@ -725,12 +725,12 @@ def _with_implement_provider(task: TaskState, stage: Stage, entry) -> list[str]:
 
 def _spawn_stage(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
                  launch: Launch, spec_path: str = "", message: str = "", *,
-                 gh_config: str, reason: str = "") -> TaskState:
+                 gh_config: str) -> TaskState:
     # Logical stage boundaries reset loop budgets; a replacement conversation
     # calls the same launch I/O without creating a new allowance.
     task = loops.reset(task, ResetCause.STAGE_STARTED)
     return _launch_stage(cfg, deps, repository, task, launch, spec_path, message,
-                         gh_config=gh_config, reason=reason)
+                         gh_config=gh_config)
 
 
 def _task_token(cfg: Config, deps: Deps, repository: Repository,
@@ -768,11 +768,9 @@ def _sync_task_tokens(cfg: Config, deps: Deps) -> None:
 
 
 def _stage_prompt(cfg: Config, repository: Repository, task: TaskState,
-                  stage: Stage, spec_path: str, message: str,
-                  reason: str = "") -> tuple[str, list[str]]:
+                  stage: Stage, spec_path: str, message: str) -> tuple[str, list[str]]:
     """The stage prompt with the caller's message and the queued mail, and
-    the ids of that mail (_drain). `reason`: why an address-review round
-    runs, else read from the task's status cause (_pr_reason)."""
+    the ids of that mail (_drain)."""
     ctx = dict(
         issue_number=task.issue, issue_title=task.title,
         issue_url=_url(repository, task.issue), repo=repository.repo,
@@ -783,7 +781,7 @@ def _stage_prompt(cfg: Config, repository: Repository, task: TaskState,
         spec_path=spec_path or task.spec_path,
         tickets_dir=TICKETS_DIR, ticket_count=task.ticket_count,
         pr_number=task.pr_number,
-        reason=reason or _pr_reason(task.status.cause),
+        reason=task.round_reason or "operator",
         labels=", ".join(task.labels),
         tracks=tracks_text(_policy(cfg, repository)),
     )
@@ -798,11 +796,11 @@ def _stage_prompt(cfg: Config, repository: Repository, task: TaskState,
 
 def _spawned(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
              launch: Launch, spec_path: str = "", message: str = "", *,
-             gh_config: str, reason: str = "") -> TaskState:
+             gh_config: str) -> TaskState:
     """Spawn `launch.stage`'s session: the task as it now runs, unsaved and
     unstamped. Writes no stage.json, which the caller does."""
     stage, entry = launch.stage, launch.entry
-    prompt, drained = _stage_prompt(cfg, repository, task, stage, spec_path, message, reason)
+    prompt, drained = _stage_prompt(cfg, repository, task, stage, spec_path, message)
     _heal_exclude(repository, task)
     _heal_identity(task)
     prompt = implementation_grants.prepare(task.worktree, stage.value, entry, launch.second, prompt)
@@ -825,10 +823,10 @@ def _stage_started(cfg: Config, task: TaskState, launch: Launch) -> None:
 
 def _launch_stage(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
                   launch: Launch, spec_path: str = "",
-                  message: str = "", *, gh_config: str, reason: str = "") -> TaskState:
+                  message: str = "", *, gh_config: str) -> TaskState:
     _write_working(task.worktree, launch.stage, launch.entry)
     task = replace(_spawned(cfg, deps, repository, task, launch, spec_path, message,
-                            gh_config=gh_config, reason=reason), updated_at=_now())
+                            gh_config=gh_config), updated_at=_now())
     save(cfg.state_dir, task)
     _stage_started(cfg, task, launch)
     return task
@@ -1224,11 +1222,11 @@ def _react_to_pr(cfg: Config, deps: Deps, repository: Repository, task: TaskStat
 _PR_ENDS = {"merged": EventType.PR_MERGED, "closed": EventType.PR_CLOSED}
 
 
-# A PR event and the cursor it advances first, so the same red check or
-# conflict never raises it twice (feedback's cursor moves at the launch).
-_PR_EVENTS = {"feedback": (EventType.PR_FEEDBACK, None),
-              "check-failed": (EventType.PR_CHECK_FAILED, "check_cursor"),
-              "conflict": (EventType.PR_CONFLICT, "conflict_cursor")}
+# The PR poll's attention kinds, and the cursor a kind advances first, so the
+# same red check or conflict never raises it twice (feedback's cursor moves
+# at the launch).
+_PR_EVENTS = {a.kind: event for event, a in PR_ATTENTION.items()}
+_PR_CURSORS = {EventType.PR_CHECK_FAILED: "check_cursor", EventType.PR_CONFLICT: "conflict_cursor"}
 
 
 def _react_to_open_pr(cfg: Config, deps: Deps, repository: Repository,
@@ -1238,10 +1236,11 @@ def _react_to_open_pr(cfg: Config, deps: Deps, repository: Repository,
     merge/close still matter."""
     if res.kind not in _PR_EVENTS:
         return
-    kind, cursor = _PR_EVENTS[res.kind]
+    event = _PR_EVENTS[res.kind]
+    cursor = _PR_CURSORS.get(event)
     task = replace(task, **({cursor: res.latest_ts} if cursor else {}))
     turn = _Turn(cfg, deps, repository, admit=None, order=None, dry_run=dry_run)
-    _apply(turn, task, Event(kind, _pr_detail(cfg, task, res)))
+    _apply(turn, task, Event(event, _pr_detail(cfg, task, res)))
 
 
 def _pr_detail(cfg: Config, task: TaskState, res: "pr_poll.PollResult"
@@ -1387,17 +1386,10 @@ def _woken(task: TaskState) -> bool:
     return task.status.kind is Kind.WAKING
 
 
-# A PR wake that already spent its ci round (_pr_detail): its launch must not
-# refund it, or a red check that never turns green would never exhaust the cap.
-_CI_CHARGED = frozenset({Cause.ATTENTION_CHECK_FAILED, Cause.ATTENTION_CONFLICT})
-# Why the PR wakes it, as the address-review prompt names the round; any
-# other wake at pr-open is the operator's.
-_PR_REASONS = {Cause.ATTENTION_FEEDBACK: "feedback", Cause.ATTENTION_CHECK_FAILED: "check-failed",
-               Cause.ATTENTION_CONFLICT: "conflict"}
-
-
 def _pr_reason(cause: Cause | None) -> str:
-    return _PR_REASONS.get(cause, "operator")
+    """Why the PR wakes it, as the address-review prompt names the round; any
+    other wake at pr-open is the operator's."""
+    return next((a.kind for a in PR_ATTENTION.values() if a.cause is cause), "operator")
 
 
 def _address_review_round(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
@@ -1407,14 +1399,12 @@ def _address_review_round(cfg: Config, deps: Deps, repository: Repository, task:
     message. Cursor := spawn time: everything the session can read live is
     now "seen"; _cursor_now(), as GitHub timestamps are second-granular and
     pr_poll's trigger is a strict `>`."""
-    cause = task.status.cause
-    if cause not in _CI_CHARGED:
-        task = loops.reset(task, ResetCause.PR_CYCLE_STARTED)
-    task = replace(unpark(task), feedback_cursor=_cursor_now(),
+    task = replace(unpark(task), round_reason=_pr_reason(task.status.cause),
+                   feedback_cursor=_cursor_now(),
                    resume_model_override="", resume_bypass_usage=False, resume_text="")
     _clear_wake_blocked(cfg, task.repository, task.issue)
     task = _spawn_stage(cfg, deps, repository, task, launch, message=message,
-                        gh_config=gh_config, reason=_pr_reason(cause))
+                        gh_config=gh_config)
     eventlog.append_event(cfg.state_dir, "resumed", repository=repository.name,
                           issue=task.issue, stage=Stage.ADDRESS_REVIEW.value,
                           model=str(launch.entry))
@@ -2109,12 +2099,10 @@ def _closed_note(turn: _Turn, saved: TaskState, act: Notify) -> dict:
     return {"note": f"PR #{saved.pr_number}. Worktree preserved for autopsy."}
 
 
-# The notices that carry the pane, and how each is worded.
-_TAIL_NOTICES = frozenset({"parked_question", "needs_relogin", "plan_parked",
-                           "plan_session_stopped"})
-_NOTICES = {"parked_question": _question, "needs_relogin": _relogin,
-            "plan_parked": _plan_parked, "plan_session_stopped": _plan_parked,
-            "task_done": _merged_note, "pr_closed": _closed_note}
+# How each notice is worded; the ones that carry the pane first.
+_TAIL_NOTICES = {"parked_question": _question, "needs_relogin": _relogin,
+                 "plan_parked": _plan_parked, "plan_session_stopped": _plan_parked}
+_NOTICES = {**_TAIL_NOTICES, "task_done": _merged_note, "pr_closed": _closed_note}
 
 
 def _send_notice(turn: _Turn, saved: TaskState, act: Notify) -> None:
@@ -2127,7 +2115,7 @@ def _send_notice(turn: _Turn, saved: TaskState, act: Notify) -> None:
 
 
 def _rounds_reset(turn: _Turn, task: TaskState, act: ResetRounds) -> TaskState:
-    return loops.reset(task, ResetCause.OPERATOR_WAKE)
+    return loops.reset(task, act.cause)
 
 
 def _override_set(turn: _Turn, task: TaskState, act: SetResumeOverride) -> TaskState:

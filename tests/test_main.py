@@ -5987,6 +5987,19 @@ def test_conflict_queues_address_review_once_per_head(tmp_path, monkeypatch):
     assert "Reason for this round: conflict" in sess.spawned[-1][3]
 
 
+def test_a_crashed_address_review_round_respawns_with_its_reason(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = cfg(tmp_path)
+    pr_open_task(c)
+    gh = FakeGitHub(); gh.pr_payloads[12] = payload(mergeable="CONFLICTING", head="abc")
+    main.run_pass(c, deps(gh, FakeSessions()))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    save(c.state_dir, dc_replace(t, status=waking(failed("session-crash"), "resume")))
+    sess = FakeSessions(); main.run_pass(c, deps(gh, sess))
+    [(_, stage, _, prompt, _)] = sess.spawned
+    assert stage == "address-review" and "Reason for this round: conflict" in prompt
+
+
 def test_ci_rounds_past_the_cap_park_the_pr_open_task(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = dc_replace(cfg(tmp_path), loop_caps=LoopCaps(ci=1))
@@ -6011,11 +6024,11 @@ def test_ci_rounds_past_the_cap_park_the_pr_open_task(tmp_path, monkeypatch):
 def test_operator_wake_on_a_parked_pr_open_task_is_a_fresh_address_review_round(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
-    pr_open_task(c, status=waking(human("operator", "ci loop exceeded")), ci_rounds=4)
+    pr_open_task(c, status=waking(human("operator", "ci loop exceeded")))
     main._queue_message(c, "portfolio_eval", 42, "the flaky test is known — skip it", "operator")
     sess = FakeSessions(); main.run_pass(c, deps(sess=sess))
     t = load(c.state_dir, "portfolio_eval", 42)
-    assert (t.stage, t.status.kind, t.ci_rounds) == (Stage.ADDRESS_REVIEW, Kind.RUNNING, 0)
+    assert (t.stage, t.status.kind) == (Stage.ADDRESS_REVIEW, Kind.RUNNING)
     assert "Reason for this round: operator" in sess.spawned[-1][3]
     assert sess.spawned[-1][1] == "address-review" and "skip it" in sess.spawned[-1][3]
 
@@ -7816,7 +7829,7 @@ def test_resume_admitted_continues_the_parked_session_after_ending_its_pane(tmp_
 def test_resume_admitted_on_pr_open_spawns_an_operator_address_review_round(tmp_path):
     c = cfg(tmp_path)
     make_task(c, stage=Stage.PR_OPEN, status=waking(PR, "resume"), resume_text="rename it",
-              ci_rounds=2, resume_model_override="m-x")
+              resume_model_override="m-x")
     sess = FakeSessions()
     t = _resume_admitted(_admitted_turn(c, sess, Stage.ADDRESS_REVIEW), c)
     [(issue, stage, _model, prompt, _)] = sess.spawned
@@ -7824,7 +7837,7 @@ def test_resume_admitted_on_pr_open_spawns_an_operator_address_review_round(tmp_
     assert sess.resumed == [] and sess.ended == [42]   # ended before the launch
     assert (t.stage, t.status.kind) == (Stage.ADDRESS_REVIEW, Kind.RUNNING)
     assert "Reason for this round: operator" in prompt
-    assert t.feedback_cursor and t.ci_rounds == 0
+    assert t.feedback_cursor and t.round_reason == "operator"
     assert (t.resume_text, t.resume_model_override) == ("", "")
     [e] = _events(c, "resumed")
     assert e["stage"] == "address-review"
