@@ -49,9 +49,9 @@ from dispatcher.lifecycle import (AcquireSlot, Admission, ApplyRound, At, ClearT
                                   LaunchFailure, LinkPR, MarkAsked, Notify,
                                   CancelIssue, Pane, Poke, PublishSpec, RecordBackgroundWait,
                                   ReleaseCard, ReleaseSlot, Reject, ReportCrash, ReportTaskCrash,
-                                  ResetRounds, ResumeChoice, RespawnStage, RetryStage, SetResumeOverride,
+                                  ResetRounds, RespawnStage, RetryStage, SetResumeOverride,
                                   Stranded, Transition, WakeBlocked, Woken, decide,
-                                  login_at, operator_request)
+                                  OPERATOR_INTENTS, login_at, operator_event, operator_request)
 from dispatcher.loops import Decision, Outcome, ResetCause
 from dispatcher.models import (Admitted, Entry, ModelPolicy,
                                Order, override_refusal,
@@ -2993,20 +2993,6 @@ def _apply_answers_intent(cfg: Config, deps: Deps, by_name: dict, task: TaskStat
 
 
 # The operator intents the table decides (ticket 08).
-_OPERATOR_INTENTS = {"park": EventType.OP_PARK, "kill": EventType.OP_KILL,
-                     "cancel": EventType.OP_CANCEL, "reply": EventType.OP_REPLY,
-                     "answers": EventType.OP_ANSWERS, "resume": EventType.OP_RESUME}
-
-
-def _operator_event(intent: intents.Intent) -> Event:
-    """The table's event for an operator intent; a resume carries its choice."""
-    kind = _OPERATOR_INTENTS[intent.action]
-    if kind is not EventType.OP_RESUME:
-        return Event(kind)
-    return Event(kind, ResumeChoice(str(intent.payload.get("model") or ""),
-                                    intent.payload.get("bypass_usage") is True))
-
-
 def _apply_operator_intent(cfg: Config, deps: Deps, by_name: dict,
                            task: TaskState | None, intent: intents.Intent) -> None:
     """An operator intent the table decides for the task; a refusal is
@@ -3016,7 +3002,7 @@ def _apply_operator_intent(cfg: Config, deps: Deps, by_name: dict,
     repository = by_name.get(task.repository) if task is not None else None
     if repository is not None:
         turn = _Turn(cfg, deps, repository, None, None, False, actor=intent.actor or "operator")
-        _apply(turn, task, _operator_event(intent))
+        _apply(turn, task, operator_event(intent.action, intent.payload))
     elif intent.action in _UNTRACKED_ENDS:
         _end_untracked(cfg, deps, by_name, task, intent)
     else:
@@ -3051,7 +3037,7 @@ def _record_untracked_end(cfg: Config, task: TaskState | None, intent: intents.I
     if task is not None:
         save(cfg.state_dir, replace(end(task, _UNTRACKED_ENDS[intent.action]), updated_at=_now()))
         stage = task.stage.value
-    kind, detail = _OPERATOR_ENDS[_OPERATOR_INTENTS[intent.action]]
+    kind, detail = _OPERATOR_ENDS[OPERATOR_INTENTS[intent.action]]
     eventlog.append_event(cfg.state_dir, kind, repository=repository, issue=intent.issue,
                           stage=stage, actor=intent.actor, detail=detail)
 
@@ -3122,7 +3108,8 @@ def _apply_resume_intent(cfg: Config, deps: Deps, by_name: dict,
                          task: TaskState | None, intent: intents.Intent) -> None:
     """Let the table decide the resume; a task it wakes (not one already
     waking) gets the resume text queued for the session it launches."""
-    _require_resume_model(cfg, by_name, task, _operator_event(intent).detail.model)
+    event = operator_event(intent.action, intent.payload)
+    _require_resume_model(cfg, by_name, task, event.detail.model)
     _apply_operator_intent(cfg, deps, by_name, task, intent)
     if _woke(cfg, task):
         _queue_message(cfg, task.repository, task.issue,
@@ -3149,7 +3136,7 @@ def _apply_one_intent(cfg: Config, deps: Deps, by_name: dict,
         _apply_answers_intent(cfg, deps, by_name, task, intent)
     elif intent.action == "resume":
         _apply_resume_intent(cfg, deps, by_name, task, intent)
-    elif intent.action in _OPERATOR_INTENTS:
+    elif intent.action in OPERATOR_INTENTS:
         _apply_operator_intent(cfg, deps, by_name, task, intent)
     elif intent.action == "retry":
         _apply_retry_intent(cfg, issue)

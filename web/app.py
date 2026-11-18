@@ -24,6 +24,7 @@ from dispatcher.config import (Config, apply_stored_models, by_project, policy_f
                                referenced_providers, routed_providers,
                                stranded, with_models)
 from dispatcher.convergence import pass_lock
+from dispatcher.lifecycle import OPERATOR_INTENTS, Reject, decide, operator_event
 from dispatcher.models import (ModelPolicy, candidates, override_allowed,
                                override_refusal, parse_entry,
                                Order, stage_pick, track_from_labels)
@@ -787,8 +788,20 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
                    for t in sources.tasks()):
             raise HTTPException(404, f"no task {repository}/{issue}")
 
+    def _require_applies(action: str, repository: str, issue: int, payload: dict):
+        """409 with the table's reason when an operator action does not apply
+        to the task as it stands; no task file leaves it to the pass."""
+        task = sources.task(repository, issue)
+        if task is None:
+            return
+        got = decide(task, operator_event(action, payload))
+        if isinstance(got, Reject):
+            raise HTTPException(409, got.reason)
+
     def _accepted(action: str, repository: str, issue: int, payload: dict,
                  op: Operator):
+        if action in OPERATOR_INTENTS:
+            _require_applies(action, repository, issue, payload)
         name = sources.submit_intent(action, repository, issue, payload,
                                      op.login)
         return JSONResponse({"status": "pending", "intent": name},
@@ -844,16 +857,9 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
     def intent_resume(repository: str, issue: int, req: ResumeReq,
                       op: Operator = Depends(current_operator)):
         task = _find_task(repository, issue)
-        _require_resumable(task, repository, issue)
         _require_resume_model(task, repository, req.model)
         _require_same_provider(task, req.model)
         return _accepted("resume", repository, issue, _resume_payload(req), op)
-
-    def _require_resumable(task, repository: str, issue: int):
-        if ended(task.status) and not crashed(task.status):
-            # The dispatcher would drop it; say so instead of queueing it.
-            raise HTTPException(409, f"task {repository}/{issue} is "
-                                f"{task.status.kind.value} and cannot be resumed")
 
     def _require_resume_model(task, repository: str, model: str):
         """A resume may name only a model of the task's policy."""
@@ -924,11 +930,13 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
 
     def _arm_run(repository: str, issue: int, req: RunReq, task, model: str,
                  op: Operator):
-        if task is not None and read_model.shown(task).park:
+        if task is not None:
             payload = {"model": model}
             if req.bypass_usage:
                 payload["bypass_usage"] = True
-            return _accepted("resume", repository, issue, payload, op)
+            if read_model.shown(task).park:
+                return _accepted("resume", repository, issue, payload, op)
+            _require_applies("resume", repository, issue, payload)
         sources.set_execution_override(
             repository, issue, model=model, bypass_usage=req.bypass_usage)
         sources.append_event("execution-forced", repository=repository, issue=issue,

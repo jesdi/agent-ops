@@ -6,6 +6,7 @@ import pytest
 
 from dispatcher.state import NO_SLOT, Stage
 from tests.pinned import HEADERS, anthropic, cards, openai, rig
+from tests.statuses import waking
 from tests.webfakes import make_task
 
 OPENAI_DENIED = lambda: {"anthropic": anthropic(), "openai": openai(0.99)}  # noqa: E731
@@ -22,7 +23,7 @@ OPENAI_DENIED = lambda: {"anthropic": anthropic(), "openai": openai(0.99)}  # no
 def test_run_with_no_model_arms_the_model_the_card_names(
         tmp_path, task_kw, armed):
     fake, client = rig(tmp_path, OPENAI_DENIED())
-    fake.tasks_list = [make_task(issue=7, picks={}, **task_kw)]
+    fake.tasks_list = [make_task(issue=7, picks={}, status=waking(cause="next-stage"), **task_kw)]
     assert cards(client)[7]["model"] == armed
     r = client.post("/api/task/alpha/7/run", headers=HEADERS, json={})
     assert r.status_code == 200
@@ -34,6 +35,6 @@ def test_run_with_no_model_arms_the_list_head_when_nothing_is_admitted(
     fake, client = rig(tmp_path, {"anthropic": anthropic("fable"),
                                   "openai": openai(0.99)})
     fake.tasks_list = [make_task(issue=7, picks={}, stage=Stage.PLAN,
-                                 track="architecture")]
+                                 track="architecture", status=waking(cause="next-stage"))]
     r = client.post("/api/task/alpha/7/run", headers=HEADERS, json={})
     assert fake.execution_overrides[("alpha", 7)] == ("openai/gpt-astra", False)

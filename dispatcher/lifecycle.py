@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Callable, NamedTuple
+from typing import Callable, Mapping, NamedTuple
 
 from dispatcher.artifacts import REVIEW_PAGE, CheckResult, PlanRevision
 from dispatcher.loops import Decision, Retry
@@ -211,6 +211,20 @@ class Event:
             got = type(self.detail).__name__
             raise ValueError(f"{self.type.value} carries {want.__name__ if want else 'no facts'}"
                              f", not {got}")
+
+
+OPERATOR_INTENTS = {"park": EventType.OP_PARK, "kill": EventType.OP_KILL,
+                    "cancel": EventType.OP_CANCEL, "reply": EventType.OP_REPLY,
+                    "answers": EventType.OP_ANSWERS, "resume": EventType.OP_RESUME}
+
+
+def operator_event(action: str, payload: Mapping) -> Event:
+    """The table's event for an operator intent; a resume carries its choice."""
+    kind = OPERATOR_INTENTS[action]
+    if kind is not EventType.OP_RESUME:
+        return Event(kind)
+    return Event(kind, ResumeChoice(str(payload.get("model") or ""),
+                                    payload.get("bypass_usage") is True))
 
 
 def login_at(event: Event) -> str:

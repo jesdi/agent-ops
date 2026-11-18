@@ -91,6 +91,8 @@ def test_run_rejects_a_cross_provider_override_when_the_stage_has_a_pick(
 
 def test_resume_accepts_a_same_provider_override(tmp_path):
     fake, client = rig(tmp_path)
+    fake.tasks_list = [make_task(issue=7, status=human(),
+                                 picks={"implement": "anthropic/claude-opus-5"})]
     r = client.post("/api/task/alpha/7/resume", headers=HEADERS,
                     json={"model": "anthropic/claude-opus-5"})
     assert r.status_code == 202
@@ -101,7 +103,7 @@ def test_resume_accepts_a_same_provider_override(tmp_path):
 
 def test_resume_with_no_pick_accepts_a_cross_provider_model(tmp_path):
     fake, client = rig(tmp_path)
-    fake.tasks_list = [make_task(issue=7, picks={})]
+    fake.tasks_list = [make_task(issue=7, picks={}, status=human())]
     r = client.post("/api/task/alpha/7/resume", headers=HEADERS,
                     json={"model": "openai/gpt-5-codex"})
     assert r.status_code == 202
