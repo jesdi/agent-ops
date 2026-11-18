@@ -13,9 +13,9 @@ from datetime import datetime, timezone
 from dispatcher import (eventlog, github_app, implementation_grants, loops, messages, relogin,
                         spec_publish, task_tokens)
 from dispatcher.artifacts import TICKETS_DIR
-from dispatcher.config import Config, Repository
+from dispatcher.config import Config, Repository, policy_for
 from dispatcher.deps import Deps, _cursor_now, _now
-from dispatcher.launch_choice import Launch, _display_entry, _log_model, _policy
+from dispatcher.launch_choice import Launch, _display_entry, _log_model
 from dispatcher.lifecycle import PR_ATTENTION
 from dispatcher.loops import ResetCause
 from dispatcher.models import pick_key, tracks_text
@@ -308,7 +308,7 @@ def _stage_prompt(cfg: Config, repository: Repository, task: TaskState,
         pr_number=task.pr_number,
         reason=task.round_reason or "operator",
         labels=", ".join(task.labels),
-        tracks=tracks_text(_policy(cfg, repository)),
+        tracks=tracks_text(policy_for(cfg, repository)),
     )
     prompt = render_stage_prompt(stage, ctx)
     if message:

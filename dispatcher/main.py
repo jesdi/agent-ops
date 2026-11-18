@@ -29,7 +29,7 @@ from dispatcher import migrate
 from dispatcher.models import Order
 from dispatcher.sessions import Sessions
 from dispatcher.state import TaskState, load_all
-from dispatcher.claims import _box_free
+from dispatcher.claims import box_free
 from telegram.notify import Notifier
 from dispatcher.drive import (_admission_candidates, _drive_task, _driven, _flush_finished,
                              _wake_reached, _woken)
@@ -125,7 +125,7 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     if not dry_run:
         launched = onboarding_sessions.tick(
             cfg, deps, admit, order, config_path,
-            free=_box_free(eff, load_all(cfg.state_dir)))
+            free=box_free(eff.capacity, load_all(cfg.state_dir), triage_running=False))
         eff = replace(eff, capacity=max(0, eff.capacity - launched))
         _reconcile_boards(cfg, deps)
     # Phase 2: new claims, with whatever capacity phase 1 and inspection left.

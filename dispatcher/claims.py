@@ -5,14 +5,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING, Mapping
+from typing import Mapping
 
 from dispatcher.eventlog import EVENTS_FILE
 from dispatcher.state import TaskState
 from dispatcher.status import ended, occupies
-
-if TYPE_CHECKING:
-    from dispatcher.config import Config
 
 
 def box_free(capacity: int, tasks: list[TaskState], triage_running: bool) -> int:
@@ -96,9 +93,3 @@ def last_claims(state_dir: str | Path) -> dict[str, str]:
             if isinstance(repository, str) and isinstance(ts, str):
                 last[repository] = max(last.get(repository, ""), ts)
     return last
-
-
-def _box_free(cfg: Config, tasks: list[TaskState]) -> int:
-    """claims.box_free for this pass. `cfg` is the pass's effective config,
-    whose capacity already has a running triage sweep's unit taken off."""
-    return box_free(cfg.capacity, tasks, triage_running=False)

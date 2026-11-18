@@ -11,16 +11,10 @@ from dispatcher import eventlog, execution_overrides, priority
 from dispatcher.config import Config, Repository, policy_for, routed_providers, stranded
 from dispatcher.deps import Admit, _now
 from dispatcher.github import Candidate
-from dispatcher.models import (Admitted, Entry, ModelPolicy, Order, override_refusal,
+from dispatcher.models import (Admitted, Entry, Order, override_refusal,
                                parse_entry, second_model, stage_pick, track_from_labels)
 from dispatcher.state import NO_SLOT, Stage, TaskState, launch_entries, next_stage
 from dispatcher.workspace import append_worktree_file
-
-
-def _policy(cfg: Config, repository: Repository | None) -> ModelPolicy:
-    """repository is None for a task whose repository has left the config — it still
-    resolves, against the global policy."""
-    return policy_for(cfg, repository)
 
 
 @dataclass(frozen=True)
@@ -51,7 +45,7 @@ def _launch_for(cfg: Config, repository: Repository | None, task: TaskState,
     pick = stage_pick(task.picks, stage.value)
     if pick:
         return Launch(stage, parse_entry(pick, "pick"))
-    entries = launch_entries(task, _policy(cfg, repository), order, stage.value)
+    entries = launch_entries(task, policy_for(cfg, repository), order, stage.value)
     entry = next((e for e in entries if admitted(e.model_id)), None)
     return Launch(stage, entry) if entry else None
 
@@ -63,7 +57,7 @@ def _admitted(admit: Admit, bypass: bool) -> Admitted:
 def _with_second(cfg: Config, repository: Repository | None, launch: Launch,
                  admit: Admit) -> Launch:
     """Grant the second model on the gate itself: a bypass never covers it."""
-    second = second_model(_policy(cfg, repository), launch.stage.value,
+    second = second_model(policy_for(cfg, repository), launch.stage.value,
                           launch.entry, _admitted(admit, False))
     return replace(launch, second=second)
 
@@ -155,7 +149,7 @@ def _display_entry(cfg: Config, repository: Repository | None, task: TaskState) 
     pick = stage_pick(task.picks, next_stage(task))
     if pick:
         return pick
-    entries = launch_entries(task, _policy(cfg, repository), priority.order(
+    entries = launch_entries(task, policy_for(cfg, repository), priority.order(
         priority.load(cfg.state_dir, routed_providers(cfg)), {},
         datetime.now(timezone.utc), cfg.pace))
     return str(entries[0]) if entries else ""

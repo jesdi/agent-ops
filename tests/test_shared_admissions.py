@@ -216,7 +216,7 @@ def test_a_resume_crash_fails_only_that_task(tmp_path, capsys, dry_run):
 
 def test_drive_wakes_leaves_admission_to_the_shared_loop():
     src = inspect.getsource(main._drive_wakes)
-    called = {name for name in ("sorted", "_oldest_first", "_box_free",
+    called = {name for name in ("sorted", "_oldest_first", "box_free",
                                 "allocate_slot", "_mark_wake_blocked",
                                 "_park_stranded", "_task_token")
               if re.search(rf"\b{name}\(", src)}

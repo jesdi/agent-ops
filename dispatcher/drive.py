@@ -13,7 +13,7 @@ from typing import Callable
 from dispatcher import execution_overrides, github_app, messages, relogin
 from dispatcher.artifacts import (REVIEW_PAGE, TICKETS_DIR, check_spec, check_tickets,
                                   count_open_questions, page_revision, plan_revision)
-from dispatcher.claims import _box_free
+from dispatcher.claims import box_free
 from dispatcher.classify import (BackgroundView, Observation, Reads, artifact_path,
                                  classify, config_note)
 from dispatcher.config import Config, Repository, policy_for
@@ -290,7 +290,7 @@ def _no_room(cfg: Config, task: TaskState) -> str:
         return UNREADABLE_TASK_FILE
     others = [t for t in all_tasks
               if (t.repository, t.issue) != (task.repository, task.issue)]
-    if _box_free(cfg, others) <= 0:
+    if box_free(cfg.capacity, others, triage_running=False) <= 0:
         return "capacity full"
     if allocate_slot(all_tasks, max_slots(cfg.capacity)) is None:
         return "no free slot"
