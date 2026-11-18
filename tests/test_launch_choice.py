@@ -4,7 +4,7 @@ from dataclasses import replace as dc_replace
 from pathlib import Path
 
 import dispatcher.main as main
-from dispatcher import launch_choice
+from dispatcher import drive, launch_choice
 from dispatcher import execution_overrides
 from dispatcher.github import Candidate
 from dispatcher.models import parse_policy
@@ -387,7 +387,7 @@ def test_forced_active_task_uses_choice_at_next_stage(tmp_path):
             model="claude-sonnet-4-6", bypass_usage=True))
     sess = FakeSessions(alive=(42,))
 
-    main._drive_task(c, deps(sess=sess), c.repositories[0],
+    drive._drive_task(c, deps(sess=sess), c.repositories[0],
                      load(c.state_dir, "portfolio_eval", 42), DENY_ALL, tuple)
 
     assert [spawn[:3] for spawn in sess.spawned] == [
@@ -408,7 +408,7 @@ def test_failed_launch_keeps_the_operators_one_time_choice(tmp_path):
         model="claude-sonnet-4-6", bypass_usage=True)
     execution_overrides.save(c.state_dir, "portfolio_eval", 42, choice)
 
-    main._drive_task(c, deps(sess=FakeSessions(alive=(42,), spawn_raises={42})),
+    drive._drive_task(c, deps(sess=FakeSessions(alive=(42,), spawn_raises={42})),
                      c.repositories[0], load(c.state_dir, "portfolio_eval", 42),
                      DENY_ALL, tuple)
 

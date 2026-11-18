@@ -7,7 +7,7 @@ from datetime import datetime
 
 
 import dispatcher.main as main
-from dispatcher import execution_overrides, executor, state
+from dispatcher import drive, execution_overrides, executor, state
 from dispatcher.state import NO_SLOT, Stage, load
 from dispatcher.status import HumanReason, Kind
 from tests.dispatchfakes import (ADMIT_ALL, DENY_ALL, FakeSessions, cfg, deps,
@@ -85,7 +85,7 @@ def test_a_stranded_launch_parks_the_feedback_and_spawns_nothing(tmp_path, monke
     c = cfg(tmp_path)
     pending(c, "portfolio_eval", 5)
     why = "no configured model can run this stage"
-    monkeypatch.setattr(main, "_choose_launch", lambda *a, **kw: (None, False, why))
+    monkeypatch.setattr(drive, "_choose_launch", lambda *a, **kw: (None, False, why))
     d = deps()
 
     main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)

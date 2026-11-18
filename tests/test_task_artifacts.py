@@ -160,7 +160,7 @@ def test_github_redirect_remains_after_cleanup(tmp_path, monkeypatch):
 
 
 def test_dispatcher_archives_before_workspace_teardown_and_done_flush(tmp_path, monkeypatch):
-    from dispatcher import executor, main
+    from dispatcher import drive, executor, main
     from tests.webfakes import make_repository
     from types import SimpleNamespace
     from dispatcher import host_auth
@@ -184,7 +184,7 @@ def test_dispatcher_archives_before_workspace_teardown_and_done_flush(tmp_path, 
     executor._apply(executor._Turn(cfg, deps, repository, None, None, False), task,
                 Event(EventType.PR_MERGED))
     main._sync_artifacts(cfg)
-    main._flush_finished(cfg, deps)
+    drive._flush_finished(cfg, deps)
     assert load(state, task.repository, task.issue) is None
     assert load_archived(state, task.repository, task.issue).status.kind is Kind.DONE
     assert artifacts.content_path(state, task.repository, task.issue, 'prototype')

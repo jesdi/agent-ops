@@ -8,7 +8,7 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from dispatcher import main, model_settings
+from dispatcher import drive, main, model_settings
 from dispatcher.config import apply_stored_models, load_config
 from dispatcher.convergence import pass_lock
 from dispatcher.models import Entry
@@ -267,7 +267,7 @@ def test_the_dispatcher_parks_a_launch_picked_on_a_provider_no_entry_names(tmp_p
                                 "review": "openai/gpt-luna@high"})
     (wt / ".agent" / "stage.json").write_text(json.dumps({"stage": "implement", "status": "done"}))
 
-    main._drive_task(c, deps(sess=FakeSessions(alive={42})), c.repositories[0],
+    drive._drive_task(c, deps(sess=FakeSessions(alive={42})), c.repositories[0],
                      load(c.state_dir, "portfolio_eval", 42), ANTHROPIC_ONLY, tuple)
 
     t = load(c.state_dir, "portfolio_eval", 42)

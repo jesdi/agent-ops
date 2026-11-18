@@ -7,6 +7,7 @@ from dataclasses import replace as dc_replace
 import pytest
 
 import dispatcher.main as main
+from dispatcher import drive
 from dispatcher import intents as intents_mod
 from dispatcher import spec_publish
 from dispatcher.artifacts import REVIEW_PAGE_MARKER, REVIEW_PAGE_MAX_BYTES, count_open_questions
@@ -305,7 +306,7 @@ def _skip_inputs(tmp_path, **kw):
 
 def _skips(t, sig, gate_free):
     """lifecycle's gate skip on what the executor reads of the page."""
-    reads = Reads(page_questions=main._page_questions(t, sig))
+    reads = Reads(page_questions=drive._page_questions(t, sig))
     return _skips_gate(Observation(t, sig, True, False, None, 0, None, 0.0, 0,
                                    gate_free=gate_free, reads=reads))
 

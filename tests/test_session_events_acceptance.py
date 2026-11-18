@@ -11,9 +11,9 @@ from pathlib import Path
 import pytest
 
 import dispatcher.main as main
-from dispatcher import executor
+from dispatcher import drive, executor
 from dispatcher import eventlog, spec_publish
-from dispatcher.classify import Observation, classify
+from dispatcher.classify import BackgroundView, Observation, classify
 from dispatcher.lifecycle import (At, Cause, Event, EventType, FailReason, HumanReason,
                                   Death, Kind, Pane, Silence, Status, Transition, decide,
                                   occupies)
@@ -298,7 +298,7 @@ def _seen(alive=True, waiting=False, idle=30.0, status="working", view=None, **k
 
 
 def _view(agent=("idle", 5), since=999_000.0):
-    return main.BackgroundView(BackgroundWait(("b1",), since, 999_500.0), agent,
+    return BackgroundView(BackgroundWait(("b1",), since, 999_500.0), agent,
                                1_000_000.0, 10800)
 
 
@@ -567,7 +567,7 @@ def test_a_wake_the_config_strands_parks_through_the_table(c):
     question, the slot given back."""
     task(c, status=waking(), slot=NO_SLOT, track="renamed")
     d = deps(FakeGitHub(), FakeSessions())
-    main._park_stranded(c, d, c.repositories[0], load(c.state_dir, T, 42), "track gone")
+    drive._park_stranded(c, d, c.repositories[0], load(c.state_dir, T, 42), "track gone")
     t = load(c.state_dir, T, 42)
     assert (t.status.kind, t.status.reason) == (Kind.PARKED_HUMAN, HumanReason.CONFIG)
     assert transitions(c) == [{"from": "waking", "event": "track-unconfigured",

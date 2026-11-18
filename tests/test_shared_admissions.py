@@ -8,7 +8,7 @@ from dataclasses import replace as dc_replace
 import pytest
 
 import dispatcher.main as main
-from dispatcher import execution_overrides, executor
+from dispatcher import drive, execution_overrides, executor
 from dispatcher.state import (NO_SLOT, SessionRecord, Stage, TaskState, load, save,
                               write_session)
 from tests.dispatchfakes import (ADMIT_ALL, DENY_ALL, FakeGitHub, FakeSessions, cfg,
@@ -80,7 +80,7 @@ def test_no_free_slot_with_capacity_left_is_marked_once(tmp_path, monkeypatch):
     # Slot exhaustion with capacity left cannot happen with the real ceiling
     # (occupies() decides both, max_slots == capacity + 2): lower the
     # ceiling to 1 so the one holder takes every slot while 2 units stay free.
-    monkeypatch.setattr(main, "max_slots", lambda capacity: 1)
+    monkeypatch.setattr(drive, "max_slots", lambda capacity: 1)
     c = cfg(tmp_path)
     mk_task(c, "portfolio_eval", 1, slot=0)
     woken(c, "portfolio_eval", 3)
@@ -112,7 +112,7 @@ def test_a_stranded_launch_parks_the_wake_and_resumes_nothing(tmp_path, monkeypa
     c = cfg(tmp_path)
     woken(c, "portfolio_eval", 3)
     why = "no configured model can run this stage"
-    monkeypatch.setattr(main, "_choose_launch", lambda *a, **kw: (None, False, why))
+    monkeypatch.setattr(drive, "_choose_launch", lambda *a, **kw: (None, False, why))
     d = deps()
 
     main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
