@@ -14,6 +14,7 @@ from dispatcher.deps import Deps
 from dispatcher import github_app, host_auth
 from dispatcher.config import Board, Config, Project, Repository
 from dispatcher.models import parse_policy
+from dispatcher.status import Kind
 from dispatcher.state import (NO_SLOT, PlanApprovalRequest, SessionRecord, Stage, TaskState,
                               load, load_all, save, write_session)
 from tests.statuses import PR, RUNNING, held
@@ -480,3 +481,13 @@ def _plan_ready_task(c, **kw):
 def _events(c, name):
     from dispatcher import eventlog
     return [e for e in eventlog.read_tail(c.state_dir) if e["event"] == name]
+
+
+def parked(task):
+    """No session runs for the task: it waits for the operator, a wake or an event."""
+    return task.status.kind not in (Kind.RUNNING, Kind.HELD_PLAN_APPROVAL)
+
+
+def feedback_pending(task):
+    """Woken by its PR's attention, the address-review round not launched yet."""
+    return task.status.kind is Kind.WAKING and task.status.cause.value.startswith("attention(")
