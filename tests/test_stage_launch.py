@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 import dispatcher.main as main
+import telegram.inbound as inbound
+from telegram.inbound import Reply
 from dispatcher import eventlog, launch_choice, spec_publish, stage_launch
 from dispatcher import intents as intents_mod
 from dispatcher.github import Candidate
@@ -123,8 +125,8 @@ def test_reply_to_login_park_injects_code(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
     make_task(c, stage=Stage.SPEC, status=login(), park_msg_id=77)
-    monkeypatch.setattr(main.inbound, "fetch_events",
-                        lambda sd: [main.Reply(reply_to_msg_id=77,
+    monkeypatch.setattr(inbound, "fetch_events",
+                        lambda sd: [Reply(reply_to_msg_id=77,
                                                text="oauth-code-abc#123")])
     sess = FakeSessions(alive=[42], tail=LOGIN_TAIL)
     main.run_pass(c, deps(sess=sess))
@@ -142,8 +144,8 @@ def test_injection_refused_when_pane_left_the_login_prompt(tmp_path, monkeypatch
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
     make_task(c, stage=Stage.SPEC, status=login(), park_msg_id=77)
-    monkeypatch.setattr(main.inbound, "fetch_events",
-                        lambda sd: [main.Reply(reply_to_msg_id=77, text="code")])
+    monkeypatch.setattr(inbound, "fetch_events",
+                        lambda sd: [Reply(reply_to_msg_id=77, text="code")])
     sess = FakeSessions(alive=[42], tail="agent@box:~$ ")
     d = deps(sess=sess)
     main.run_pass(c, d)
@@ -162,8 +164,8 @@ def test_injection_restores_the_unpark_invariant(tmp_path, monkeypatch):
     (wt / ".agent" / "stage.json").write_text(json.dumps(
         {"stage": "implement", "status": "blocked", "note": "x"}))
     mark_waiting(c.state_dir, "portfolio_eval", 42)
-    monkeypatch.setattr(main.inbound, "fetch_events",
-                        lambda sd: [main.Reply(reply_to_msg_id=77, text="code")])
+    monkeypatch.setattr(inbound, "fetch_events",
+                        lambda sd: [Reply(reply_to_msg_id=77, text="code")])
     sess = FakeSessions(alive=[42], tail=LOGIN_TAIL)
     main.run_pass(c, deps(sess=sess))
     t = load(c.state_dir, "portfolio_eval", 42)
@@ -194,8 +196,8 @@ def test_injection_logs_a_distinct_event(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
     make_task(c, stage=Stage.SPEC, status=login(), park_msg_id=77)
-    monkeypatch.setattr(main.inbound, "fetch_events",
-                        lambda sd: [main.Reply(reply_to_msg_id=77, text="code")])
+    monkeypatch.setattr(inbound, "fetch_events",
+                        lambda sd: [Reply(reply_to_msg_id=77, text="code")])
     main.run_pass(c, deps(sess=FakeSessions(alive=[42], tail=LOGIN_TAIL)))
     events = [e["event"] for e in eventlog.read_tail(c.state_dir)]
     assert "login-code-injected" in events

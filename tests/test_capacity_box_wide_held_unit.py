@@ -15,6 +15,7 @@ from tests.test_multi_project_capacity import (mk_task, two_repository_cfg,
                                                 wake_blocked_events)
 
 import dispatcher.main as main
+from dispatcher import triage
 from tests.statuses import waking
 from dispatcher.status import Kind
 
@@ -26,7 +27,7 @@ def test_woken_task_refused_when_sweep_holds_the_last_unit(tmp_path, monkeypatch
     mk_task(c, "portfolio_eval", 1, slot=0)
     mk_task(c, "portfolio_eval", 2, slot=1)
     mk_task(c, "factorial", 42, stage=Stage.IMPLEMENT, status=waking(), slot=2)
-    monkeypatch.setattr(main.triage, "running", lambda: True)
+    monkeypatch.setattr(triage, "running", lambda: True)
     sess = FakeSessions(alive={1, 2})
     main.run_pass(c, deps(sess=sess))
     saved = load(c.state_dir, "factorial", 42)

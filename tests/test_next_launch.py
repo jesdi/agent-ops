@@ -8,6 +8,7 @@ import json
 from dataclasses import replace
 
 import dispatcher.main as main
+from dispatcher import operator_chat
 from dispatcher import spec_publish, state
 from dispatcher.models import parse_policy
 from dispatcher.state import NO_SLOT, Stage, launch_entries, launch_track, next_stage
@@ -48,7 +49,7 @@ def test_a_task_with_no_track_is_untracked_work_for_the_status_line_too(
     c = make_cfg(tmp_path, monkeypatch, ahead(), pinned=["standard"],
                  mode="openai")
     make_task(c, issue=42, stage=Stage.PLAN, status=waking(), track="")
-    assert f"plan [anthropic/{FABLE}@medium]" in main._status_lines(c)[0]
+    assert f"plan [anthropic/{FABLE}@medium]" in operator_chat._status_lines(c)[0]
     sess = FakeSessions()
     main.run_pass(c, deps(sess=sess))
     assert [(r[2], r[3]) for r in sess.resumed] == [(f"anthropic/{FABLE}", "medium")]
@@ -83,7 +84,7 @@ def test_the_status_line_labels_the_review_that_waits(tmp_path, monkeypatch):
     sess = step(c, wt, IMPL_DONE)
     assert sess.spawned == [] and sess.resumed == []
     assert "implement" not in saved(c).picks          # dropped before review waits
-    assert f"— review [{ASTRA}@medium]" in main._status_lines(c)[0]
+    assert f"— review [{ASTRA}@medium]" in operator_chat._status_lines(c)[0]
 
 
 def test_a_wake_of_a_done_implement_task_starts_review_afresh(tmp_path, monkeypatch):

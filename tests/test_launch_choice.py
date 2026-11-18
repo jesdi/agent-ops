@@ -4,6 +4,7 @@ from dataclasses import replace as dc_replace
 from pathlib import Path
 
 import dispatcher.main as main
+from dispatcher import operator_chat
 from dispatcher import claiming, drive, launch_choice
 from dispatcher import execution_overrides
 from dispatcher.github import Candidate
@@ -452,7 +453,7 @@ def test_status_lines_carry_the_resolved_model(tmp_path):
         issue=43, repository="portfolio_eval", stage=Stage.SPEC, slot=1,
         worktree="/wt2", branch="agent/task-43", title="New chart",
         updated_at="2026-07-24T00:00:00+00:00", track="standard"))
-    lines = main._status_lines(c)
+    lines = operator_chat._status_lines(c)
     assert lines[0] == "#42 Fix rounding — implement [anthropic/claude-opus-5] (slot 0)"
     assert lines[1] == "#43 New chart — spec [anthropic/claude-opus-5] (slot 1)"
 
@@ -474,7 +475,7 @@ def test_status_line_for_task_parked_at_plan_review_shows_the_plan_model(tmp_pat
         issue=42, repository="portfolio_eval", stage=Stage.PLAN, status=held(),
         slot=0, worktree="/wt", branch="agent/task-42", title="New chart",
         updated_at="2026-07-24T00:00:00+00:00", track="standard"))
-    lines = main._status_lines(c)
+    lines = operator_chat._status_lines(c)
     assert lines[0] == ("#42 New chart — plan "
                         "[anthropic/claude-sonnet-5] [held-plan-approval] (slot 0)")
 
@@ -499,7 +500,7 @@ def test_status_lines_survive_a_task_whose_repository_is_gone(tmp_path):
         issue=44, repository="retired_repository", stage=Stage.PLAN, slot=0,
         worktree="/wt", branch="agent/task-44", title="Orphan",
         updated_at="2026-07-24T00:00:00+00:00", track="standard"))
-    lines = main._status_lines(c)
+    lines = operator_chat._status_lines(c)
     assert "[anthropic/claude-opus-5]" in lines[0]   # falls back to the global policy
 
 
@@ -512,7 +513,7 @@ def test_orphaned_task_at_the_plan_review_gate_still_maps_to_the_plan_model(
         issue=45, repository="retired_repository", stage=Stage.PLAN, status=held(),
         slot=0, worktree="/wt", branch="agent/task-45", title="Orphan chart",
         updated_at="2026-07-24T00:00:00+00:00", track="standard"))
-    lines = main._status_lines(c)
+    lines = operator_chat._status_lines(c)
     assert lines[0] == ("#45 Orphan chart — plan "
                         "[anthropic/claude-sonnet-5] [held-plan-approval] (slot 0)")
 
@@ -527,6 +528,6 @@ def test_status_line_for_a_parked_task_puts_model_before_park(tmp_path):
         issue=42, repository="portfolio_eval", stage=Stage.IMPLEMENT, status=human(), slot=0,
         worktree="/wt", branch="agent/task-42", title="Fix rounding",
         updated_at="2026-07-24T00:00:00+00:00", track="standard"))
-    lines = main._status_lines(c)
+    lines = operator_chat._status_lines(c)
     assert lines[0] == ("#42 Fix rounding — implement [anthropic/claude-opus-5] "
                         "[parked-human] (no slot)")

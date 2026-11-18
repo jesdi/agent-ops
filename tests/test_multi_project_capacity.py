@@ -8,6 +8,7 @@ from dataclasses import replace as dc_replace
 from pathlib import Path
 
 import dispatcher.main as main
+from dispatcher import triage
 from dispatcher import eventlog
 from dispatcher.board import BoardError
 from dispatcher.github import Candidate
@@ -150,7 +151,7 @@ def test_triage_sweep_holds_one_unit_box_wide(tmp_path, monkeypatch):
     gh = FakeGitHub(cands_by_repository={
         "factorial": [Candidate(20, "F candidate", "u20")],
     })
-    monkeypatch.setattr(main.triage, "running", lambda: True)
+    monkeypatch.setattr(triage, "running", lambda: True)
     main.run_pass(c, deps(gh, FakeSessions(alive={1, 2})))
     assert gh.claimed == []
 

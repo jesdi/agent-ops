@@ -2,7 +2,7 @@
 priority mode (`<state_dir>/provider-priority.json`) puts one provider's
 entries first on every list the box routes; the usage gate still decides what
 may run. Black-box: run_pass launches, triage.run_sweep (model it ran on and
-its skip note), main._status_lines, dispatcher.priority.load/save.
+its skip note), operator_chat._status_lines, dispatcher.priority.load/save.
 
 One frozen NOW per test (also frozen inside run_pass / the sweep), so reset
 distances are exact. Admission is not under test unless a case says so: pace
@@ -19,6 +19,7 @@ from unittest.mock import patch
 import pytest
 
 import dispatcher.main as main
+from dispatcher import operator_chat
 from dispatcher import execution_overrides, triage
 from dispatcher.models import parse_policy
 from dispatcher.state import Stage
@@ -404,7 +405,7 @@ def test_status_line_of_a_task_with_no_pick_names_the_openai_entry_in_mode_opena
     c = dc_replace(cfg(tmp_path), models=policy(WRITTEN), pace=PACE)
     make_task(c, issue=42, stage=Stage.IMPLEMENT)
     save_mode(tmp_path)
-    line = main._status_lines(c)[0]
+    line = operator_chat._status_lines(c)[0]
     assert "implement [openai/gpt-6-luna@high]" in line
 
 

@@ -16,6 +16,7 @@ from unittest.mock import patch
 import pytest
 
 import dispatcher.main as main
+from dispatcher import operator_chat
 from dispatcher import execution_overrides, priority, triage
 from dispatcher.config import load_config
 from dispatcher.models import parse_policy
@@ -349,4 +350,4 @@ def test_status_line_of_a_pinned_task_with_no_pick_names_the_written_first_entry
     c = dc_replace(cfg(tmp_path), pace=PACE, models=policy())
     make_task(c, issue=42, stage=Stage.IMPLEMENT, track="architecture")
     save_mode(c, "anthropic")
-    assert f"implement [{ASTRA}@medium]" in main._status_lines(c)[0]
+    assert f"implement [{ASTRA}@medium]" in operator_chat._status_lines(c)[0]

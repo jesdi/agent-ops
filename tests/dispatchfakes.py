@@ -8,6 +8,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import dispatcher.main as main
+import telegram.inbound as inbound
+from dispatcher.usage import Verdict
 from dispatcher import deps as deps_mod
 from dispatcher import claiming, drive, executor, launch_choice, stage_launch
 from dispatcher.deps import Deps
@@ -56,8 +58,8 @@ POLICY = parse_policy({
                  "review": ["openai/gpt-sol@high", "claude-fable-5-1@high", "claude-opus-5"]},
     },
 })
-ADMIT_ALL = lambda m: main.Verdict(admitted=True, provider="anthropic", binding=None, reason="ok")  # noqa: E731
-DENY_ALL = lambda m: main.Verdict(admitted=False, provider="anthropic", binding=None, reason="over-pace")  # noqa: E731
+ADMIT_ALL = lambda m: Verdict(admitted=True, provider="anthropic", binding=None, reason="ok")  # noqa: E731
+DENY_ALL = lambda m: Verdict(admitted=False, provider="anthropic", binding=None, reason="over-pace")  # noqa: E731
 
 
 class FakeGitHub:
@@ -376,7 +378,7 @@ PLAN_SUMMARY = ".agent/review.html"
 
 
 def patch_events(monkeypatch, events):
-    monkeypatch.setattr(main.inbound, "fetch_events", lambda sd: list(events))
+    monkeypatch.setattr(inbound, "fetch_events", lambda sd: list(events))
 
 
 def valid_spec(wt: Path) -> Path:
