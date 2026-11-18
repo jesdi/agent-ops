@@ -12,8 +12,8 @@ import pytest
 import dispatcher.main as main
 from dispatcher import state
 from dispatcher.state import NO_SLOT, Stage, load
-from tests.test_main import (FakeGitHub, FakeSessions, cfg, deps, make_task,
-                             patch_usage, patch_workspace)
+from tests.dispatchfakes import (FakeGitHub, FakeSessions, cfg, deps, make_task,
+                                 patch_usage, patch_workspace)
 from tests.test_pinned_tracks_order import (ASTRA, FABLE, SOL, SONNET, ahead,
                                             deny, launched, make_cfg)
 from tests.statuses import PR, waking

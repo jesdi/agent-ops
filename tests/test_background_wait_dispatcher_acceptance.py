@@ -12,8 +12,9 @@ import dispatcher.main as main
 from dispatcher import eventlog
 from dispatcher.config import load_config
 from dispatcher.state import (Stage, TaskState, has_waiting, load, mark_background, mark_waiting, read_background, save)
-from tests.test_main import (FakeSessions, Reply, cfg, deps, make_task,
-                             patch_events, patch_usage, patch_workspace)
+from telegram.inbound import Reply
+from tests.dispatchfakes import (FakeSessions, cfg, deps, make_task,
+                                 patch_events, patch_usage, patch_workspace)
 from dispatcher.status import Kind
 
 T, N = "portfolio_eval", 42

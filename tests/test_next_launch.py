@@ -8,7 +8,8 @@ import json
 from dataclasses import replace
 
 import dispatcher.main as main
-from dispatcher import state
+from dispatcher import operator_chat
+from dispatcher import spec_publish, state
 from dispatcher.models import parse_policy
 from dispatcher.state import NO_SLOT, Stage, launch_entries, launch_track, next_stage
 from tests import webfakes
@@ -16,8 +17,8 @@ from tests.pinned import (ASTRA, FABLE, IMPL_DONE, OPUS, PLAN_DONE, ahead,
                           anthropic, cards, deny, launched, make_cfg, openai,
                           policy, policy_raw, rig, saved, setup, step, task,
                           usage_now)
-from tests.test_main import (PLAN_SUMMARY, SPEC_PATH, FakeNotifier,
-                             FakeSessions, deps, make_task, write_tickets)
+from tests.dispatchfakes import (PLAN_SUMMARY, SPEC_PATH, FakeNotifier,
+                                 FakeSessions, deps, make_task, write_tickets)
 from tests.statuses import PR, failed, waking
 from dispatcher.status import crashed
 
@@ -48,7 +49,7 @@ def test_a_task_with_no_track_is_untracked_work_for_the_status_line_too(
     c = make_cfg(tmp_path, monkeypatch, ahead(), pinned=["standard"],
                  mode="openai")
     make_task(c, issue=42, stage=Stage.PLAN, status=waking(), track="")
-    assert f"plan [anthropic/{FABLE}@medium]" in main._status_lines(c)[0]
+    assert f"plan [anthropic/{FABLE}@medium]" in operator_chat._status_lines(c)[0]
     sess = FakeSessions()
     main.run_pass(c, deps(sess=sess))
     assert [(r[2], r[3]) for r in sess.resumed] == [(f"anthropic/{FABLE}", "medium")]
@@ -83,7 +84,7 @@ def test_the_status_line_labels_the_review_that_waits(tmp_path, monkeypatch):
     sess = step(c, wt, IMPL_DONE)
     assert sess.spawned == [] and sess.resumed == []
     assert "implement" not in saved(c).picks          # dropped before review waits
-    assert f"— review [{ASTRA}@medium]" in main._status_lines(c)[0]
+    assert f"— review [{ASTRA}@medium]" in operator_chat._status_lines(c)[0]
 
 
 def test_a_wake_of_a_done_implement_task_starts_review_afresh(tmp_path, monkeypatch):
@@ -145,7 +146,7 @@ def test_a_turn_that_fails_after_it_saved_the_plan_gate_stays_resumable(
 
     def boom(**kw):
         raise RuntimeError("git push failed hard")
-    monkeypatch.setattr(main.spec_publish, "ensure_published", boom)
+    monkeypatch.setattr(spec_publish, "ensure_published", boom)
     main.run_pass(c, deps(sess=FakeSessions(alive={42})))
     t = saved(c)
     assert t.status == failed("task-crash") and crashed(t.status)

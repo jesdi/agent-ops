@@ -13,7 +13,7 @@ from tests import webfakes
 from tests.pinned import (ASTRA, OPUS, PLAN_DONE, SOL, ahead, anthropic,
                           cards, deny, detail, openai, rig, saved, setup, step,
                           usage_now, wake)
-from tests.test_main import FakeNotifier, FakeSessions, deps, record_session
+from tests.dispatchfakes import FakeNotifier, FakeSessions, deps, record_session
 from tests.statuses import waking
 from dispatcher.status import Kind
 

@@ -9,7 +9,7 @@ from dispatcher.github import Candidate
 from dispatcher.state import load
 
 from tests.test_claim_base_acceptance import BodyGitHub, Origin, pings, run
-from tests.test_main import FakeNotifier, cfg, patch_usage
+from tests.dispatchfakes import FakeNotifier, cfg, patch_usage
 from tests.test_multi_project_capacity import two_repository_cfg
 
 

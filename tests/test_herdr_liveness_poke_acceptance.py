@@ -14,8 +14,9 @@ import dispatcher.main as main
 from dispatcher import eventlog
 from dispatcher.state import (Stage, StageSignal, TaskState, has_waiting, load, mark_background, mark_waiting, save)
 from dispatcher.status import Kind
-from tests.test_main import (FakeSessions, Reply, cfg, deps, make_task,
-                             patch_events, patch_usage, patch_workspace)
+from telegram.inbound import Reply
+from tests.dispatchfakes import (FakeSessions, cfg, deps, make_task,
+                                 patch_events, patch_usage, patch_workspace)
 
 T, N = "portfolio_eval", 42
 MIN, HOUR = 60, 3600

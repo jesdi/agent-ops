@@ -11,15 +11,16 @@ from pathlib import Path
 import pytest
 
 import dispatcher.main as main
+from dispatcher import drive, executor
 from dispatcher import eventlog, spec_publish
-from dispatcher.classify import Observation, classify
+from dispatcher.classify import BackgroundView, Observation, classify
 from dispatcher.lifecycle import (At, Cause, Event, EventType, FailReason, HumanReason,
                                   Death, Kind, Pane, Silence, Status, Transition, decide,
                                   occupies)
 from dispatcher.state import (NO_SLOT, BackgroundWait, Stage, StageSignal, TaskState, load, load_all, mark_background, mark_waiting, save)
 from tests.test_herdr_liveness_poke_acceptance import HerdrSessions
-from tests.test_main import (FakeGitHub, FakeSessions, cfg, deps, make_task,
-                             patch_usage, patch_workspace)
+from tests.dispatchfakes import (FakeGitHub, FakeSessions, cfg, deps, make_task,
+                                 patch_usage, patch_workspace)
 from tests.test_lifecycle import LOOKED, report
 from tests.test_session_rules_characterization import GOOD_SPEC, LOGIN_TAIL, WORK
 from tests.statuses import RUNNING, DONE, waking
@@ -33,7 +34,7 @@ NOW = datetime.now(timezone.utc).isoformat()
 def c(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
-    monkeypatch.setattr(main.spec_publish, "ensure_published",
+    monkeypatch.setattr(spec_publish, "ensure_published",
                         lambda **kw: spec_publish.PublishResult(url="https://x/spec"))
     return cfg(tmp_path)
 
@@ -166,7 +167,7 @@ def test_a_dispatcher_killed_between_the_launch_and_the_commit_repeats_the_launc
     class Killed(BaseException):
         pass
 
-    real = main.save
+    real = executor.save
 
     def killed(state_dir, ts):
         if ts.issue == 42 and ts.stage is Stage.PLAN:
@@ -174,12 +175,12 @@ def test_a_dispatcher_killed_between_the_launch_and_the_commit_repeats_the_launc
         real(state_dir, ts)
 
     sess = FakeSessions(alive={42})
-    monkeypatch.setattr(main, "save", killed)
+    monkeypatch.setattr(executor, "save", killed)
     with pytest.raises(Killed):
         run(c, sess)
     t = load(c.state_dir, T, 42)
     assert At(t.stage, t.status) == At(Stage.SPEC, Status(Kind.RUNNING)) and sess.spawned
-    monkeypatch.setattr(main, "save", real)
+    monkeypatch.setattr(executor, "save", real)
     sess.ended.clear()
     run(c, sess)
     t = load(c.state_dir, T, 42)
@@ -198,17 +199,17 @@ def test_a_dispatcher_killed_after_the_commit_leaves_no_stale_done(c, monkeypatc
     wt = task(c, picks={"implement": "anthropic/claude-opus-5"},
               implement_providers=["anthropic"])
     signal(wt, "done", note="all tickets")
-    real = main.save
+    real = executor.save
 
     def killed_after(state_dir, ts):
         real(state_dir, ts)
         if ts.issue == 42 and ts.stage is Stage.REVIEW:
             raise _Killed
     sess = FakeSessions(alive={42})
-    monkeypatch.setattr(main, "save", killed_after)
+    monkeypatch.setattr(executor, "save", killed_after)
     with pytest.raises(_Killed):
         run(c, sess)
-    monkeypatch.setattr(main, "save", real)
+    monkeypatch.setattr(executor, "save", real)
     run(c, sess)
     t = load(c.state_dir, T, 42)
     assert At(t.stage, t.status) == At(Stage.REVIEW, Status(Kind.RUNNING)) and t.pr_number == 0
@@ -297,7 +298,7 @@ def _seen(alive=True, waiting=False, idle=30.0, status="working", view=None, **k
 
 
 def _view(agent=("idle", 5), since=999_000.0):
-    return main.BackgroundView(BackgroundWait(("b1",), since, 999_500.0), agent,
+    return BackgroundView(BackgroundWait(("b1",), since, 999_500.0), agent,
                                1_000_000.0, 10800)
 
 
@@ -380,16 +381,16 @@ def test_a_saved_status_reads_back_as_it_was_stored(tmp_path, stage, status):
 def test_the_plan_approval_lasts_only_until_the_task_leaves_the_round(stage, status, kept):
     t = TaskState(issue=42, repository=T, stage=Stage.PLAN, status=RUNNING, slot=0,
                   worktree="/w", branch="b", title="t", updated_at="", plan_approval="fp")
-    assert main._kept_approval(t, Transition(status, stage)) == kept
+    assert executor._kept_approval(t, Transition(status, stage)) == kept
 
 
 def test_a_failed_turn_the_table_cannot_read_is_failed_directly(c, monkeypatch):
     task(c)
-    monkeypatch.setattr(main, "decide", lambda *a: (_ for _ in ()).throw(ValueError("x")))
+    monkeypatch.setattr(executor, "decide", lambda *a: (_ for _ in ()).throw(ValueError("x")))
     try:
         raise RuntimeError("boom")
     except RuntimeError:
-        main._fail_task_crash(c, deps(), c.repositories[0], load(c.state_dir, T, 42))
+        executor._fail_task_crash(c, deps(), c.repositories[0], load(c.state_dir, T, 42))
     t = load(c.state_dir, T, 42)
     assert (t.stage, t.status) == (Stage.IMPLEMENT,
                                    Status(Kind.FAILED, reason=FailReason.TASK_CRASH))
@@ -454,12 +455,12 @@ def test_review_with_no_room_stays_waking_and_says_so_once(c):
 
 def _counted(monkeypatch):
     calls = []
-    real = main.decide
+    real = executor.decide
 
     def counting(task, event):
         calls.append(event.type)
         return real(task, event)
-    monkeypatch.setattr(main, "decide", counting)
+    monkeypatch.setattr(executor, "decide", counting)
     return calls
 
 
@@ -517,14 +518,14 @@ def test_classify_asks_for_every_launch_the_rule_may_start(stage, at_gate, statu
 
 def test_the_plan_link_is_posted_only_after_the_gate_entry_commits(c, monkeypatch):
     """A comment is a notification: never for a transition that did not commit."""
-    from tests.test_main import PLAN_SUMMARY, SPEC_PATH, write_tickets
+    from tests.dispatchfakes import PLAN_SUMMARY, SPEC_PATH, write_tickets
     wt = task(c, stage=Stage.PLAN, spec_path=SPEC_PATH)
     write_tickets(wt, 2)
     signal(wt, "awaiting-review", stage="plan", artifact=PLAN_SUMMARY, note="plan ready")
 
     def killed(state_dir, ts):
         raise _Killed
-    monkeypatch.setattr(main, "save", killed)
+    monkeypatch.setattr(executor, "save", killed)
     gh = FakeGitHub()
     with pytest.raises(_Killed):
         run(c, FakeSessions(alive={42}), gh)
@@ -535,12 +536,12 @@ def test_the_plan_link_is_posted_only_after_the_gate_entry_commits(c, monkeypatc
 
 def _saves(monkeypatch):
     saved = []
-    real = main.save
+    real = executor.save
 
     def counting(state_dir, ts):
         saved.append(ts)
         real(state_dir, ts)
-    monkeypatch.setattr(main, "save", counting)
+    monkeypatch.setattr(executor, "save", counting)
     return saved
 
 
@@ -566,7 +567,7 @@ def test_a_wake_the_config_strands_parks_through_the_table(c):
     question, the slot given back."""
     task(c, status=waking(), slot=NO_SLOT, track="renamed")
     d = deps(FakeGitHub(), FakeSessions())
-    main._park_stranded(c, d, c.repositories[0], load(c.state_dir, T, 42), "track gone")
+    drive._park_stranded(c, d, c.repositories[0], load(c.state_dir, T, 42), "track gone")
     t = load(c.state_dir, T, 42)
     assert (t.status.kind, t.status.reason) == (Kind.PARKED_HUMAN, HumanReason.CONFIG)
     assert transitions(c) == [{"from": "waking", "event": "track-unconfigured",

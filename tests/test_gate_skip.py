@@ -7,6 +7,7 @@ from dataclasses import replace as dc_replace
 import pytest
 
 import dispatcher.main as main
+from dispatcher import drive
 from dispatcher import intents as intents_mod
 from dispatcher import spec_publish
 from dispatcher.artifacts import REVIEW_PAGE_MARKER, REVIEW_PAGE_MAX_BYTES, count_open_questions
@@ -18,7 +19,7 @@ from tests.test_gate_skip_acceptance import (BRANCH, FOLDER, ISSUE,
                                              _assert_waits, _git, _implements,
                                              _pass, _ready, _setup, _task,
                                              _task_at_ready, _wait_case)
-from tests.test_main import FakeGitHub, LiveUntilEnded, approve_plan, deps, write_tickets
+from tests.dispatchfakes import FakeGitHub, LiveUntilEnded, approve_plan, deps, write_tickets
 from tests.statuses import RUNNING, held
 from tests.statuses import failed as failed_
 from dispatcher.status import Kind
@@ -45,7 +46,7 @@ def test_skip_publishes_the_spec_folder_and_asks_nobody(tmp_path, monkeypatch):
 def test_push_failure_does_not_block_the_skip_and_is_named(tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
     wt, sess = _task_at_ready(c, tmp_path)
-    monkeypatch.setattr(main.spec_publish, "ensure_published",
+    monkeypatch.setattr(spec_publish, "ensure_published",
                         lambda **k: spec_publish.PublishResult(error="git push failed: auth"))
     d = _pass(c, sess)
     assert _task(c).stage is Stage.IMPLEMENT
@@ -305,7 +306,7 @@ def _skip_inputs(tmp_path, **kw):
 
 def _skips(t, sig, gate_free):
     """lifecycle's gate skip on what the executor reads of the page."""
-    reads = Reads(page_questions=main._page_questions(t, sig))
+    reads = Reads(page_questions=drive._page_questions(t, sig))
     return _skips_gate(Observation(t, sig, True, False, None, 0, None, 0.0, 0,
                                    gate_free=gate_free, reads=reads))
 

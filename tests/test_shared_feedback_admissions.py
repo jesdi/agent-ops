@@ -7,11 +7,11 @@ from datetime import datetime
 
 
 import dispatcher.main as main
-from dispatcher import execution_overrides
+from dispatcher import drive, execution_overrides, executor, state
 from dispatcher.state import NO_SLOT, Stage, load
 from dispatcher.status import HumanReason, Kind
-from tests.test_main import (ADMIT_ALL, DENY_ALL, FakeSessions, cfg, deps,
-                             patch_usage, patch_workspace)
+from tests.dispatchfakes import (ADMIT_ALL, DENY_ALL, FakeSessions, cfg, deps,
+                                 patch_usage, patch_workspace)
 from tests.test_multi_project_capacity import (mk_task, two_repository_cfg,
                                                wake_blocked_events)
 from tests.statuses import PR, waking
@@ -85,7 +85,7 @@ def test_a_stranded_launch_parks_the_feedback_and_spawns_nothing(tmp_path, monke
     c = cfg(tmp_path)
     pending(c, "portfolio_eval", 5)
     why = "no configured model can run this stage"
-    monkeypatch.setattr(main, "_choose_launch", lambda *a, **kw: (None, False, why))
+    monkeypatch.setattr(drive, "_choose_launch", lambda *a, **kw: (None, False, why))
     d = deps()
 
     main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
@@ -112,7 +112,7 @@ def test_a_denied_launch_waits_without_a_mark(tmp_path):
 def test_a_failed_task_token_skips_without_a_mark(tmp_path, monkeypatch):
     c = cfg(tmp_path)
     pending(c, "portfolio_eval", 5)
-    monkeypatch.setattr(main, "_task_token", lambda *a, **kw: None)
+    monkeypatch.setattr(executor, "_task_token", lambda *a, **kw: None)
     d = deps()
 
     main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
@@ -133,7 +133,7 @@ class LoggingSessions(FakeSessions):
 def test_a_feedback_spawn_starts_a_fresh_round(tmp_path):
     c = cfg(tmp_path)
     pending(c, "portfolio_eval", 5)
-    main._wake_blocked_path(c, "portfolio_eval", 5).touch()
+    state._wake_blocked_path(c.state_dir, "portfolio_eval", 5).touch()
     execution_overrides.save(
         c.state_dir, "portfolio_eval", 5,
         execution_overrides.ExecutionOverride(model="claude-sonnet-4-6",
@@ -149,7 +149,7 @@ def test_a_feedback_spawn_starts_a_fresh_round(tmp_path):
     assert t.stage is Stage.ADDRESS_REVIEW
     assert t.status.kind is Kind.RUNNING
     assert datetime.fromisoformat(t.feedback_cursor).microsecond == 0
-    assert not main._wake_blocked_path(c, "portfolio_eval", 5).exists()
+    assert not state._wake_blocked_path(c.state_dir, "portfolio_eval", 5).exists()
     assert execution_overrides.load(c.state_dir, "portfolio_eval", 5) is None
 
 

@@ -2,7 +2,7 @@
 import dispatcher.main as main
 from dispatcher.github import Candidate
 
-from tests.test_main import FakeGitHub, FakeSessions, deps, patch_usage, patch_workspace
+from tests.dispatchfakes import FakeGitHub, FakeSessions, deps, patch_usage, patch_workspace
 from tests.test_multi_project_capacity import mk_task, two_repository_cfg
 
 

@@ -41,7 +41,7 @@ import dispatcher.main as main
 from dispatcher import messages
 from dispatcher.state import NO_SLOT, Stage, TaskState, save, SessionRecord, write_session
 from tests import webfakes
-from tests.test_main import ADMIT_ALL, cfg as single_repository_cfg, deps as main_deps, patch_usage
+from tests.dispatchfakes import ADMIT_ALL, cfg as single_repository_cfg, deps as main_deps, patch_usage
 from web.sources import Sources
 from tests.statuses import RUNNING, waking
 

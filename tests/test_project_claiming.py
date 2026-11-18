@@ -12,8 +12,8 @@ from dispatcher.github import Candidate
 from dispatcher.state import SessionRecord, Stage, load, write_session
 
 from tests.configfakes import with_project
-from tests.test_main import (FakeGitHub, FakeSessions, cfg, deps, make_task,
-                             patch_usage, patch_workspace)
+from tests.dispatchfakes import (FakeGitHub, FakeSessions, cfg, deps, make_task,
+                                 patch_usage, patch_workspace)
 from tests.test_multi_project_capacity import mk_task, two_repository_cfg
 from tests.statuses import waking
 

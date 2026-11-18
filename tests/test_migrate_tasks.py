@@ -7,9 +7,10 @@ from pathlib import Path
 import pytest
 
 from dispatcher import main, onboard_cli
+from dispatcher import triage
 from dispatcher.convergence import pass_lock
 from dispatcher.migrate import MigrationError, migrate_state_dir, pending
-from tests.test_main import cfg
+from tests.dispatchfakes import cfg
 from tests.test_migrate import contents, legacy_file, write
 from tests.test_onboard import box, state  # noqa: F401
 from tests.test_onboard_cli_rerun import as_agent  # noqa: F401
@@ -85,7 +86,7 @@ def run_dispatcher(tmp_path, monkeypatch, *mode):
     monkeypatch.setattr(main, "load_config", lambda path: c)
     passes = []
     monkeypatch.setattr(main, "guarded_pass", lambda *a, **kw: passes.append(a))
-    monkeypatch.setattr(main.triage, "guarded_sweep", lambda *a, **kw: passes.append(a))
+    monkeypatch.setattr(triage, "guarded_sweep", lambda *a, **kw: passes.append(a))
     monkeypatch.setattr(main, "send_digest", lambda *a, **kw: passes.append(a))
     monkeypatch.setattr(sys, "argv", ["agent-ops-dispatcher", "--config", "t.yaml", *mode])
     main.main()

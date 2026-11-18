@@ -5,7 +5,7 @@ Spec: specs/2026-10-07-review-page/spec.md, requirements 8 and 9 and the
 scenarios from "the dispatcher writes the draft file" to "'Approve' resumes the
 plan session as approval", "the worktree is gone" and "an intent for a task
 with no request is dropped". Black-box: intents are written with
-intents.write_intent and drained by main._apply_intents (one pass); the result
+intents.write_intent and drained by operator_intents._apply_intents (one pass); the result
 is read from the worktree file, the saved task, the queued session messages and
 the event log.
 """
@@ -16,11 +16,11 @@ import shutil
 from dataclasses import replace as dc_replace
 
 import dispatcher.main as main
-from dispatcher import eventlog, intents, messages
-from dispatcher.state import (NO_SLOT, AnswersRequest, PlanApprovalRequest, Stage, load, save)
+from dispatcher import intents, messages, operator_intents
+from dispatcher.state import (NO_SLOT, PlanApprovalRequest, Stage, load, save)
 
-from tests.test_main import (FakeSessions, cfg, deps, make_task, patch_usage,
-                             patch_workspace)
+from tests.dispatchfakes import (FakeSessions, cfg, deps, make_task, patch_usage,
+                                 patch_workspace, _events)
 from tests.statuses import RUNNING, held, review
 from dispatcher.status import Kind
 from dispatcher.state import operator_request
@@ -57,16 +57,12 @@ def _intent(c, answers, submit=None, revision=REV, ms=1):
 
 
 def _drain(c):
-    main._apply_intents(c, deps(sess=FakeSessions(alive={ISSUE})))
+    operator_intents._apply_intents(c, deps(sess=FakeSessions(alive={ISSUE})))
 
 
 def _file(wt, name=PLAN_FILE):
     p = wt / name
     return json.loads(p.read_text()) if p.exists() else None
-
-
-def _events(c, name):
-    return [e for e in eventlog.read_tail(c.state_dir) if e["event"] == name]
 
 
 def _texts(c):
@@ -155,7 +151,7 @@ def test_approve_wakes_and_parks_a_gate_task_that_has_not_parked(tmp_path, monke
     _intent(c, {"format": "a"}, submit="approve")
     sess = FakeSessions(alive={ISSUE})
 
-    main._apply_intents(c, deps(sess=sess))
+    operator_intents._apply_intents(c, deps(sess=sess))
 
     assert _file(wt)["submitted"] == "approve"
     assert _texts(c) == [APPROVE_MSG]

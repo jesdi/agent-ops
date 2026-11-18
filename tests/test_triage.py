@@ -16,7 +16,7 @@ from dispatcher import herdr, triage
 from dispatcher.config import Board, Config, Project, Repository
 from dispatcher.models import parse_policy
 from dispatcher.triage_apply import ApplyResult
-from tests.test_main import EveryRepoApp
+from tests.dispatchfakes import EveryRepoApp
 from tests.usagefakes import session_usage
 
 H_NO_TABS = '{"id":"i","result":{"tabs":[],"type":"tab_list"}}'

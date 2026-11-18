@@ -5,7 +5,7 @@ import json
 import dispatcher.main as main
 from dispatcher import execution_overrides, state
 from dispatcher.state import Stage
-from tests.test_main import FakeSessions, approve_plan, deps, make_task, write_tickets
+from tests.dispatchfakes import FakeSessions, approve_plan, deps, make_task, write_tickets
 from tests.test_pinned_tracks_order import (OPUS, SOL, ahead, enter, make_cfg,
                                             run_pass)
 

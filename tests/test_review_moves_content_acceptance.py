@@ -4,7 +4,7 @@ Spec: specs/2026-10-06-openspec-pipeline/spec.md, requirements 17-20 and their
 scenarios; design.md (the review session writes the pull request description
 to a file before it removes anything; the change-log rule lives in the one
 prompt part every stage already gets). Black-box through
-dispatcher.main.run_pass over the fakes of tests/test_main.py. Every prompt
+dispatcher.main.run_pass over the fakes of tests/dispatchfakes.py. Every prompt
 assertion is scoped to the paragraph (or ordered paragraphs) that carries the
 rule, never to the whole prompt.
 """
@@ -19,9 +19,9 @@ from dispatcher.github import Candidate
 from dispatcher.models import parse_policy
 from dispatcher.state import (PlanApprovalRequest, Stage, load, save)
 
-from tests.test_main import (FakeGitHub, FakeSessions, approve_plan, cfg, deps, make_task,
-                             patch_usage, patch_workspace, pr_open_task,
-                             valid_spec, write_tickets, payload)
+from tests.dispatchfakes import (FakeGitHub, FakeSessions, approve_plan, cfg, deps, make_task,
+                                 patch_usage, patch_workspace, pr_open_task,
+                                 valid_spec, write_tickets, payload)
 from tests.statuses import PR, held, waking
 from tests.usagefakes import session_usage
 

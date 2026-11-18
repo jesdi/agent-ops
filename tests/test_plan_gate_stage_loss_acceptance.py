@@ -4,7 +4,7 @@ or running with `gated`; only the operator's recorded approval passes a
 `done`).
 
 Spec: specs/plan-gate-stage-loss/spec.md, requirements 1-3 and their scenarios.
-Black-box, through dispatcher.main.run_pass over the fakes of tests/test_main.py,
+Black-box, through dispatcher.main.run_pass over the fakes of tests/dispatchfakes.py,
 with a real worktree behind each task.
 """
 from dataclasses import replace as dc_replace
@@ -17,8 +17,8 @@ from dispatcher.lifecycle import PLAN_NO_APPROVAL
 from dispatcher.models import parse_policy
 from dispatcher.state import (NO_SLOT, PlanApprovalRequest, Stage)
 
-from tests.test_main import (FakeSessions, deps, make_task,
-                             patch_usage, patch_workspace, record_session)
+from tests.dispatchfakes import (FakeSessions, deps, make_task,
+                                 patch_usage, patch_workspace, record_session)
 from tests.test_plan_review_gate_acceptance import (
     ISSUE, SPEC, SUMMARY, _arm, _done, _folder_files, _plan_task, _ready,
     _signal, _task)

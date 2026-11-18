@@ -71,7 +71,7 @@ def test_onboarding_requires_identity_and_first_party_writes(console):
 def run_unit(tmp_path, monkeypatch):
     from pathlib import Path
     from dispatcher import onboard
-    from tests.test_main import EveryRepoApp
+    from tests.dispatchfakes import EveryRepoApp
     from tests.test_onboard import LIVE, FakeSh
     monkeypatch.setenv("HOME", str(Path.home()))
     config = tmp_path / "targets.yaml"

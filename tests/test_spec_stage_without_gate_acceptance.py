@@ -6,7 +6,7 @@ scenarios "the spec session ends without a review gate", "a spec session that
 names no configured track is bounced", "an open decision raises one
 questionnaire", "a spec-ready issue is not interviewed", "a bug is reproduced
 before its spec is written". Black-box, through dispatcher.main.run_pass over
-the fakes of tests/test_main.py.
+the fakes of tests/dispatchfakes.py.
 """
 import json
 import re
@@ -21,8 +21,8 @@ from dispatcher.github import Candidate
 from dispatcher.models import parse_policy
 from dispatcher.state import (Stage, load)
 
-from tests.test_main import (FakeGitHub, FakeNotifier, FakeSessions, cfg,
-                             deps, make_task, patch_usage, patch_workspace)
+from tests.dispatchfakes import (FakeGitHub, FakeNotifier, FakeSessions, cfg,
+                                 deps, make_task, patch_usage, patch_workspace)
 from dispatcher.status import Kind
 from dispatcher.state import operator_request
 

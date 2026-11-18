@@ -19,11 +19,12 @@ from pathlib import Path
 import pytest
 
 import dispatcher.main as main
+from dispatcher.usage import Verdict
 from dispatcher import containers, execution_overrides, herdr, sessions
 from dispatcher.models import Entry, parse_policy
 from dispatcher.state import Stage, TaskState, load, save, SessionRecord, write_session
 from tests.test_containers import TOKENS, make_worktree
-from tests.test_main import FakeSessions, cfg, deps, make_task
+from tests.dispatchfakes import FakeSessions, cfg, deps, make_task
 from tests.usagefakes import session_usage
 from tests.statuses import waking
 
@@ -129,7 +130,7 @@ def _cfg(tmp_path):
 def _verdict(openai_ok: bool, anthropic_ok: bool = True):
     def admit(model_id):
         ok = openai_ok if model_id.startswith("openai/") else anthropic_ok
-        return main.Verdict(admitted=ok, provider=model_id.split("/")[0],
+        return Verdict(admitted=ok, provider=model_id.split("/")[0],
                             binding=None, reason="ok" if ok else "unavailable")
     return admit
 

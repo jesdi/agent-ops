@@ -12,8 +12,8 @@ from dispatcher import triage
 from dispatcher.config import load_config
 from dispatcher.github import Candidate
 from dispatcher.models import parse_policy, tracks_text
-from tests.test_main import (FakeGitHub, FakeSessions, cfg, deps,
-                             patch_usage, patch_workspace)
+from tests.dispatchfakes import (FakeGitHub, FakeSessions, cfg, deps,
+                                 patch_usage, patch_workspace)
 from tests.test_triage import BLOB, OK_USAGE, OLD, RESULT, FakeDeps, _app, _sweep_cfg
 
 EXAMPLE = Path(__file__).resolve().parent.parent / "targets.example.yaml"

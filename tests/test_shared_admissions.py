@@ -8,11 +8,11 @@ from dataclasses import replace as dc_replace
 import pytest
 
 import dispatcher.main as main
-from dispatcher import execution_overrides
-from dispatcher.state import (NO_SLOT, SessionRecord, Stage, TaskState, load, save,
+from dispatcher import drive, execution_overrides, executor
+from dispatcher.state import (NO_SLOT, SessionRecord, Stage, TaskState, load, max_slots, save,
                               write_session)
-from tests.test_main import (ADMIT_ALL, DENY_ALL, FakeGitHub, FakeSessions, cfg,
-                             deps)
+from tests.dispatchfakes import (ADMIT_ALL, DENY_ALL, FakeGitHub, FakeSessions, cfg,
+                                 deps)
 from tests.test_multi_project_capacity import (mk_task, two_repository_cfg,
                                                wake_blocked_events)
 from dispatcher.status import Kind
@@ -80,7 +80,7 @@ def test_no_free_slot_with_capacity_left_is_marked_once(tmp_path, monkeypatch):
     # Slot exhaustion with capacity left cannot happen with the real ceiling
     # (occupies() decides both, max_slots == capacity + 2): lower the
     # ceiling to 1 so the one holder takes every slot while 2 units stay free.
-    monkeypatch.setattr(main, "max_slots", lambda capacity: 1)
+    monkeypatch.setattr(drive, "max_slots", lambda capacity: 1)
     c = cfg(tmp_path)
     mk_task(c, "portfolio_eval", 1, slot=0)
     woken(c, "portfolio_eval", 3)
@@ -105,14 +105,14 @@ def test_a_recorded_slot_another_task_holds_is_replaced(tmp_path):
     assert resumed(d) == [("portfolio_eval", 3)]
     slot = load(c.state_dir, "portfolio_eval", 3).slot
     assert slot != 0, "resumed in slot 0, which portfolio_eval#1 holds"
-    assert slot in range(main.max_slots(c.capacity))
+    assert slot in range(max_slots(c.capacity))
 
 
 def test_a_stranded_launch_parks_the_wake_and_resumes_nothing(tmp_path, monkeypatch):
     c = cfg(tmp_path)
     woken(c, "portfolio_eval", 3)
     why = "no configured model can run this stage"
-    monkeypatch.setattr(main, "_choose_launch", lambda *a, **kw: (None, False, why))
+    monkeypatch.setattr(drive, "_choose_launch", lambda *a, **kw: (None, False, why))
     d = deps()
 
     main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
@@ -138,7 +138,7 @@ def test_a_denied_launch_waits_without_a_mark(tmp_path):
 def test_a_failed_task_token_skips_without_a_mark(tmp_path, monkeypatch):
     c = cfg(tmp_path)
     woken(c, "portfolio_eval", 3)
-    monkeypatch.setattr(main, "_task_token", lambda *a, **kw: None)
+    monkeypatch.setattr(executor, "_task_token", lambda *a, **kw: None)
     d = deps()
 
     main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
@@ -216,7 +216,7 @@ def test_a_resume_crash_fails_only_that_task(tmp_path, capsys, dry_run):
 
 def test_drive_wakes_leaves_admission_to_the_shared_loop():
     src = inspect.getsource(main._drive_wakes)
-    called = {name for name in ("sorted", "_oldest_first", "_box_free",
+    called = {name for name in ("sorted", "_oldest_first", "box_free",
                                 "allocate_slot", "_mark_wake_blocked",
                                 "_park_stranded", "_task_token")
               if re.search(rf"\b{name}\(", src)}

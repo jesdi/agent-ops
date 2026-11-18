@@ -88,7 +88,7 @@ def test_dispatcher_runs_inspection_before_new_claims_and_counts_it_next_pass(tm
     from dataclasses import replace
     from dispatcher import main
     from dispatcher.github import Candidate
-    from tests.test_main import cfg as task_cfg, deps, FakeGitHub, FakeSessions, patch_usage, patch_workspace
+    from tests.dispatchfakes import cfg as task_cfg, deps, FakeGitHub, FakeSessions, patch_usage, patch_workspace
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     configuration = replace(task_cfg(tmp_path), capacity=1)
@@ -203,7 +203,7 @@ def test_woken_task_has_priority_over_inspection(tmp_path, monkeypatch):
     from pathlib import Path
     from dispatcher import main
     from dispatcher.state import Stage, SessionRecord, write_session
-    from tests.test_main import cfg as task_cfg, deps, FakeSessions, make_task, patch_usage, patch_workspace
+    from tests.dispatchfakes import cfg as task_cfg, deps, FakeSessions, make_task, patch_usage, patch_workspace
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     configuration = replace(task_cfg(tmp_path), capacity=1)

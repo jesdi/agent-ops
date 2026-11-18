@@ -17,7 +17,7 @@ from tests.test_answers_intent_acceptance import (ISSUE, PLAN_FILE, REV, REPOSIT
                                                   _drain, _events, _file,
                                                   _gate, _intent, _setup,
                                                   _task, _texts)
-from tests.test_main import FakeSessions, armed_request, deps, make_task, write_tickets
+from tests.dispatchfakes import FakeSessions, armed_request, deps, make_task, write_tickets
 from tests.statuses import answers as answers_park, human, review
 from dispatcher.status import Kind
 from dispatcher.state import operator_request

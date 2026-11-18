@@ -2,7 +2,7 @@
 
 Spec: specs/2026-11-10-task-lifecycle-state-machine/spec.md, requirement 8
 and its scenarios. Black-box through dispatcher.main.run_pass over the fakes
-of tests/test_main.py, observed through the task's status, events.jsonl and
+of tests/dispatchfakes.py, observed through the task's status, events.jsonl and
 the fakes."""
 import json
 from dataclasses import replace as dc_replace
@@ -17,9 +17,9 @@ from dispatcher.lifecycle import (GATE_STOPPED, PLAN_NO_APPROVAL, At, FailReason
                                   Status, operator_request)
 from dispatcher.state import (NO_SLOT, PlanApprovalRequest, Stage, at_gate, load, save)
 
-from tests.test_main import (PLAN_SUMMARY, SPEC_PATH, POLICY, FakeSessions, approve_plan,
-                             cfg, deps, make_task, patch_usage, patch_workspace,
-                             write_tickets)
+from tests.dispatchfakes import (PLAN_SUMMARY, SPEC_PATH, POLICY, FakeSessions, freeze_clock, approve_plan,
+                                 cfg, deps, make_task, patch_usage, patch_workspace,
+                                 write_tickets)
 
 T, N = "portfolio_eval", 42
 HELD, PARKED_REVIEW = Kind.HELD_PLAN_APPROVAL, Kind.PARKED_REVIEW
@@ -38,7 +38,7 @@ def published(monkeypatch):
         asked.append(kw)
         return spec_publish.PublishResult(url="https://x/spec")
 
-    monkeypatch.setattr(main.spec_publish, "ensure_published", publish)
+    monkeypatch.setattr(spec_publish, "ensure_published", publish)
     return asked
 
 
@@ -257,22 +257,9 @@ def test_an_armed_ready_report_read_ten_times_keeps_the_grace_clock(c, monkeypat
     assert _task(c) == before and d.notifier.sent == []
     # Ten minutes on, the grace time (15) is over: it parks on schedule.
     later = datetime.now(timezone.utc) + timedelta(minutes=10, seconds=1)
-    monkeypatch.setattr(main, "datetime", _Clock(later))
+    freeze_clock(monkeypatch, later)
     _run(c)
     assert _task(c).status.kind is PARKED_REVIEW
-
-
-class _Clock:
-    """main.datetime with `now` moved to `at`."""
-
-    def __init__(self, at):
-        self.at = at
-
-    def now(self, tz=None):
-        return self.at
-
-    def __getattr__(self, name):
-        return getattr(datetime, name)
 
 
 def test_a_ready_report_armed_for_another_revision_is_a_new_round_not_a_grace_park(c):

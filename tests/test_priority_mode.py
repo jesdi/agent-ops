@@ -2,7 +2,7 @@
 priority mode (`<state_dir>/provider-priority.json`) puts one provider's
 entries first on every list the box routes; the usage gate still decides what
 may run. Black-box: run_pass launches, triage.run_sweep (model it ran on and
-its skip note), main._status_lines, dispatcher.priority.load/save.
+its skip note), operator_chat._status_lines, dispatcher.priority.load/save.
 
 One frozen NOW per test (also frozen inside run_pass / the sweep), so reset
 distances are exact. Admission is not under test unless a case says so: pace
@@ -19,11 +19,12 @@ from unittest.mock import patch
 import pytest
 
 import dispatcher.main as main
+from dispatcher import operator_chat
 from dispatcher import execution_overrides, triage
 from dispatcher.models import parse_policy
 from dispatcher.state import Stage
 from dispatcher.usage import PaceConfig, admits, unavailable
-from tests.test_main import cfg, make_task
+from tests.dispatchfakes import cfg, freeze_clock, make_task
 from tests.test_priority_auto import (FLIPPED, LUNA, OPUS, SOL, SONNET, WRITTEN,
                                       PACE, both, launched, run, ses, usage, wk)
 from tests.test_priority_session_bound import OPENAI_5_6, SHARE, go, pace
@@ -205,13 +206,8 @@ def test_mode_openai_orders_a_repositories_own_policy(tmp_path, monkeypatch):
                    repositories=[with_project(c.repositories[0], models=own)])
     monkeypatch.setattr(main, "fetch_all",
                         lambda cfg, **k: anthropic_hungry())
-
-    class Frozen(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return NOW
-    monkeypatch.setattr(main, "datetime", Frozen)
-    from tests.test_main import FakeSessions, approve_plan, deps, write_tickets
+    freeze_clock(monkeypatch, NOW)
+    from tests.dispatchfakes import FakeSessions, approve_plan, deps, write_tickets
     wt = make_task(c, issue=42, stage=Stage.PLAN, gated=True, picks={})
     write_tickets(wt, 1)
     approve_plan(c, wt)
@@ -409,7 +405,7 @@ def test_status_line_of_a_task_with_no_pick_names_the_openai_entry_in_mode_opena
     c = dc_replace(cfg(tmp_path), models=policy(WRITTEN), pace=PACE)
     make_task(c, issue=42, stage=Stage.IMPLEMENT)
     save_mode(tmp_path)
-    line = main._status_lines(c)[0]
+    line = operator_chat._status_lines(c)[0]
     assert "implement [openai/gpt-6-luna@high]" in line
 
 
