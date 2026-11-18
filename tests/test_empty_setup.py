@@ -2,7 +2,7 @@
 `setup_cmd` must not run a provisioning container and must not be treated
 as a provisioning failure — the task lands in the spec stage exactly like
 a repository that does provision. Exercises the REAL create_workspace (not the
-patch_workspace fake other test_main.py tests use), with only git
+patch_workspace fake of tests/dispatchfakes.py), with only git
 subprocess calls faked, so the empty-setup_cmd skip is actually observed.
 """
 from dataclasses import replace as dc_replace
@@ -14,7 +14,7 @@ from dispatcher.config import Board, Config, Project, Repository
 from dispatcher.github import Candidate
 from dispatcher.state import Stage, load
 
-from tests.test_main import FakeGitHub, FakeSessions, FakeNotifier, deps, patch_usage
+from tests.dispatchfakes import FakeGitHub, FakeSessions, FakeNotifier, deps, patch_usage
 
 
 def cfg_no_setup(tmp_path: Path) -> Config:

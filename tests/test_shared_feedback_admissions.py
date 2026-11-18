@@ -10,8 +10,8 @@ import dispatcher.main as main
 from dispatcher import execution_overrides
 from dispatcher.state import NO_SLOT, Stage, load
 from dispatcher.status import HumanReason, Kind
-from tests.test_main import (ADMIT_ALL, DENY_ALL, FakeSessions, cfg, deps,
-                             patch_usage, patch_workspace)
+from tests.dispatchfakes import (ADMIT_ALL, DENY_ALL, FakeSessions, cfg, deps,
+                                 patch_usage, patch_workspace)
 from tests.test_multi_project_capacity import (mk_task, two_repository_cfg,
                                                wake_blocked_events)
 from tests.statuses import PR, waking

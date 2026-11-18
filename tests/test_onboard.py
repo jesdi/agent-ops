@@ -12,7 +12,7 @@ import yaml
 from dispatcher import onboard
 from dispatcher.infra_config import add_project_text, project_block
 from tests.fake_github import FakeGitHub
-from tests.test_main import EveryRepoApp
+from tests.dispatchfakes import EveryRepoApp
 
 NOW = datetime(2026, 11, 2, 12, 0, tzinfo=timezone.utc)
 

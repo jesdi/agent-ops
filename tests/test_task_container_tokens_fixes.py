@@ -13,8 +13,8 @@ from dispatcher.github import Candidate
 from dispatcher.models import Entry
 from dispatcher.state import NO_SLOT, Stage, TaskState, load, load_all
 from tests.test_host_installation_tokens_acceptance import INSTALL, FakeApp
-from tests.test_main import (FakeGitHub, FakeNotifier, FakeSessions, cfg, make_task, patch_usage,
-                             patch_workspace, valid_spec)
+from tests.dispatchfakes import (FakeGitHub, FakeNotifier, FakeSessions, cfg, make_task, patch_usage,
+                                 patch_workspace, valid_spec)
 from tests.test_task_container_tokens_acceptance import (SpawnFailsApp, home, spawn_pass,  # noqa: F401
                                                          world_of)
 from tests.statuses import PR, RUNNING, waking

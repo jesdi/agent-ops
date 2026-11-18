@@ -19,8 +19,8 @@ import dispatcher.main as main
 from dispatcher import eventlog, intents, messages
 from dispatcher.state import (NO_SLOT, AnswersRequest, PlanApprovalRequest, Stage, load, save)
 
-from tests.test_main import (FakeSessions, cfg, deps, make_task, patch_usage,
-                             patch_workspace)
+from tests.dispatchfakes import (FakeSessions, cfg, deps, make_task, patch_usage,
+                                 patch_workspace)
 from tests.statuses import RUNNING, held, review
 from dispatcher.status import Kind
 from dispatcher.state import operator_request

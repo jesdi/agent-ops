@@ -14,9 +14,9 @@ from dispatcher import eventlog, spec_publish
 from dispatcher.state import (NO_SLOT, PlanApprovalRequest, Stage, load, load_all, mark_background, mark_waiting, save)
 from dispatcher.artifacts import plan_revision
 from tests.test_herdr_liveness_poke_acceptance import HerdrSessions
-from tests.test_main import (PLAN_SUMMARY, SPEC_PATH, FakeGitHub, FakeSessions,
-                             approve_plan, cfg, deps, make_task, patch_usage,
-                             patch_workspace, write_tickets)
+from tests.dispatchfakes import (PLAN_SUMMARY, SPEC_PATH, FakeGitHub, FakeSessions,
+                                 approve_plan, cfg, deps, make_task, patch_usage,
+                                 patch_workspace, write_tickets)
 from tests.statuses import RUNNING, failed, held, waking
 from dispatcher.status import Kind, occupies
 from dispatcher.state import at_gate, operator_request

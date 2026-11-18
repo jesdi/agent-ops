@@ -18,8 +18,8 @@ from dispatcher.lifecycle import (At, Cause, Event, EventType, FailReason, Human
                                   occupies)
 from dispatcher.state import (NO_SLOT, BackgroundWait, Stage, StageSignal, TaskState, load, load_all, mark_background, mark_waiting, save)
 from tests.test_herdr_liveness_poke_acceptance import HerdrSessions
-from tests.test_main import (FakeGitHub, FakeSessions, cfg, deps, make_task,
-                             patch_usage, patch_workspace)
+from tests.dispatchfakes import (FakeGitHub, FakeSessions, cfg, deps, make_task,
+                                 patch_usage, patch_workspace)
 from tests.test_lifecycle import LOOKED, report
 from tests.test_session_rules_characterization import GOOD_SPEC, LOGIN_TAIL, WORK
 from tests.statuses import RUNNING, DONE, waking
@@ -517,7 +517,7 @@ def test_classify_asks_for_every_launch_the_rule_may_start(stage, at_gate, statu
 
 def test_the_plan_link_is_posted_only_after_the_gate_entry_commits(c, monkeypatch):
     """A comment is a notification: never for a transition that did not commit."""
-    from tests.test_main import PLAN_SUMMARY, SPEC_PATH, write_tickets
+    from tests.dispatchfakes import PLAN_SUMMARY, SPEC_PATH, write_tickets
     wt = task(c, stage=Stage.PLAN, spec_path=SPEC_PATH)
     write_tickets(wt, 2)
     signal(wt, "awaiting-review", stage="plan", artifact=PLAN_SUMMARY, note="plan ready")

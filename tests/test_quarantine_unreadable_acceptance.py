@@ -102,7 +102,7 @@ def test_check_quarantine_on_a_record_gone_by_its_read_unblocks(
 def _two_repository_cfg(tmp_path):
     from dataclasses import replace
     from tests.configfakes import with_board
-    from tests.test_main import cfg
+    from tests.dispatchfakes import cfg
     c = cfg(tmp_path)
     base = c.repositories[0]
 
@@ -127,8 +127,8 @@ def _write_record(state_dir, issue, raw):
 def test_an_unreadable_record_never_crashes_the_claim_pass(tmp_path, monkeypatch):
     import dispatcher.main as main
     from dispatcher.github import Candidate
-    from tests.test_main import (FakeGitHub, FakeNotifier, FakeSessions, deps,
-                                 patch_usage, patch_workspace)
+    from tests.dispatchfakes import (FakeGitHub, FakeNotifier, FakeSessions, deps,
+                                     patch_usage, patch_workspace)
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = _two_repository_cfg(tmp_path)
@@ -146,8 +146,8 @@ def test_an_unreadable_record_never_crashes_the_claim_pass(tmp_path, monkeypatch
 def test_retrying_an_unreadable_record_clears_it(tmp_path, monkeypatch):
     import dispatcher.main as main
     from dispatcher import intents
-    from tests.test_main import (FakeGitHub, FakeSessions, deps, patch_usage,
-                                 patch_workspace)
+    from tests.dispatchfakes import (FakeGitHub, FakeSessions, deps, patch_usage,
+                                     patch_workspace)
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = _two_repository_cfg(tmp_path)
@@ -303,8 +303,8 @@ def test_failures_lists_a_wrong_typed_record_as_unreadable(tmp_path):
 def test_retrying_a_wrong_typed_record_clears_it(tmp_path, monkeypatch):
     import dispatcher.main as main
     from dispatcher import intents
-    from tests.test_main import (FakeGitHub, FakeSessions, deps, patch_usage,
-                                 patch_workspace)
+    from tests.dispatchfakes import (FakeGitHub, FakeSessions, deps, patch_usage,
+                                     patch_workspace)
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = _two_repository_cfg(tmp_path)

@@ -14,9 +14,9 @@ from dispatcher.convergence import pass_lock
 from dispatcher.models import Entry
 from dispatcher.state import (Stage, load)
 from tests.test_config import SAMPLE
-from tests.test_main import (ADMIT_ALL, DENY_ALL, LOGIN_TAIL, FakeSessions, cfg, deps, patch_usage,
-                             patch_workspace)
-from tests.test_main import make_task as make_saved_task
+from tests.dispatchfakes import (ADMIT_ALL, DENY_ALL, LOGIN_TAIL, FakeSessions, cfg, deps, patch_usage,
+                                 patch_workspace)
+from tests.dispatchfakes import make_task as make_saved_task
 from tests.webfakes import HEADERS, FakeSources, make_task, tracks_policy
 from web import app as web_app
 from web.app import create_app

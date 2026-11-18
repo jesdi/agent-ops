@@ -16,9 +16,9 @@ from dispatcher.models import parse_policy
 from dispatcher.sessions import Sessions
 from dispatcher.state import (NO_SLOT, SessionRecord, Stage, load, read_session, write_session)
 from tests.test_containers import TOKENS, make_worktree
-from tests.test_main import (
-    FakeGitHub, FakeSessions, cfg, deps, make_task, write_tickets,
-)
+from tests.dispatchfakes import (
+        FakeGitHub, FakeSessions, cfg, deps, make_task, write_tickets,
+    )
 from tests.test_sessions import _fake_podman, herdr_fake_creating
 from tests.usagefakes import session_usage
 from telegram.inbound import Command

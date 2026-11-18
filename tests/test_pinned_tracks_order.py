@@ -22,8 +22,8 @@ from dispatcher.models import parse_policy
 from dispatcher.state import Stage, load
 from dispatcher.usage import PaceConfig
 from tests.test_config import SAMPLE
-from tests.test_main import (FakeSessions, approve_plan, cfg, deps, make_task,
-                             valid_spec, write_tickets)
+from tests.dispatchfakes import (FakeSessions, freeze_clock, approve_plan, cfg, deps, make_task,
+                                 valid_spec, write_tickets)
 from tests.test_priority_auto import both, usage, wk
 from tests.test_triage import BLOB, OLD, RESULT, FakeDeps, _sweep_cfg
 from tests.configfakes import with_project
@@ -105,7 +105,7 @@ def make_cfg(tmp_path, monkeypatch, usages, pinned=PINNED, mode=None, pace=PACE,
     c = dc_replace(cfg(tmp_path), pace=pace,
                    models=models or policy(pinned=pinned))
     monkeypatch.setattr(main, "fetch_all", lambda cfg, **k: usages)
-    monkeypatch.setattr(main, "datetime", Frozen)
+    freeze_clock(monkeypatch, NOW)
     if mode:
         save_mode(c, mode)
     return c

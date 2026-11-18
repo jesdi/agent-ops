@@ -23,7 +23,7 @@ from dispatcher import containers, execution_overrides, herdr, sessions
 from dispatcher.models import Entry, parse_policy
 from dispatcher.state import Stage, TaskState, load, save, SessionRecord, write_session
 from tests.test_containers import TOKENS, make_worktree
-from tests.test_main import FakeSessions, cfg, deps, make_task
+from tests.dispatchfakes import FakeSessions, cfg, deps, make_task
 from tests.usagefakes import session_usage
 from tests.statuses import waking
 

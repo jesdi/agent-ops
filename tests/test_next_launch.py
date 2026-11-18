@@ -16,8 +16,8 @@ from tests.pinned import (ASTRA, FABLE, IMPL_DONE, OPUS, PLAN_DONE, ahead,
                           anthropic, cards, deny, launched, make_cfg, openai,
                           policy, policy_raw, rig, saved, setup, step, task,
                           usage_now)
-from tests.test_main import (PLAN_SUMMARY, SPEC_PATH, FakeNotifier,
-                             FakeSessions, deps, make_task, write_tickets)
+from tests.dispatchfakes import (PLAN_SUMMARY, SPEC_PATH, FakeNotifier,
+                                 FakeSessions, deps, make_task, write_tickets)
 from tests.statuses import PR, failed, waking
 from dispatcher.status import crashed
 

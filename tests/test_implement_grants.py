@@ -6,7 +6,7 @@ import pytest
 from dispatcher import main, containers, implementation_grants
 from dispatcher.models import Entry
 from dispatcher.state import Stage, load
-from tests.test_main import deps, make_task
+from tests.dispatchfakes import deps, make_task
 from tests.test_review_second_acceptance import GrantSessions, _cfg, _verdict
 
 

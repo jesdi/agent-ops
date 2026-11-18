@@ -14,8 +14,8 @@ from dispatcher.github import Candidate
 from dispatcher.state import (Stage, TaskState, load, load_all, save)
 
 from tests.configfakes import with_board
-from tests.test_main import (FakeGitHub, FakeSessions, cfg, deps,
-                             patch_usage, patch_workspace)
+from tests.dispatchfakes import (FakeGitHub, FakeSessions, cfg, deps,
+                                 patch_usage, patch_workspace)
 from tests.statuses import PR, login, waking
 from dispatcher.status import Kind, occupies
 

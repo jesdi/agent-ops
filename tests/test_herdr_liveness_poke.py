@@ -14,8 +14,9 @@ from dispatcher.state import (SessionRecord, Stage, mark_background, mark_waitin
 from tests.test_herdr_liveness_poke_acceptance import (HOUR, MIN, N, POKE, T,
                                                        HerdrSessions, _ev, _poke_state,
                                                        _setup, _signal, _task)
-from tests.test_main import (LOGIN_TAIL, Reply, deps, patch_events,
-                             patch_workspace)
+from telegram.inbound import Reply
+from tests.dispatchfakes import (LOGIN_TAIL, deps, patch_events,
+                                 patch_workspace)
 from tests.statuses import human
 from dispatcher.status import HumanReason, Kind
 

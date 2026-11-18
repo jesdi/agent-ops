@@ -13,9 +13,9 @@ from fastapi.testclient import TestClient
 import dispatcher.main as main
 from dispatcher import intents, messages
 from dispatcher.state import Stage, _path, load
-from tests.test_main import (FakeGitHub, FakeNotifier, FakeSessions, cfg, deps,
-                             make_task, patch_teardown, patch_usage, payload,
-                             pr_open_task)
+from tests.dispatchfakes import (FakeGitHub, FakeNotifier, FakeSessions, cfg, deps,
+                                 make_task, patch_teardown, patch_usage, payload,
+                                 pr_open_task)
 from tests.webfakes import HEADERS
 from web.app import create_app
 from web.sources import Sources

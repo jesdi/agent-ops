@@ -6,8 +6,8 @@ import pytest
 
 from dispatcher import eventlog, intents, main, messages
 from dispatcher.state import (PlanApprovalRequest, Stage, load, read_stage_signal)
-from tests.test_main import (FakeSessions, approve_plan, cfg, deps, make_task, patch_usage,
-                             write_tickets)
+from tests.dispatchfakes import (FakeSessions, approve_plan, cfg, deps, make_task, patch_usage,
+                                 write_tickets)
 from tests.statuses import failed, held, waking
 from dispatcher.state import operator_request
 from dispatcher.status import Kind, crashed

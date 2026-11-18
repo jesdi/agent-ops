@@ -4,7 +4,7 @@ Spec: specs/2026-10-06-openspec-pipeline/spec.md, requirements 11-16 and their
 scenarios; design.md (Implement is one stage start, a retired task field is
 dropped by the loader, a dead implement session fails the task, the implement
 prompt points at the skill file). Black-box through dispatcher.main.run_pass
-over the fakes of tests/test_main.py. Prompt tests scope every assertion to
+over the fakes of tests/dispatchfakes.py. Prompt tests scope every assertion to
 the paragraph that carries the rule, never to the whole prompt.
 """
 import json
@@ -20,9 +20,9 @@ from dispatcher.models import parse_policy
 from dispatcher.state import (PlanApprovalRequest, Stage, TaskState, load, load_all, save)
 from tests.statuses import failed, held
 
-from tests.test_main import (FakeGitHub, FakeSessions, approve_plan, cfg, deps, make_task,
-                             patch_usage, patch_workspace, record_session,
-                             write_tickets)
+from tests.dispatchfakes import (FakeGitHub, FakeSessions, approve_plan, cfg, deps, make_task,
+                                 patch_usage, patch_workspace, record_session,
+                                 write_tickets)
 from dispatcher.status import Kind
 
 ISSUE = 412
@@ -305,7 +305,7 @@ def _progress_shown(c):
 
 def test_parked_implement_task_resumes_its_session_and_keeps_its_progress(
         tmp_path, monkeypatch):
-    from tests.test_main import LiveUntilEnded
+    from tests.dispatchfakes import LiveUntilEnded
     c = _setup(tmp_path, monkeypatch)
     wt, _ = _started(c)
     _signal(wt, stage="implement", status="working", note="2/4 tickets merged")
@@ -347,7 +347,7 @@ def test_respawn_after_a_crash_keeps_the_progress_and_a_new_stage_drops_it(
 
 
 def test_blocked_reason_is_not_kept_as_progress_after_the_reply(tmp_path, monkeypatch):
-    from tests.test_main import LiveUntilEnded
+    from tests.dispatchfakes import LiveUntilEnded
     c = _setup(tmp_path, monkeypatch)
     wt, _ = _started(c)
     _signal(wt, stage="implement", status="blocked", note="no subagent tool")

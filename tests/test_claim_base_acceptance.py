@@ -17,8 +17,8 @@ from dispatcher import failures
 from dispatcher.github import Candidate
 from dispatcher.state import Stage, TaskState, load, save
 
-from tests.test_main import (FakeGitHub, FakeNotifier, FakeSessions, cfg, deps,
-                             patch_usage)
+from tests.dispatchfakes import (FakeGitHub, FakeNotifier, FakeSessions, cfg, deps,
+                                 patch_usage)
 
 
 class BodyGitHub(FakeGitHub):

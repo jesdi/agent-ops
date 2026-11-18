@@ -16,9 +16,9 @@ from dispatcher.pr_poll import CIStatus
 from dispatcher.state import Stage, load
 from dispatcher.status import HumanReason, Kind
 from tests.test_containers import TOKENS
-from tests.test_main import (FakeGitHub, FakeNotifier, FakeSessions, cfg,
-                             deps, make_task, patch_usage, payload,
-                             pr_open_task)
+from tests.dispatchfakes import (FakeGitHub, FakeNotifier, FakeSessions, cfg,
+                                 deps, make_task, patch_usage, payload,
+                                 pr_open_task)
 
 # The scenario's own wording: "the rendered prompt states that no off-box
 # e2e run exists for this repository". The implementer's "no pre-PR e2e"

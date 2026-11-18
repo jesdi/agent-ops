@@ -9,7 +9,7 @@ import pytest
 from dispatcher import main, onboard_cli
 from dispatcher.convergence import pass_lock
 from dispatcher.migrate import MigrationError, migrate_state_dir, pending
-from tests.test_main import cfg
+from tests.dispatchfakes import cfg
 from tests.test_migrate import contents, legacy_file, write
 from tests.test_onboard import box, state  # noqa: F401
 from tests.test_onboard_cli_rerun import as_agent  # noqa: F401

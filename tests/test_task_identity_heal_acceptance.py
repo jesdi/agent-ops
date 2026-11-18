@@ -2,7 +2,7 @@
 resume heals the task identity file (.agent/task.json).
 
 Spec: specs/plan-gate-stage-loss/spec.md, requirements 4-5 and their scenarios.
-Black-box, through dispatcher.main.run_pass over the fakes of tests/test_main.py
+Black-box, through dispatcher.main.run_pass over the fakes of tests/dispatchfakes.py
 with a real worktree, and dispatcher.waitd.handle_ping for the turn end.
 """
 import json
@@ -13,7 +13,7 @@ import dispatcher.main as main
 from dispatcher.state import Stage, read_session
 from dispatcher.waitd import handle_ping
 
-from tests.test_main import FakeSessions, deps
+from tests.dispatchfakes import FakeSessions, deps
 from tests.test_plan_gate_stage_loss_acceptance import _approve, _gated, _setup
 from tests.test_plan_review_gate_acceptance import BRANCH, ISSUE, _ready, _task
 

@@ -18,7 +18,7 @@ from tests.test_gate_skip_acceptance import (BRANCH, FOLDER, ISSUE,
                                              _assert_waits, _git, _implements,
                                              _pass, _ready, _setup, _task,
                                              _task_at_ready, _wait_case)
-from tests.test_main import FakeGitHub, LiveUntilEnded, approve_plan, deps, write_tickets
+from tests.dispatchfakes import FakeGitHub, LiveUntilEnded, approve_plan, deps, write_tickets
 from tests.statuses import RUNNING, held
 from tests.statuses import failed as failed_
 from dispatcher.status import Kind

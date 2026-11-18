@@ -12,7 +12,7 @@ from dispatcher.config import load_config
 from dispatcher.state import Stage, load, mark_waiting
 from tests.test_herdr_liveness_poke_acceptance import (N, POKE, T, HerdrSessions,
                                                        _setup, _signal)
-from tests.test_main import cfg, deps, make_task, patch_usage
+from tests.dispatchfakes import cfg, deps, make_task, patch_usage
 from dispatcher.status import Kind
 
 ROOT = Path(__file__).resolve().parent.parent

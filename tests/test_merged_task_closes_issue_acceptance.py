@@ -9,8 +9,8 @@ import subprocess
 import dispatcher.main as main
 from dispatcher.state import load
 from dispatcher.status import Kind
-from tests.test_main import (FakeGitHub, deps, cfg, patch_teardown,
-                             patch_usage, payload, pr_open_task)
+from tests.dispatchfakes import (FakeGitHub, deps, cfg, patch_teardown,
+                                 patch_usage, payload, pr_open_task)
 
 REPO = "jesdi/portfolio_eval"
 MERGED = dict(state="MERGED", merged_at="2026-07-30T10:00:00Z")

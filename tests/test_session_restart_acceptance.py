@@ -15,10 +15,10 @@ from dispatcher import eventlog, messages
 from dispatcher.models import parse_policy
 from dispatcher.state import (SessionRecord, Stage, at_gate, load, write_session)
 from telegram.inbound import Command
-from tests.test_main import (
-    REVIEW_PAGE_STUB, EveryRepoApp, FakeGitHub, FakeNotifier, FakeSessions, cfg, gate_signal,
-    make_task, patch_events, write_tickets,
-)
+from tests.dispatchfakes import (
+        REVIEW_PAGE_STUB, EveryRepoApp, FakeGitHub, FakeNotifier, FakeSessions, cfg, gate_signal,
+        make_task, patch_events, write_tickets,
+    )
 from tests.usagefakes import session_usage
 from tests.statuses import RUNNING, human, review, waking
 from dispatcher.status import Kind

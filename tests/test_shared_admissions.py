@@ -11,8 +11,8 @@ import dispatcher.main as main
 from dispatcher import execution_overrides
 from dispatcher.state import (NO_SLOT, SessionRecord, Stage, TaskState, load, save,
                               write_session)
-from tests.test_main import (ADMIT_ALL, DENY_ALL, FakeGitHub, FakeSessions, cfg,
-                             deps)
+from tests.dispatchfakes import (ADMIT_ALL, DENY_ALL, FakeGitHub, FakeSessions, cfg,
+                                 deps)
 from tests.test_multi_project_capacity import (mk_task, two_repository_cfg,
                                                wake_blocked_events)
 from dispatcher.status import Kind

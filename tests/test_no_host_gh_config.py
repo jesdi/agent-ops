@@ -17,7 +17,7 @@ import dispatcher.main as main
 from dispatcher import herdr, onboard
 from dispatcher.sessions import Sessions as RealSessions
 from dispatcher.state import NO_SLOT, SessionRecord, save, write_session
-from tests.test_main import FakeNotifier, FakeSessions
+from tests.dispatchfakes import FakeNotifier, FakeSessions
 from tests.test_task_container_tokens_acceptance import home  # noqa: F401  (fixture)
 from tests.test_task_token_refresh_acceptance import Box
 from tests.test_triage_token_acceptance import sweep

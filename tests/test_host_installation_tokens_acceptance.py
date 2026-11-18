@@ -6,7 +6,7 @@ Black-box through `main.run_pass(cfg, deps)`. The real GitHubClient and the real
 workspace git run; only the process boundary is faked: `subprocess.run` is
 recorded (argv, cwd, the GH_TOKEN the child would see) and `gh` is answered by a
 stateful fake of GitHub. Git runs for real against bare "origin" repositories in
-tmp_path. Sessions and the notifier are the fakes of test_main.
+tmp_path. Sessions and the notifier are the fakes of tests/dispatchfakes.py.
 
 Interface defined here: `main.Deps` takes `app=`, the GitHub App as the
 dispatcher sees it, duck-typed exactly like the one onboarding takes
@@ -36,7 +36,7 @@ from tests.statuses import PR
 
 from tests.configfakes import with_board
 from tests.fake_github import FakeGitHub as FakeBoardHost
-from tests.test_main import FakeNotifier, FakeSessions, cfg, patch_usage
+from tests.dispatchfakes import FakeNotifier, FakeSessions, cfg, patch_usage
 
 PROJECT_TOKEN = "ghp_project_board"
 INSTALL = github_app.Installation(9001, "https://github.com/settings/installations/9001", "jesdi")

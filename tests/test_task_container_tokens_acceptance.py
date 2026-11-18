@@ -36,7 +36,7 @@ from tests.statuses import waking
 
 from tests.test_host_installation_tokens_acceptance import (INSTALL, PROJECT_TOKEN,
                                                             World, FakeApp)
-from tests.test_main import FakeNotifier, FakeSessions
+from tests.dispatchfakes import FakeNotifier, FakeSessions
 
 A3 = {"contents": "write", "pull_requests": "write", "issues": "write", "workflows": "write",
       "actions": "read", "checks": "read", "metadata": "read"}

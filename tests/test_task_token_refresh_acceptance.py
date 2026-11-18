@@ -33,7 +33,7 @@ from dispatcher.state import (NO_SLOT, Stage, TaskState, load_all, save, task_ke
 
 from tests.test_host_installation_tokens_acceptance import (INSTALL, TASK_PERMISSIONS, FakeApp,
                                                             World)
-from tests.test_main import FakeNotifier, FakeSessions
+from tests.dispatchfakes import FakeNotifier, FakeSessions
 from tests.test_task_container_tokens_acceptance import PollWorld, home  # noqa: F401  (fixture)
 from tests.statuses import DONE, human, waking
 from dispatcher.status import Kind

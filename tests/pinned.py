@@ -13,8 +13,8 @@ import dispatcher.main as main
 from dispatcher import intents, state
 from dispatcher.state import Stage, TaskState, load, save
 from tests.statuses import RUNNING, waking
-from tests.test_main import (GOOD_TICKET, FakeGitHub, FakeSessions, approve_plan, deps,
-                             make_task)
+from tests.dispatchfakes import (GOOD_TICKET, FakeGitHub, FakeSessions, approve_plan, deps,
+                                 make_task)
 from tests.test_pinned_tracks_order import (ASTRA, FABLE, OPUS, SOL,
                                             SONNET, ahead, deny, enter,
                                             launched, make_cfg, policy,

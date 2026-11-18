@@ -3,7 +3,7 @@
 Spec: specs/multi-project-box/spec.md, requirement 8 and scenarios
 "null grace never parks" / "zero grace still parks immediately".
 Black-box, through dispatcher.main.run_pass — mirrors the harness in
-tests/test_main.py (gate_signal, cfg, make_task, deps, FakeSessions,
+tests/dispatchfakes.py (gate_signal, cfg, make_task, deps, FakeSessions,
 FakeGitHub, replace_capacity).
 """
 from dataclasses import replace as dc_replace
@@ -13,10 +13,10 @@ import dispatcher.main as main
 from dispatcher.github import Candidate
 from dispatcher.state import (PlanApprovalRequest, load)
 
-from tests.test_main import (FakeGitHub, FakeSessions, arm_gate, cfg, deps,
-                             gate_signal, make_task, patch_usage,
-                             patch_workspace, replace_capacity,
-                             write_tickets)
+from tests.dispatchfakes import (FakeGitHub, FakeSessions, arm_gate, cfg, deps,
+                                 gate_signal, make_task, patch_usage,
+                                 patch_workspace, replace_capacity,
+                                 write_tickets)
 from dispatcher.status import Kind
 from tests.statuses import held
 

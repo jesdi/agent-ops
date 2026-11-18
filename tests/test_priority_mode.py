@@ -23,7 +23,7 @@ from dispatcher import execution_overrides, triage
 from dispatcher.models import parse_policy
 from dispatcher.state import Stage
 from dispatcher.usage import PaceConfig, admits, unavailable
-from tests.test_main import cfg, make_task
+from tests.dispatchfakes import cfg, freeze_clock, make_task
 from tests.test_priority_auto import (FLIPPED, LUNA, OPUS, SOL, SONNET, WRITTEN,
                                       PACE, both, launched, run, ses, usage, wk)
 from tests.test_priority_session_bound import OPENAI_5_6, SHARE, go, pace
@@ -205,13 +205,8 @@ def test_mode_openai_orders_a_repositories_own_policy(tmp_path, monkeypatch):
                    repositories=[with_project(c.repositories[0], models=own)])
     monkeypatch.setattr(main, "fetch_all",
                         lambda cfg, **k: anthropic_hungry())
-
-    class Frozen(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return NOW
-    monkeypatch.setattr(main, "datetime", Frozen)
-    from tests.test_main import FakeSessions, approve_plan, deps, write_tickets
+    freeze_clock(monkeypatch, NOW)
+    from tests.dispatchfakes import FakeSessions, approve_plan, deps, write_tickets
     wt = make_task(c, issue=42, stage=Stage.PLAN, gated=True, picks={})
     write_tickets(wt, 1)
     approve_plan(c, wt)

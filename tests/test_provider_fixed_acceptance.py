@@ -17,7 +17,7 @@ from dispatcher.config import Board, Config, Project, Repository
 from dispatcher.models import parse_policy
 from dispatcher.state import Stage, TaskState, save
 import dispatcher.main as main
-from tests.test_main import EveryRepoApp
+from tests.dispatchfakes import EveryRepoApp
 from tests.webfakes import HEADERS, FakeSources, make_task
 from tests.usagefakes import session_usage
 from web.app import create_app
@@ -163,7 +163,7 @@ def test_dispatcher_drops_a_cross_provider_resume_intent_and_records_an_event(
 ])
 def test_stale_execution_override_cannot_switch_plan_provider_or_bypass_its_gate(
         tmp_path, monkeypatch, openai_used, resumed_models):
-    from tests.test_main import FakeSessions, cfg, deps, make_task
+    from tests.dispatchfakes import FakeSessions, cfg, deps, make_task
 
     c = cfg(tmp_path)
     # /run validated the old Claude spec snapshot. The plan started on

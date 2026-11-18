@@ -5,7 +5,7 @@ open question.
 Spec: specs/2026-10-06-openspec-pipeline/spec.md, requirement 9 and its
 scenarios; design.md (the ready report, the cross-checked open-question
 count, `asked`). Black-box through dispatcher.main.run_pass over the fakes of
-tests/test_main.py, with a real git repo (bare origin) behind the worktree.
+tests/dispatchfakes.py, with a real git repo (bare origin) behind the worktree.
 The publish backstop is not asserted: neither the ticket nor the spec asks
 for it on the skip path.
 """
@@ -20,8 +20,8 @@ import dispatcher.main as main
 from dispatcher.models import parse_policy
 from dispatcher.state import (Stage, load, save)
 
-from tests.test_main import (FakeSessions, cfg, deps, make_task, patch_usage,
-                             patch_workspace, write_tickets, GOOD_TICKET)
+from tests.dispatchfakes import (FakeSessions, cfg, deps, make_task, patch_usage,
+                                 patch_workspace, write_tickets, GOOD_TICKET)
 from dispatcher.state import operator_request
 from dispatcher.status import Kind
 
