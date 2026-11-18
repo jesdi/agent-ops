@@ -9,7 +9,7 @@ import pytest
 
 import dispatcher.main as main
 from dispatcher import drive, execution_overrides, executor
-from dispatcher.state import (NO_SLOT, SessionRecord, Stage, TaskState, load, save,
+from dispatcher.state import (NO_SLOT, SessionRecord, Stage, TaskState, load, max_slots, save,
                               write_session)
 from tests.dispatchfakes import (ADMIT_ALL, DENY_ALL, FakeGitHub, FakeSessions, cfg,
                                  deps)
@@ -105,7 +105,7 @@ def test_a_recorded_slot_another_task_holds_is_replaced(tmp_path):
     assert resumed(d) == [("portfolio_eval", 3)]
     slot = load(c.state_dir, "portfolio_eval", 3).slot
     assert slot != 0, "resumed in slot 0, which portfolio_eval#1 holds"
-    assert slot in range(main.max_slots(c.capacity))
+    assert slot in range(max_slots(c.capacity))
 
 
 def test_a_stranded_launch_parks_the_wake_and_resumes_nothing(tmp_path, monkeypatch):

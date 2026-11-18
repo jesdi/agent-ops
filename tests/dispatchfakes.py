@@ -9,7 +9,7 @@ from pathlib import Path
 
 import dispatcher.main as main
 from dispatcher import deps as deps_mod
-from dispatcher import drive, executor, launch_choice, stage_launch
+from dispatcher import claiming, drive, executor, launch_choice, stage_launch
 from dispatcher.deps import Deps
 from dispatcher import github_app, host_auth
 from dispatcher.config import Board, Config, Project, Repository
@@ -309,7 +309,7 @@ def patch_workspace(monkeypatch, tmp_path):
         (wt / ".agent").mkdir(parents=True, exist_ok=True)
         return str(wt)
 
-    monkeypatch.setattr(main, "create_workspace", fake_create)
+    monkeypatch.setattr(claiming, "create_workspace", fake_create)
 
 
 def deps(gh=None, sess=None, notifier=None):

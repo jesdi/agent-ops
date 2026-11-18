@@ -4,7 +4,7 @@ from dataclasses import replace as dc_replace
 from pathlib import Path
 
 import dispatcher.main as main
-from dispatcher import drive, launch_choice
+from dispatcher import claiming, drive, launch_choice
 from dispatcher import execution_overrides
 from dispatcher.github import Candidate
 from dispatcher.models import parse_policy
@@ -38,7 +38,7 @@ def test_forced_queue_candidate_claims_despite_usage_gate(tmp_path, monkeypatch)
     gh = FakeGitHub([Candidate(42, "Forced", "u42")])
     sess = FakeSessions()
 
-    main._claim_new(c, deps(gh, sess), [c.repositories[0]], DENY_ALL, tuple, False)
+    claiming._claim_new(c, deps(gh, sess), [c.repositories[0]], DENY_ALL, tuple, False)
 
     assert gh.claimed == [42]
     assert [spawn[:3] for spawn in sess.spawned] == [
@@ -71,7 +71,7 @@ def test_forced_queue_candidate_keeps_choice_when_no_slot(tmp_path, monkeypatch)
         model="claude-sonnet-4-6", bypass_usage=True)
     execution_overrides.save(c.state_dir, "portfolio_eval", 42, choice)
 
-    main._claim_new(c, deps(FakeGitHub([Candidate(42, "Forced", "u42")])),
+    claiming._claim_new(c, deps(FakeGitHub([Candidate(42, "Forced", "u42")])),
                     [c.repositories[0]], DENY_ALL, tuple, False)
 
     assert execution_overrides.load(

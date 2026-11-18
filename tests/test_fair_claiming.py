@@ -10,6 +10,7 @@ from dataclasses import replace as dc_replace
 from pathlib import Path
 
 import dispatcher.main as main
+from dispatcher import claiming
 from dispatcher.github import Candidate
 
 from tests.dispatchfakes import FakeSessions, deps, patch_usage, patch_workspace
@@ -135,7 +136,7 @@ def test_provisioning_failure_scoped_to_repository_other_repository_still_claims
         (wt / ".agent").mkdir(parents=True, exist_ok=True)
         return str(wt)
 
-    monkeypatch.setattr(main, "create_workspace", failing_workspace)
+    monkeypatch.setattr(claiming, "create_workspace", failing_workspace)
     main.run_pass(c, deps(gh, FakeSessions(alive=set())))
 
     assert len(gh.created_issues) == 1, "exactly one provisioning failure reported"
