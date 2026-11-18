@@ -5393,7 +5393,7 @@ def test_blocked_feedback_spawn_is_reported_too(tmp_path):
     c = dc_replace(cfg(tmp_path), capacity=1)
     make_task(c, issue=41, slot=0, status=RUNNING)
     make_task(c, issue=42, slot=NO_SLOT, stage=Stage.PR_OPEN, status=waking(PR, "attention(feedback)"))
-    main._spawn_feedback(c, deps(), admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, deps(), admit=ADMIT_ALL, order=tuple)
     blocked = [e for e in main.eventlog.read_tail(c.state_dir)
                if e["event"] == "wake-blocked"]
     assert [e["issue"] for e in blocked] == [42]
@@ -5897,9 +5897,62 @@ def test_pr_feedback_wakes_address_review(tmp_path, monkeypatch):
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.stage, t.status, t.ci_rounds) == (
         Stage.PR_OPEN, waking(PR, "attention(feedback)"), 0)
-    assert events(c, "transition")[-1]["transition"]["event"] == "pr-feedback"
+    assert [e["transition"]["event"] for e in events(c, "transition")] == [
+        "pr-feedback", "resume-admitted"]   # the round waits for capacity
     note = next(ctx["note"] for tmpl, ctx in notif.calls if tmpl == "pr_feedback")
     assert "2026-09-07T09:00:00Z" in note
+
+
+def test_an_admitted_feedback_wake_runs_address_review_with_the_feedback(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = dc_replace(cfg(tmp_path), loop_caps=LoopCaps(ci=3))
+    pr_open_task(c, status=PR)
+    gh = FakeGitHub()
+    gh.pr_payloads[12] = payload(comments=[{"createdAt": "2026-09-07T09:00:00Z",
+                                           "author": {"login": "alice"}}])
+    sess = FakeSessions()
+    main.run_pass(c, deps(gh, sess))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert (t.stage, t.status, t.ci_rounds) == (Stage.ADDRESS_REVIEW, RUNNING, 0)
+    [(_, stage, _, prompt, _)] = sess.spawned
+    assert stage == "address-review" and "Reason for this round: feedback" in prompt
+
+
+def test_a_reply_to_an_exhausted_pr_task_runs_address_review_once_admitted(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = dc_replace(replace_capacity(cfg(tmp_path), 1), loop_caps=LoopCaps(ci=3))
+    pr_open_task(c, status=human("loop-cap"), ci_rounds=3)
+    make_task(c, issue=43)                      # holds the only capacity unit
+    sess = FakeSessions(alive={43})
+    t = _reply_pass(c, "try once more", sess)
+    assert (t.stage, t.status.kind, t.status.cause, t.ci_rounds) == (
+        Stage.PR_OPEN, Kind.WAKING, Cause.REPLY, 0)
+    main.delete(c.state_dir, "portfolio_eval", 43)
+    main.run_pass(c, deps(sess=sess))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert (t.stage, t.status) == (Stage.ADDRESS_REVIEW, RUNNING)
+    [(_, stage, _, prompt, _)] = sess.spawned
+    assert stage == "address-review" and "try once more" in prompt
+
+
+def test_a_pr_wake_blocked_on_capacity_is_marked_once_and_launches_once_it_frees(
+        tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = replace_capacity(cfg(tmp_path), 1)
+    pr_open_task(c, status=waking(PR, "attention(feedback)"))
+    make_task(c, issue=43)                      # holds the only capacity unit
+    sess = FakeSessions(alive={43})
+    main.run_pass(c, deps(sess=sess))
+    main.run_pass(c, deps(sess=sess))
+    assert [e["issue"] for e in events(c, "wake-blocked")] == [42]
+    assert not sess.spawned
+    main.delete(c.state_dir, "portfolio_eval", 43)
+    main.run_pass(c, deps(sess=sess))
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.ADDRESS_REVIEW
+    assert [s[:2] for s in sess.spawned] == [(42, "address-review")]
 
 
 def test_ci_loop_exhausted_at_pr_open(tmp_path, monkeypatch):
@@ -7616,12 +7669,11 @@ def test_resume_admitted_on_pr_open_spawns_an_operator_address_review_round(tmp_
     c = cfg(tmp_path)
     make_task(c, stage=Stage.PR_OPEN, status=waking(PR, "resume"), resume_text="rename it",
               ci_rounds=2, resume_model_override="m-x")
-    sess = FakeSessions(alive=[42])
-    _ended_before(sess, "spawn_stage")
+    sess = FakeSessions()
     t = _resume_admitted(_admitted_turn(c, sess, Stage.ADDRESS_REVIEW), c)
     [(issue, stage, _model, prompt, _)] = sess.spawned
     assert (issue, stage) == (42, "address-review") and "rename it" in prompt
-    assert sess.resumed == []
+    assert sess.resumed == [] and sess.ended == []   # the pr-open transition ended it
     assert (t.stage, t.status.kind, t.attention) == (Stage.ADDRESS_REVIEW, Kind.RUNNING, "operator")
     assert t.feedback_cursor and t.ci_rounds == 0
     assert (t.resume_text, t.resume_model_override) == ("", "")

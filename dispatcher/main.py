@@ -1178,8 +1178,7 @@ def _classify_pr(deps: Deps, repository: Repository, task: TaskState
 def _poll_prs(cfg: Config, deps: Deps, repository: Repository,
               dry_run: bool = False) -> None:
     """Watch every pr-open task's PR independently of CI access and capacity.
-    Reaction (address-review spawn) is gated
-    separately in _spawn_feedback."""
+    Reaction (address-review spawn) is a wake, gated in _drive_wakes."""
     for task in load_all(cfg.state_dir):
         if (task.repository != repository.name or task.stage is not Stage.PR_OPEN
                 or ended(task.status)):
@@ -1368,29 +1367,6 @@ def _wake_reached(cfg: Config, deps: Deps) -> None:
         _apply(turn, task, Event(EventType.ACCESS_REACHED))
 
 
-def _admissions(cfg: Config, deps: Deps, wants: Callable[[TaskState], bool],
-                choose: Callable[[Repository, TaskState], tuple[Launch | None, str]]):
-    """Box-wide admission, oldest first across every repository: capacity is
-    shared, so repository listing order must not decide whose work waits.
-    Yields (repository, task, launch, gh_config) per admitted task, lazily:
-    capacity and slots are re-read after the caller acted on the previous
-    one. A refused task is marked and the iteration carries on."""
-    for repository, task in _admission_candidates(cfg, wants):
-        launch, why = choose(repository, task)
-        if why:
-            _park_stranded(cfg, deps, repository, task, why)
-        if launch is None:
-            continue
-        task = _seat(cfg, repository, task)
-        if task is None:
-            continue  # retried next pass
-        gh_config = _task_token(cfg, deps, repository, task)
-        if gh_config is None:
-            continue   # stays as it was (App error) or parked for access
-        yield repository, task, launch, gh_config
-
-
-
 def _admission_candidates(cfg: Config, wants: Callable[[TaskState], bool]
                           ) -> list[tuple[Repository, TaskState]]:
     """(repository, task) for each task `wants` picks in a configured
@@ -1447,22 +1423,32 @@ def _slot_lost(task: TaskState, others: list[TaskState]) -> bool:
                                        for t in others)
 
 
-_PR_WAKES = frozenset({Cause.ATTENTION_FEEDBACK, Cause.ATTENTION_CHECK_FAILED,
-                       Cause.ATTENTION_CONFLICT, Cause.ATTENTION_OPERATOR})
-
-
 def _woken(task: TaskState) -> bool:
-    """Waiting to launch, which the table decides (resume-admitted): every
-    wake but a PR's attention, which _spawn_feedback launches."""
-    return task.status.kind is Kind.WAKING and task.status.cause not in _PR_WAKES
+    """Waiting to launch, which the table decides (resume-admitted)."""
+    return task.status.kind is Kind.WAKING
+
+
+# A PR wake that already spent its ci round (_pr_detail): its launch must not
+# refund it, or a red check that never turns green would never exhaust the cap.
+_CI_CHARGED = frozenset({Cause.ATTENTION_CHECK_FAILED, Cause.ATTENTION_CONFLICT})
+# Why the PR wakes it, as the address-review prompt names the round; any
+# other wake at pr-open is the operator's.
+_PR_REASONS = {Cause.ATTENTION_FEEDBACK: "feedback", Cause.ATTENTION_CHECK_FAILED: "check-failed",
+               Cause.ATTENTION_CONFLICT: "conflict"}
 
 
 def _address_review_round(cfg: Config, deps: Deps, repository: Repository, task: TaskState,
                           launch: Launch, message: str, gh_config: str) -> TaskState:
-    """No session to continue at pr-open: an operator wake on a parked
-    pr-open task is a fresh address-review round carrying their message."""
-    task = loops.reset(task, ResetCause.PR_CYCLE_STARTED)
-    task = replace(unpark(task), attention="operator", feedback_cursor=_cursor_now(),
+    """No session to continue at pr-open: a wake on a pr-open task is a fresh
+    address-review round, for the PR's attention or carrying the operator's
+    message. Cursor := spawn time: everything the session can read live is
+    now "seen"; _cursor_now(), as GitHub timestamps are second-granular and
+    pr_poll's trigger is a strict `>`."""
+    cause = task.status.cause
+    if cause not in _CI_CHARGED:
+        task = loops.reset(task, ResetCause.PR_CYCLE_STARTED)
+    task = replace(unpark(task), attention=_PR_REASONS.get(cause, "operator"),
+                   feedback_cursor=_cursor_now(),
                    resume_model_override="", resume_bypass_usage=False, resume_text="")
     _clear_wake_blocked(cfg, task.repository, task.issue)
     task = _spawn_stage(cfg, deps, repository, task, launch, message=message,
@@ -1541,41 +1527,6 @@ def _fail_task_crash(cfg: Config, deps: Deps, repository: Repository,
     except Exception as exc:
         print(f"[warn] #{task.issue} failed outside the table: {exc}", file=sys.stderr)
         save(cfg.state_dir, _crash_failed(task))
-
-
-def _awaiting_feedback_round(task: TaskState) -> bool:
-    """A pr-open task woken for its PR's attention, which _spawn_feedback
-    launches."""
-    return task.status.kind is Kind.WAKING and task.status.cause in _PR_WAKES
-
-
-def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit,
-                    order: Order) -> None:
-    """Spawn address-review for tasks whose PR got feedback, box-wide and
-    oldest first — same gates as claiming new work (capacity, usage, slot);
-    a denied spawn just stays pr-open+pending and retries next pass, badge
-    showing, unless it never launches (_choose_launch): then it parks with
-    its feedback kept (_awaiting_feedback_round)."""
-    def choose(repository: Repository, task: TaskState) -> tuple[Launch | None, str]:
-        launch, _, why = _choose_launch(
-            cfg, repository, task, Stage.ADDRESS_REVIEW, admit, order,
-            _execution_override_for(cfg, task, Stage.ADDRESS_REVIEW))
-        return launch, why
-
-    admitted = _admissions(cfg, deps, _awaiting_feedback_round, choose)
-    for repository, task, launch, gh_config in admitted:
-        _clear_wake_blocked(cfg, task.repository, task.issue)
-        # Cursor := spawn time: everything the session can read live is
-        # now "seen"; anything arriving after this moment re-triggers a
-        # round (conservative — a redundant round beats a lost comment).
-        # _cursor_now(), not _now(): GitHub timestamps are second-granular
-        # and pr_poll's trigger is a strict `>`, so the cursor has to be
-        # quantised to seconds or a comment from the spawn second is lost.
-        task = replace(task, feedback_cursor=_cursor_now())
-        if task.status.cause is Cause.ATTENTION_FEEDBACK:
-            task = loops.reset(task, ResetCause.PR_CYCLE_STARTED)
-        _spawn_stage(cfg, deps, repository, task, launch, gh_config=gh_config)
-        _consume_execution_choice(cfg, task.repository, task.issue)
 
 
 @dataclass
@@ -1921,6 +1872,14 @@ def _relaunched(turn: _Turn, task: TaskState, stage: Stage,
     into a live pane would type its command INTO that session's input box.
     A raising launch fails with `accepted` (the task as handed over)."""
     _end_session(turn.cfg, turn.deps, task.repository, task.issue)
+    return _started(turn, task, stage, start, accepted)
+
+
+def _started(turn: _Turn, task: TaskState, stage: Stage,
+             start: Callable[[TaskState], TaskState],
+             accepted: TaskState | None = None) -> TaskState:
+    """`start` a session for `stage` where none runs; a raising launch fails
+    with `accepted` (the task as handed over)."""
     try:
         task = start(task)
     except Exception as exc:
@@ -1970,10 +1929,11 @@ def _session_continued(turn: _Turn, task: TaskState, act: ContinueSession) -> Ta
 
 
 def _address_review_spawned(turn: _Turn, task: TaskState, act: SpawnAddressReview) -> TaskState:
-    """An admitted wake at pr-open starts an operator address-review round;
-    the implement session may still be alive there, so it is ended first."""
+    """An admitted wake at pr-open starts an address-review round. No
+    session runs at pr-open (the pr-open transition ended it), so none is
+    ended here."""
     launch, message = turn.launches[Stage.ADDRESS_REVIEW], _resume_text(task)
-    return _relaunched(turn, task, Stage.ADDRESS_REVIEW, lambda task: _address_review_round(
+    return _started(turn, task, Stage.ADDRESS_REVIEW, lambda task: _address_review_round(
         turn.cfg, turn.deps, turn.repository, task, launch, message, turn.gh_config))
 
 
@@ -3257,8 +3217,7 @@ def _sandboxed_state(cfg: Config):
 def _starving(task: TaskState) -> bool:
     """Is this task legitimately still waiting for the capacity/slot it was
     denied? Exactly the queues that mark the marker, which wake it: a
-    waking task (_spawn_feedback, and the wakes the table blocks,
-    _wake_room). Anything else is not waiting for
+    waking task (the wakes the table blocks, _wake_room). Anything else is not waiting for
     anything."""
     return task.status.kind is Kind.WAKING
 
@@ -3365,7 +3324,6 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     _drive_in_progress(eff, deps, admit, order, dry_run)
     _wake_reached(eff, deps)
     _drive_wakes(eff, deps, admit, order, dry_run)
-    _spawn_feedback(eff, deps, admit, order)
     if not dry_run:
         launched = onboarding_sessions.tick(
             cfg, deps, admit, order, config_path,
