@@ -229,6 +229,53 @@ def test_a_task_the_installation_does_not_reach_is_parked_with_the_link_and_spaw
     assert minted[2] in sessions.launches[0]["hosts"]
 
 
+def _transitions(world, event):
+    from dispatcher import eventlog
+    return [e for e in eventlog.read_tail(world.cfg.state_dir)
+            if e["event"] == "transition" and e["transition"]["event"] == event]
+
+
+def _portfolio(world):
+    [task] = [t for t in load_all(world.cfg.state_dir) if t.repository == "portfolio_eval"]
+    return task
+
+
+def test_an_access_park_wakes_by_itself_once_reached_and_the_admitted_pass_spawns_spec(
+        tmp_path, monkeypatch, home):
+    world = world_of(tmp_path, monkeypatch, ("portfolio_eval",))
+    spawn_pass(world)
+    assert (_portfolio(world).stage, _portfolio(world).status.kind) == (Stage.QUEUED,
+                                                                        Kind.PARKED_ACCESS)
+    world.app.reached.add("jesdi/portfolio_eval")
+    sessions = spawn_pass(world)
+    [e] = _transitions(world, "access-reached")
+    assert e["transition"] == {"event": "access-reached", "from": "parked-access",
+                               "to": "waking", "stage": "queued"}
+    assert [(i, s) for i, s, *_ in sessions.spawned] == [(7, "spec")]
+
+
+def test_an_access_park_the_app_still_does_not_reach_stays_parked(tmp_path, monkeypatch, home):
+    world = world_of(tmp_path, monkeypatch, ("portfolio_eval",))
+    spawn_pass(world)
+    sessions = spawn_pass(world)
+    assert _portfolio(world).status.kind is Kind.PARKED_ACCESS
+    assert sessions.spawned == [] and _transitions(world, "access-reached") == []
+
+
+def test_a_non_access_park_is_untouched_when_the_app_reaches_its_repository(
+        tmp_path, monkeypatch, home):
+    from dataclasses import replace
+    from dispatcher.state import save
+    from tests.statuses import human
+    world = world_of(tmp_path, monkeypatch, ("portfolio_eval",))
+    spawn_pass(world)
+    save(world.cfg.state_dir, replace(_portfolio(world), status=human()))
+    world.app.reached.add("jesdi/portfolio_eval")
+    sessions = spawn_pass(world)
+    assert _portfolio(world).status == human()
+    assert sessions.spawned == [] and _transitions(world, "access-reached") == []
+
+
 # --- the App errors at spawn ---------------------------------------------------------------
 
 class SpawnFailsApp(FakeApp):

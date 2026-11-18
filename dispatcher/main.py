@@ -1434,16 +1434,19 @@ def _oldest_first(cfg: Config):
 
 
 def _wake_reached(cfg: Config, deps: Deps) -> None:
-    """Wake each task parked for access whose repository the App reaches now."""
+    """Each task parked for access whose repository the App reaches now hears
+    `access-reached`; the table wakes it."""
     repositories = {r.name: r for r in cfg.repositories}
     for task in load_all(cfg.state_dir):
         if task.status.kind is not Kind.PARKED_ACCESS or task.repository not in repositories:
             continue
+        repository = repositories[task.repository]
         try:
-            deps.access.reached([repositories[task.repository].repo])
+            deps.access.reached([repository.repo])
         except (github_app.AppError, github_app.NoAccess):
             continue   # asked again next pass
-        save(cfg.state_dir, replace(wake(task, Cause.ACCESS), updated_at=_now()))
+        turn = _Turn(cfg, deps, repository, admit=None, order=None, dry_run=False)
+        _apply(turn, task, Event(EventType.ACCESS_REACHED))
 
 
 def _admissions(cfg: Config, deps: Deps, wants: Callable[[TaskState], bool],
