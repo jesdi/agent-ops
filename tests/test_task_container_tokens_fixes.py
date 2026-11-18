@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 import dispatcher.main as main
+from dispatcher import launch_choice
 from dispatcher.deps import Deps
 from dispatcher import github_app, task_tokens
 from dispatcher.github import Candidate
@@ -207,7 +208,7 @@ def test_resume_passes_the_task_token_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "_drain", lambda *a: ("", []))
     monkeypatch.setattr(main.messages, "mark_delivered", lambda *a: None)
     monkeypatch.setattr(main.eventlog, "append_event", lambda *a, **k: None)
-    launch = main.Launch(Stage.IMPLEMENT, Entry("anthropic", "claude-opus-5"))
+    launch = launch_choice.Launch(Stage.IMPLEMENT, Entry("anthropic", "claude-opus-5"))
     gh_config = main._task_token(cfg_, deps, REPO, task)
     main._continue_or_restart(cfg_, deps, REPO, task, launch, gh_config=gh_config)
     [kw] = deps.sessions.resumed

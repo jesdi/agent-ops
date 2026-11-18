@@ -12,6 +12,7 @@ caught:
 from dataclasses import replace as dc_replace
 
 import dispatcher.main as main
+from dispatcher import launch_choice
 from dispatcher.pr_poll import CIStatus
 from dispatcher.state import Stage, load
 from dispatcher.status import HumanReason, Kind
@@ -42,7 +43,7 @@ def test_review_prompt_without_verify_cmd_states_no_pre_pr_e2e(tmp_path):
     d = deps(sess=FakeSessions())
     task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.repositories[0], task,
-                      main._launch_for(c, c.repositories[0], task, Stage.REVIEW,
+                      launch_choice._launch_for(c, c.repositories[0], task, Stage.REVIEW,
                                        lambda m: True, tuple), gh_config=TOKENS)
     prompt = d.sessions.spawned[-1][3]
 
@@ -60,7 +61,7 @@ def test_review_prompt_without_verify_cmd_pr_body_asks_gate_not_e2e_url(tmp_path
     d = deps(sess=FakeSessions())
     task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.repositories[0], task,
-                      main._launch_for(c, c.repositories[0], task, Stage.REVIEW,
+                      launch_choice._launch_for(c, c.repositories[0], task, Stage.REVIEW,
                                        lambda m: True, tuple), gh_config=TOKENS)
     prompt = d.sessions.spawned[-1][3]
 
@@ -75,7 +76,7 @@ def test_address_review_prompt_without_verify_cmd_has_no_e2e_step(tmp_path):
     d = deps(sess=FakeSessions())
     task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.repositories[0], task,
-                      main._launch_for(c, c.repositories[0], task,
+                      launch_choice._launch_for(c, c.repositories[0], task,
                                        Stage.ADDRESS_REVIEW, lambda m: True, tuple), gh_config=TOKENS)
     prompt = d.sessions.spawned[-1][3]
 
@@ -91,7 +92,7 @@ def test_review_and_address_review_prompts_with_verify_cmd_keep_e2e_step(tmp_pat
     make_task(c, issue=42, stage=Stage.REVIEW, track="standard", slot=0)
     task = load(c.state_dir, "portfolio_eval", 42)
     main._spawn_stage(c, d, c.repositories[0], task,
-                      main._launch_for(c, c.repositories[0], task, Stage.REVIEW,
+                      launch_choice._launch_for(c, c.repositories[0], task, Stage.REVIEW,
                                        lambda m: True, tuple), gh_config=TOKENS)
     review_prompt = d.sessions.spawned[-1][3]
     assert "awaiting-ci" in review_prompt
@@ -102,7 +103,7 @@ def test_review_and_address_review_prompts_with_verify_cmd_keep_e2e_step(tmp_pat
              pr_number=7, slot=1)
     task = load(c.state_dir, "portfolio_eval", 43)
     main._spawn_stage(c, d, c.repositories[0], task,
-                      main._launch_for(c, c.repositories[0], task,
+                      launch_choice._launch_for(c, c.repositories[0], task,
                                        Stage.ADDRESS_REVIEW, lambda m: True, tuple), gh_config=TOKENS)
     address_review_prompt = d.sessions.spawned[-1][3]
     assert "awaiting-ci" in address_review_prompt

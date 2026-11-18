@@ -4,6 +4,7 @@ import json
 import pytest
 
 from dispatcher import main, containers, implementation_grants
+from dispatcher import launch_choice
 from dispatcher.models import Entry
 from dispatcher.state import Stage, load
 from tests.dispatchfakes import deps, make_task
@@ -17,7 +18,7 @@ def test_implement_launch_bounds_driver_roles_to_current_grants(tmp_path, monkey
     wt = make_task(c, spec_path='specs/approved/spec.md')
     task = load(c.state_dir, 'portfolio_eval', 42)
     primary = Entry('anthropic', 'claude-opus-5', 'high')
-    launch = main._with_second(c, c.repositories[0], main.Launch(Stage.IMPLEMENT, primary),
+    launch = launch_choice._with_second(c, c.repositories[0], launch_choice.Launch(Stage.IMPLEMENT, primary),
                                _verdict(granted))
     sess = GrantSessions()
     (wt / '.agent' / 'ledger.md').write_text('ticket 1 merged\n')

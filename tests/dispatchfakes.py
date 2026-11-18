@@ -9,6 +9,7 @@ from pathlib import Path
 
 import dispatcher.main as main
 from dispatcher import deps as deps_mod
+from dispatcher import launch_choice
 from dispatcher.deps import Deps
 from dispatcher import github_app, host_auth
 from dispatcher.config import Board, Config, Project, Repository
@@ -19,7 +20,7 @@ from tests.statuses import PR, RUNNING, held
 from tests.usagefakes import session_usage
 
 # Every dispatcher module that reads the `datetime` name at runtime.
-_CLOCK_READERS = (main, deps_mod)
+_CLOCK_READERS = (main, deps_mod, launch_choice)
 
 
 def freeze_clock(monkeypatch, at):
