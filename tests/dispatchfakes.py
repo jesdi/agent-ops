@@ -4,7 +4,7 @@ saved-task builders and the patches that keep a pass off the network."""
 import json
 import subprocess
 from dataclasses import replace as dc_replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import dispatcher.main as main
@@ -22,6 +22,11 @@ from tests.usagefakes import session_usage
 
 # Every dispatcher module that reads the `datetime` name at runtime.
 _CLOCK_READERS = (main, deps_mod, launch_choice, stage_launch, drive)
+
+
+def _ago(**kw):
+    """An ISO timestamp `kw` (timedelta arguments) before now."""
+    return (datetime.now(timezone.utc) - timedelta(**kw)).isoformat()
 
 
 def freeze_clock(monkeypatch, at):

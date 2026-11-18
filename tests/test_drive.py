@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 import dispatcher.main as main
-from dispatcher import drive
+from dispatcher import drive, eventlog
 from dispatcher import github_app, state, task_tokens
 from dispatcher import intents as intents_mod
 from dispatcher.github import Candidate
@@ -322,7 +322,7 @@ def test_blocked_wake_emits_one_event_not_one_per_pass(tmp_path):
     d = deps()
     main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
     main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
-    blocked = [e for e in main.eventlog.read_tail(c.state_dir)
+    blocked = [e for e in eventlog.read_tail(c.state_dir)
                if e["event"] == "wake-blocked"]
     assert len(blocked) == 1
     assert blocked[0]["issue"] == 42
@@ -338,13 +338,13 @@ def test_slot_exhaustion_is_reported_as_such(tmp_path, monkeypatch):
     make_task(c, issue=42, slot=NO_SLOT, status=waking())
     monkeypatch.setattr(drive, "allocate_slot", lambda *a, **kw: None)
     main._drive_wakes(c, deps(), admit=ADMIT_ALL, order=tuple)
-    blocked = [e for e in main.eventlog.read_tail(c.state_dir)
+    blocked = [e for e in eventlog.read_tail(c.state_dir)
                if e["event"] == "wake-blocked"]
     assert [e["detail"] for e in blocked] == ["no free slot"]
 
 
 def _blocked_details(c):
-    return [(e["issue"], e["detail"]) for e in main.eventlog.read_tail(c.state_dir)
+    return [(e["issue"], e["detail"]) for e in eventlog.read_tail(c.state_dir)
             if e["event"] == "wake-blocked"]
 
 
@@ -414,7 +414,7 @@ def test_blocked_feedback_spawn_is_reported_too(tmp_path):
     make_task(c, issue=41, slot=0, status=RUNNING)
     make_task(c, issue=42, slot=NO_SLOT, stage=Stage.PR_OPEN, status=waking(PR, "attention(feedback)"))
     main._drive_wakes(c, deps(), admit=ADMIT_ALL, order=tuple)
-    blocked = [e for e in main.eventlog.read_tail(c.state_dir)
+    blocked = [e for e in eventlog.read_tail(c.state_dir)
                if e["event"] == "wake-blocked"]
     assert [e["issue"] for e in blocked] == [42]
 

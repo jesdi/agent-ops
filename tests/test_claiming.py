@@ -2,7 +2,6 @@
 failures and the claim commit (dispatcher/claiming.py)."""
 import json
 from dataclasses import replace as dc_replace
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -12,16 +11,12 @@ from dispatcher import failures
 from dispatcher.github import Candidate
 from dispatcher.state import (NO_SLOT, Stage, TaskState, load, load_all, save)
 from tests.configfakes import with_project
-from tests.dispatchfakes import (ADMIT_ALL, FakeGitHub, FakeSessions,
+from tests.dispatchfakes import (_ago, ADMIT_ALL, FakeGitHub, FakeSessions,
                                  cfg, deps, make_task, patch_usage,
                                  patch_workspace, pr_open_task, _events)
 from tests.statuses import CANCELED, DONE, review, waking, failed
 from dispatcher.status import Kind
 from dispatcher import claiming, eventlog
-
-
-def _ago(**kw):
-    return (datetime.now(timezone.utc) - timedelta(**kw)).isoformat()
 
 
 def test_new_candidate_claimed_and_spec_spawned(tmp_path, monkeypatch):

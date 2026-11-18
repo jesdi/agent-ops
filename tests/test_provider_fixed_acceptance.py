@@ -12,7 +12,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from dispatcher import eventlog, execution_overrides, intents as intents_mod
+from dispatcher import eventlog, execution_overrides, intents as intents_mod, operator_intents
 from dispatcher.config import Board, Config, Project, Repository
 from dispatcher.models import parse_policy
 from dispatcher.state import Stage, TaskState, save
@@ -147,7 +147,7 @@ def test_dispatcher_drops_a_cross_provider_resume_intent_and_records_an_event(
     # This is the dispatcher's authoritative resume-intent path, exercised
     # directly (not the full run_pass) so this stays a test of that one
     # decision and not of triage/claim/usage-fetch machinery unrelated to it.
-    main._apply_intents(c, Deps(github=None, sessions=None, notifier=None, app=EveryRepoApp()))
+    operator_intents._apply_intents(c, Deps(github=None, sessions=None, notifier=None, app=EveryRepoApp()))
 
     from dispatcher.state import load
     reloaded = load(c.state_dir, "alpha", 7)

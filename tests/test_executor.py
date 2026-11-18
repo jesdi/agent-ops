@@ -9,7 +9,7 @@ import pytest
 
 import dispatcher.main as main
 from dispatcher import (eventlog, executor, intents as intents_mod, launch_choice, spec_publish,
-                        stage_launch)
+                        operator_intents, stage_launch)
 from dispatcher.state import (NO_SLOT, AnswersRequest, PlanApprovalRequest, SessionRecord, Stage,
                               TaskState, at_gate, load, operator_request, save, write_session)
 from dispatcher.status import FailReason, Kind
@@ -532,7 +532,7 @@ def test_the_resume_text_is_stored_with_the_wake_and_sent_at_launch(tmp_path, mo
 def test_a_park_intent_without_a_task_is_skipped(tmp_path):
     c = cfg(tmp_path)
     intents_mod.write_intent(c.state_dir, "park", "portfolio_eval", 42, {}, "op", 1)
-    main._apply_intents(c, deps())
+    operator_intents._apply_intents(c, deps())
     assert load(c.state_dir, "portfolio_eval", 42) is None
     assert _events(c, "transition") == [] and _events(c, "transition-rejected") == []
 
