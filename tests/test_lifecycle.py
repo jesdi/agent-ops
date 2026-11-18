@@ -295,6 +295,14 @@ def test_answers_wake_a_task_parked_for_them():
     assert got == Transition(waking(ANSWERS_PARK, "reply"), S.SPEC, (ResetRounds(),))
 
 
+@pytest.mark.parametrize("stage", [S.REVIEW, S.ADDRESS_REVIEW])
+def test_a_pr_open_ends_the_session_once_then_gives_the_slot_back(stage):
+    got = decide(At(stage, RUNNING), Event(E.SESSION_SIGNAL, report(StageSignal(stage.value, "done"))))
+    assert (got.stage, got.status) == (S.PR_OPEN, PR)
+    assert got.actions.count(EndSession()) == 1
+    assert got.actions.index(EndSession()) < got.actions.index(ReleaseSlot()) == len(got.actions) - 1
+
+
 def test_pr_feedback_wakes_an_address_review_round():
     got = decide(At(S.PR_OPEN, PR), Event(E.PR_FEEDBACK))
     assert got.status == waking(PR, "attention(feedback)")

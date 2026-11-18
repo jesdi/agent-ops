@@ -4274,14 +4274,12 @@ def test_closed_unmerged_pr_fails_task_preserving_worktree(tmp_path, monkeypatch
     gh = FakeGitHub()
     gh.pr_payloads[12] = payload(state="CLOSED")
     notif = FakeNotifier()
-    sess = FakeSessions(alive=(42,))
+    sess = FakeSessions()
     main.run_pass(c, deps(gh, sess, notifier=notif))
     assert load(c.state_dir, "portfolio_eval", 42).status.kind is Kind.FAILED
     assert removed == [] and "pr_closed" in notif.sent
-    # The implement session is still alive at pr-open and nothing will ever
-    # drive a FAILED task again — the tmux session and its container must be
-    # ended here or they hold their reservation until the box reboots.
-    assert sess.ended == [42]
+    # No session runs at pr-open: the pr-open transition already ended it.
+    assert sess.ended == []
 
 
 def test_feedback_sets_pending_flag_and_notifies_once(tmp_path, monkeypatch):
@@ -4431,7 +4429,7 @@ def test_pending_feedback_spawns_address_review_when_capacity_frees(
     assert got.feedback_cursor != ""      # cursor = spawn time
     assert got.slot != NO_SLOT
     assert [s for s in sess.spawned if s[1] == "address-review"]
-    assert 42 in sess.ended  # previous session ended before spawning
+    assert sess.ended == []  # the pr-open transition already ended the review session
 
 
 def test_pending_feedback_not_spawned_over_capacity(tmp_path, monkeypatch):
@@ -5637,6 +5635,32 @@ def test_implement_done_spawns_review_and_review_done_opens_pr(tmp_path, monkeyp
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.stage, t.pr_number) == (Stage.PR_OPEN, 9)
     assert "pr_opened" in d2.notifier.sent and len(events(c, "pr-opened")) == 1
+
+
+def test_pr_opens_and_parks_on_github_ending_the_review_session_once(tmp_path, monkeypatch):
+    """Scenario "PR opens and parks on GitHub": the pr-open transition ends the
+    review session; neither the next pass nor the feedback round ends it again."""
+    patch_usage(monkeypatch)
+    patch_workspace(monkeypatch, tmp_path)
+    c = cfg(tmp_path)
+    wt = make_task(c, stage=Stage.REVIEW, slot=2)
+    (wt / ".agent" / "stage.json").write_text(json.dumps(
+        {"stage": "review", "status": "done", "note": "https://github.com/o/r/pull/9",
+         "artifact": "https://github.com/o/r/pull/9"}))
+    sess, gh = FakeSessions(alive={42}), FakeGitHub()
+    d = deps(gh, sess=sess)
+    main.run_pass(c, d)
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert (t.stage, t.status, t.slot) == (Stage.PR_OPEN, PR, NO_SLOT)
+    assert sess.ended == [42] and "pr_opened" in d.notifier.sent
+    main.run_pass(c, d)
+    assert sess.ended == [42]
+    gh.pr_payloads[9] = payload(comments=[{"createdAt": "2099-01-01T00:00:00Z",
+                                           "author": {"login": "rev"}, "body": "fix"}])
+    main.run_pass(c, d)
+    main.run_pass(c, d)
+    assert load(c.state_dir, "portfolio_eval", 42).stage is Stage.ADDRESS_REVIEW
+    assert sess.ended == [42]
 
 
 def test_blocked_implement_session_parks_in_its_stage(tmp_path, monkeypatch):

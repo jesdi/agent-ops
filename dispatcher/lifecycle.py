@@ -771,7 +771,7 @@ def _implement_done(f: Facts) -> Transition | Ignore:
 def _pr_opened(template: str) -> Callable[[Facts], Transition]:
     def opened(f: Facts) -> Transition:
         return Transition(Status(Kind.PARKED_PR), Stage.PR_OPEN,
-                          (LinkPR(), Notify(template, _report(f).signal.note)))
+                          (LinkPR(), EndSession(), Notify(template, _report(f).signal.note)))
     return opened
 
 

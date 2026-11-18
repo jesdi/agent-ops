@@ -1274,13 +1274,9 @@ def _finish_merged_or_warn(cfg: Config, deps: Deps, repository: Repository,
 
 def _fail_closed_pr(cfg: Config, deps: Deps, repository: Repository,
                     task: TaskState) -> None:
-    """Fail a pr-open task whose PR closed unmerged: end its session and
-    send pr_closed once (an ended task is not polled again). The session is
-    ended because the implement session is still alive at pr-open, and
-    nothing will ever drive this task again, so its session and container
-    would otherwise hold their memory/cpu reservation until the box
-    reboots. The worktree stays for autopsy."""
-    _end_session(cfg, deps, task.repository, task.issue)
+    """Fail a pr-open task whose PR closed unmerged and send pr_closed once
+    (an ended task is not polled again). No session runs at pr-open: the
+    pr-open transition ended it. The worktree stays for autopsy."""
     save(cfg.state_dir, replace(end(task, Status(Kind.FAILED, reason=FailReason.PR_CLOSED)),
                                 updated_at=_now()))
     eventlog.append_event(cfg.state_dir, "pr-closed",
@@ -1641,10 +1637,6 @@ def _spawn_feedback(cfg: Config, deps: Deps, admit: Admit,
         # and pr_poll's trigger is a strict `>`, so the cursor has to be
         # quantised to seconds or a comment from the spawn second is lost.
         task = replace(task, feedback_cursor=_cursor_now())
-        # The implement session is still alive at pr-open (the pr-open
-        # transition never ends it). End first so _launch doesn't type
-        # the podman command into the live session's input box.
-        _end_session(cfg, deps, task.repository, task.issue)
         _spawn_stage(cfg, deps, repository, task, launch, gh_config=gh_config)
         _consume_execution_choice(cfg, task.repository, task.issue)
 

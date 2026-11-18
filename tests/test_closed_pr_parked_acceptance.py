@@ -56,7 +56,7 @@ def _setup(tmp_path, monkeypatch):
     pr_open_task(c, pr_number=88, **PARKED)
     gh = FakeGitHub()
     gh.pr_payloads[88] = payload(state="CLOSED")
-    notif, sess = FakeNotifier(), FakeSessions(alive=(42,))
+    notif, sess = FakeNotifier(), FakeSessions()
     return c, lambda: main.run_pass(c, deps(gh, sess, notifier=notif)), notif, sess
 
 
@@ -70,7 +70,7 @@ def test_closed_pr_ends_a_parked_task_failed_and_in_the_failed_column(
     on_disk = json.loads(_path(c.state_dir, "portfolio_eval", 42).read_text())
     assert on_disk["status"] == {"kind": "failed", "detail": {"reason": "pr-closed"}}
     assert on_disk["park_msg_id"] == 0
-    assert 42 in sess.ended
+    assert sess.ended == []  # the pr-open transition already ended it
     assert notif.sent.count("pr_closed") == 1
     _failed_card_asks_nothing(c, 42)
 
