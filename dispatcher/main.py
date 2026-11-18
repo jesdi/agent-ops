@@ -44,7 +44,7 @@ from dispatcher.artifacts import (REVIEW_PAGE, TICKETS_DIR, check_spec, check_ti
                                   count_open_questions, page_revision, plan_revision)
 from dispatcher.classify import (BackgroundView, Look, Observation, Reads, artifact_path,
                                  classify, config_note)
-from dispatcher.lifecycle import (AcquireSlot, Admission, ApplyRound, At, ClearTurnMarkers,
+from dispatcher.lifecycle import (AcquireSlot, Admission, ApplyRound, At, Attempt, ClearTurnMarkers,
                                   ContinueSession, SpawnAddressReview,
                                   EndPokeStretch, EndSession, EnterGate, Event, EventType,
                                   LaunchFailure, LinkPR, MarkAsked, Notify,
@@ -1039,10 +1039,7 @@ def _apply_loop_decision(cfg: Config, deps: Deps, repository: Repository,
                           issue=task.issue, stage=task.stage.value,
                           detail=decision.description)
     if decision.outcome is Outcome.EXHAUSTED:
-        note = f"{decision.loop.value} loop exceeded its cap of {decision.cap} rounds"
-        if decision.detail:
-            note += f" ({decision.detail})"
-        park_exhausted(task, note)
+        park_exhausted(task, decision.cap_note)
         return task, True
     if decision.outcome is Outcome.LAST_ROUND:
         _notify(deps, repository, task, "last_round",
@@ -1153,24 +1150,26 @@ def _ci_conclusion(deps: Deps, repository: Repository, task: TaskState) -> str:
 
 def _check_ci_run(cfg: Config, deps: Deps, repository: Repository,
                   task: TaskState) -> None:
-    """Wake a CI-parked task once its run concluded. A failed run spends a
-    ci round first, and the last round parks it for the operator instead."""
+    """Once its run concluded, a CI-parked task hears the conclusion and the
+    table decides: wake it, or park it for the operator when a failed run
+    spent the last round (counted here, before the event)."""
     conclusion = _ci_conclusion(deps, repository, task)
     if not conclusion:
         return
     run_id = task.status.run_id
+    attempt = Attempt(exhausted=False)
     if conclusion != "success":
         dec = loops.evaluate(task, loops.FailedRun(f"run {run_id} {conclusion}"),
                              cfg.loop_caps)
-        task, parked = _apply_loop_decision(
-            cfg, deps, repository, task, dec,
-            park_exhausted=lambda t, note: _park_exhausted(cfg, deps, repository, t, note))
-        if parked:
-            return
-    reply = (f"E2E run {run_id} concluded: {conclusion} — "
-             f"fetch logs with: gh run view {run_id} --log-failed")
-    _queue_message(cfg, task.repository, task.issue, reply, "dispatcher")
-    save(cfg.state_dir, replace(wake(task, Cause.CI), updated_at=_now()))
+        task, exhausted = _apply_loop_decision(
+            cfg, deps, repository, task, dec, park_exhausted=lambda t, note: None)
+        attempt = Attempt(exhausted, dec.cap_note)
+    if not attempt.exhausted:
+        _queue_message(cfg, task.repository, task.issue,
+                       f"E2E run {run_id} concluded: {conclusion} — "
+                       f"fetch logs with: gh run view {run_id} --log-failed", "dispatcher")
+    turn = _Turn(cfg, deps, repository, admit=None, order=None, dry_run=False)
+    _apply(turn, task, Event(EventType.CI_FINISHED, attempt))
 
 
 def _poll_pr(cfg: Config, deps: Deps, repository: Repository, task: TaskState

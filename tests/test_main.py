@@ -23,7 +23,7 @@ from tests.configfakes import with_project
 # Bound at import, before tests/conftest.py's _no_podman fake replaces it.
 from dispatcher.sessions import _podman as real_podman
 from tests.statuses import RUNNING, PR, CANCELED, DONE, human, answers, held, review, login, access, ci, waking, failed
-from dispatcher.status import FailReason, HumanReason, Kind
+from dispatcher.status import Cause, FailReason, HumanReason, Kind
 from dispatcher.state import at_gate, operator_request
 
 POLICY = parse_policy({
@@ -5008,6 +5008,41 @@ def test_ci_conclusion_becomes_a_dispatcher_message(tmp_path):
     assert t.status.kind is Kind.WAKING and t.status.run_id == 0
 
 
+def test_finished_ci_run_wakes_the_task_through_the_table(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = dc_replace(cfg(tmp_path), capacity=0)
+    make_task(c, issue=42, status=ci(991), slot=NO_SLOT)
+    main.run_pass(c, deps(gh=FakeGitHub(run_conclusion="success")))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.status.kind is Kind.WAKING and t.status.cause is Cause.CI
+    from dispatcher import messages
+    assert ["991 concluded: success" in m.text
+            for m in messages.undelivered(c.state_dir, "portfolio_eval", 42)] == [True]
+
+
+def test_failed_ci_run_past_the_cap_parks_for_the_operator(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = dc_replace(cfg(tmp_path), capacity=0)
+    make_task(c, issue=42, status=ci(991), slot=NO_SLOT, e2e_rounds=3)
+    main.run_pass(c, deps(gh=FakeGitHub(run_conclusion="failure")))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert (t.status.kind, t.status.reason) == (Kind.PARKED_HUMAN, HumanReason.LOOP_CAP)
+    assert t.e2e_rounds == 4
+    assert [e["detail"] for e in events(c, "round")] == ["e2e round 4/3: run 991 failure"]
+    assert t.status.note == "e2e loop exceeded its cap of 3 rounds (run 991 failure)"
+
+
+def test_ci_run_still_in_progress_leaves_the_task_parked(tmp_path, monkeypatch):
+    patch_usage(monkeypatch)
+    c = dc_replace(cfg(tmp_path), capacity=0)
+    make_task(c, issue=42, status=ci(991), slot=NO_SLOT)
+    main.run_pass(c, deps(gh=FakeGitHub(run_conclusion="")))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.status == ci(991)
+    from dispatcher import messages
+    assert messages.undelivered(c.state_dir, "portfolio_eval", 42) == []
+
+
 def test_spawn_appends_queued_messages_to_the_stage_prompt(tmp_path):
     c = cfg(tmp_path)
     make_task(c, issue=42, stage=Stage.QUEUED)
@@ -5632,7 +5667,7 @@ def test_failed_e2e_runs_count_and_park_past_the_cap(tmp_path, monkeypatch):
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.status.kind, t.e2e_rounds) == (Kind.PARKED_HUMAN, 2)
     assert "parked_question" in d.notifier.sent
-    assert events(c, "parked")[-1]["detail"].startswith("loop exhausted")
+    assert events(c, "parked")[-1]["detail"] == "e2e loop exceeded its cap of 1 rounds (run 8 failure)"
 
 
 def test_operator_wake_resets_the_round_budget(tmp_path, monkeypatch):

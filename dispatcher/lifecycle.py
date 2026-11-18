@@ -183,6 +183,7 @@ class LoginCode:
 class Attempt:
     """ci-finished, pr-check-failed, pr-conflict."""
     exhausted: bool           # no ci round left
+    note: str = ""            # exhausted: why it parks
 
 
 Detail = (Report | Silence | Wait | Death | Stranded | LaunchFailure | Woken | Ranked
@@ -479,6 +480,14 @@ def left_login_prompt(f: Facts) -> bool:
     return f.event.detail.left_login_prompt
 
 
+def _capped(f: Facts) -> Status:
+    return Status(Kind.PARKED_HUMAN, reason=HumanReason.LOOP_CAP, note=f.event.detail.note)
+
+
+def _ask_capped(f: Facts) -> Notify:
+    return Notify("parked_question", f.event.detail.note)
+
+
 def _wake(cause: Cause) -> Callable[[Facts], Status]:
     return lambda f: Status(Kind.WAKING, origin=f.status, cause=cause)
 
@@ -602,9 +611,7 @@ def _exhausted(f: Facts) -> Transition | None:
     d = f.event.detail.round
     if d is None or d.outcome is not Rounds.EXHAUSTED:
         return None
-    note = f"{d.loop.value} loop exceeded its cap of {d.cap} rounds"
-    return _asking(f, HumanReason.LOOP_CAP, note + (f" ({d.detail})" if d.detail else ""),
-                   ApplyRound(d))
+    return _asking(f, HumanReason.LOOP_CAP, d.cap_note, ApplyRound(d))
 
 
 def _stalled(f: Facts, reason: HumanReason, note: str) -> Transition:
@@ -1090,7 +1097,7 @@ TABLE: tuple[Row, ...] = _complete([
 
     # ci-finished: a failed run spent a ci round (loops) before the event.
     Row(K.PARKED_CI, E.CI_FINISHED, K.PARKED_HUMAN, guard=loop_exhausted,
-        build=_human(HumanReason.LOOP_CAP), actions=(Notify("parked_question"),)),
+        build=_capped, derive=(_ask_capped,)),
     Row(K.PARKED_CI, E.CI_FINISHED, K.WAKING, build=_wake(Cause.CI)),
     *_rest([E.CI_FINISHED], Ignore("not waiting for CI")),
 
@@ -1101,8 +1108,7 @@ TABLE: tuple[Row, ...] = _complete([
     Row(K.PARKED_PR, E.PR_FEEDBACK, K.WAKING, build=_wake_for_pr,
         actions=(Notify("pr_feedback"),)),
     *_rows([K.PARKED_PR], (E.PR_CHECK_FAILED, E.PR_CONFLICT), K.PARKED_HUMAN,
-           guard=loop_exhausted, build=_human(HumanReason.LOOP_CAP),
-           actions=(Notify("parked_question"),)),
+           guard=loop_exhausted, build=_capped, derive=(_ask_capped,)),
     *_rows([K.PARKED_PR], (E.PR_CHECK_FAILED, E.PR_CONFLICT), K.WAKING, build=_wake_for_pr,
            actions=(Notify("pr_attention"),)),
     *_rest(_PR_POKES, Ignore("the PR is acted on only while parked on it")),
