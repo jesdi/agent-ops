@@ -1637,7 +1637,7 @@ def _launch_woken(cfg: Config, deps: Deps, repository: Repository,
         # pr-open task is a fresh address-review round carrying their message.
         task = loops.reset(task, ResetCause.PR_CYCLE_STARTED)
         task = replace(unpark(task), attention="operator", feedback_cursor=_cursor_now(),
-                       resume_model_override="", resume_bypass_usage=False)
+                       resume_model_override="", resume_bypass_usage=False, resume_text="")
         _clear_wake_blocked(cfg, task.repository, task.issue)
         _spawn_stage(cfg, deps, repository, task, launch, message=message, gh_config=gh_config)
         eventlog.append_event(cfg.state_dir, "resumed", repository=repository.name,
@@ -1654,6 +1654,7 @@ def _launch_woken(cfg: Config, deps: Deps, repository: Repository,
     save(cfg.state_dir, replace(unpark(task),
                                 resume_model_override="",
                                 resume_bypass_usage=False,
+                                resume_text="",
                                 picks={**task.picks,
                                       pick_key(task.stage.value): str(entry)},
                                 updated_at=_now()))
