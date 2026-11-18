@@ -966,7 +966,6 @@ def test_every_action_a_session_event_emits_has_a_handler():
     import typing
     from dispatcher import lifecycle as lc
     later = {lc.ContinueSession, lc.SpawnAddressReview,
-             lc.SetResumeOverride, lc.ResetRounds, lc.ReleaseCard, lc.CancelIssue,
              lc.FinishMerged, lc.SweepTombstone, lc.Flush, lc.TypeLoginCode}
     assert set(typing.get_args(lc.Action)) - later == set(main._ACT)
 
@@ -7102,3 +7101,56 @@ def test_a_transition_event_records_the_turns_actor(tmp_path):
                 Event(EventType.OP_PARK))
     [e] = _events(c, "transition")
     assert (e["actor"], e["transition"]["to"]) == ("operator", "parked-human")
+
+
+def _operator_turn(c, gh):
+    return main._Turn(c, deps(gh), c.repositories[0], None, None, False, actor="operator")
+
+
+def test_op_kill_releases_the_card_and_writes_the_killed_event(tmp_path):
+    from dispatcher.lifecycle import Event, EventType
+    c = cfg(tmp_path)
+    make_task(c)
+    gh = FakeGitHub()
+    main._apply(_operator_turn(c, gh), load(c.state_dir, "portfolio_eval", 42),
+                Event(EventType.OP_KILL))
+    assert gh.released == [(42, "abandoned by operator")]
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert (t.status.kind, t.status.reason) == (Kind.FAILED, FailReason.KILLED)
+    [e] = _events(c, "failed")
+    assert (e["detail"], e["actor"], e["stage"]) == ("killed by operator", "operator", "implement")
+
+
+def test_op_cancel_cancels_the_issue_and_writes_the_canceled_event(tmp_path):
+    from dispatcher.lifecycle import Event, EventType
+    c = cfg(tmp_path)
+    make_task(c)
+    gh = FakeGitHub()
+    main._apply(_operator_turn(c, gh), load(c.state_dir, "portfolio_eval", 42),
+                Event(EventType.OP_CANCEL))
+    assert gh.canceled == [42]
+    assert load(c.state_dir, "portfolio_eval", 42).status.kind is Kind.CANCELED
+    [e] = _events(c, "canceled")
+    assert (e["detail"], e["actor"], e["stage"]) == ("canceled by operator", "operator", "implement")
+
+
+def test_op_reply_resets_the_rounds_an_operator_wake_owns(tmp_path):
+    from dispatcher.lifecycle import Event, EventType
+    c = cfg(tmp_path)
+    make_task(c, status=human(), review_rounds=3, ci_rounds=2, unattended_rounds=4)
+    main._apply(_operator_turn(c, FakeGitHub()), load(c.state_dir, "portfolio_eval", 42),
+                Event(EventType.OP_REPLY))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.status.kind is Kind.WAKING
+    assert (t.review_rounds, t.ci_rounds, t.unattended_rounds) == (0, 0, -1)
+
+
+def test_op_resume_sets_the_wakes_model_override_and_usage_bypass(tmp_path):
+    from dispatcher.lifecycle import Event, EventType, ResumeChoice
+    c = cfg(tmp_path)
+    make_task(c, status=human())
+    main._apply(_operator_turn(c, FakeGitHub()), load(c.state_dir, "portfolio_eval", 42),
+                Event(EventType.OP_RESUME, ResumeChoice(model="m-x", bypass_usage=True)))
+    t = load(c.state_dir, "portfolio_eval", 42)
+    assert t.status.kind is Kind.WAKING
+    assert (t.resume_model_override, t.resume_bypass_usage) == ("m-x", True)

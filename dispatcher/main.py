@@ -47,8 +47,9 @@ from dispatcher.classify import (BackgroundView, Look, Observation, Reads, artif
 from dispatcher.lifecycle import (AcquireSlot, Admission, ApplyRound, At, ClearTurnMarkers,
                                   EndPokeStretch, EndSession, EnterGate, Event, EventType,
                                   LaunchFailure, LinkPR, MarkAsked, Notify,
-                                  Pane, Poke, PublishSpec, RecordBackgroundWait, ReleaseSlot,
-                                  Reject, ReportCrash, ReportTaskCrash, RespawnStage, RetryStage,
+                                  CancelIssue, Pane, Poke, PublishSpec, RecordBackgroundWait,
+                                  ReleaseCard, ReleaseSlot, Reject, ReportCrash, ReportTaskCrash,
+                                  ResetRounds, RespawnStage, RetryStage, SetResumeOverride,
                                   Stranded, Transition, WakeBlocked, Woken, decide,
                                   login_at, operator_request)
 from dispatcher.loops import Decision, Outcome, ResetCause
@@ -330,10 +331,8 @@ def _wake(cfg: Config, task: TaskState, text: str, hold: bool = False,
           bypass_usage: bool = False) -> None:
     _queue_message(cfg, task.repository, task.issue, text, actor)
     task = loops.reset(task, ResetCause.OPERATOR_WAKE)
-    save(cfg.state_dir, replace(wake(task, cause, hold=hold),
-                                resume_model_override=model_override,
-                                resume_bypass_usage=bypass_usage,
-                                updated_at=_now()))
+    task = _with_resume_override(wake(task, cause, hold=hold), model_override, bypass_usage)
+    save(cfg.state_dir, replace(task, updated_at=_now()))
 
 
 def _signal_working_again(cfg: Config, task: TaskState) -> None:
@@ -1990,6 +1989,10 @@ _REVIEW_PARKED = {EventType.GRACE_EXPIRED: "plan review grace expired",
                                            "unattended rounds used up")}
 _FAILED = {FailReason.SESSION_CRASH: "session crashed mid-stage",
            FailReason.TASK_CRASH: "task crashed mid-pass"}
+# The operator's ends: a kill or a cancel writes the event the console's
+# history reads, as the intent paths did.
+_OPERATOR_ENDS = {EventType.OP_KILL: ("failed", "killed by operator"),
+                  EventType.OP_CANCEL: ("canceled", "canceled by operator")}
 
 
 # The event the console's history reads for a park or a crash, by status.
@@ -2007,14 +2010,15 @@ def _history(event: Event, status: Status) -> tuple[str, str] | None:
         return "parked", _HISTORY[status.kind](event, status)
     if status.kind is Kind.FAILED and status.reason in _FAILED:
         return "failed", _FAILED[status.reason]
-    return None
+    return _OPERATOR_ENDS.get(event.type)
 
 
 def _legacy_event(turn: _Turn, saved: TaskState, t: Transition) -> None:
     entry = _history(turn.event, t.status)
     if entry is not None:
         eventlog.append_event(turn.cfg.state_dir, entry[0], repository=saved.repository,
-                              issue=saved.issue, stage=saved.stage.value, detail=entry[1])
+                              issue=saved.issue, stage=saved.stage.value, actor=turn.actor,
+                              detail=entry[1])
 
 
 # ---- action handlers: (turn, task, action) -> the task they leave ----------
@@ -2295,6 +2299,24 @@ def _send_notice(turn: _Turn, saved: TaskState, act: Notify) -> None:
         turn.msg_id = msg_id
 
 
+def _rounds_reset(turn: _Turn, task: TaskState, act: ResetRounds) -> TaskState:
+    return loops.reset(task, ResetCause.OPERATOR_WAKE)
+
+
+def _override_set(turn: _Turn, task: TaskState, act: SetResumeOverride) -> TaskState:
+    return _with_resume_override(task, act.model, act.bypass_usage)
+
+
+def _card_released(turn: _Turn, task: TaskState, act: ReleaseCard) -> TaskState:
+    _release_card(turn.deps, turn.repository, task.issue)
+    return task
+
+
+def _issue_canceled(turn: _Turn, task: TaskState, act: CancelIssue) -> TaskState:
+    _cancel_issue(turn.deps, turn.repository, task.issue)
+    return task
+
+
 # The actions a session event emits; the other event families wire theirs
 # with their own tickets (#132).
 _ACT: dict[type, Callable[..., TaskState]] = {
@@ -2304,7 +2326,8 @@ _ACT: dict[type, Callable[..., TaskState]] = {
     RecordBackgroundWait: _wait_recorded, ReportCrash: _crash_reported,
     ReportTaskCrash: _task_crash_reported, MarkAsked: _marked_asked, EnterGate: _gate_entered,
     LinkPR: _pr_linked, ClearTurnMarkers: _markers_cleared, Notify: _noticed,
-    WakeBlocked: _wake_blocked,
+    WakeBlocked: _wake_blocked, ResetRounds: _rounds_reset, SetResumeOverride: _override_set,
+    ReleaseCard: _card_released, CancelIssue: _issue_canceled,
 }
 
 
@@ -3020,13 +3043,18 @@ def _release_killed_task(cfg: Config, deps: Deps, by_name: dict,
                          task: TaskState, issue: int) -> None:
     repository = by_name.get(task.repository)
     if repository is not None:
-        try:
-            deps.github.release(repository, issue, "abandoned by operator")
-        except Exception as exc:
-            print(f"[warn] release failed while killing #{issue}: {exc}",
-                  file=sys.stderr)
+        _release_card(deps, repository, issue)
     save(cfg.state_dir, replace(end(task, Status(Kind.FAILED, reason=FailReason.KILLED)),
                                 updated_at=_now()))
+
+
+def _release_card(deps: Deps, repository: Repository, issue: int) -> None:
+    """A kill: the card goes back to Ready; a GitHub failure only warns."""
+    try:
+        deps.github.release(repository, issue, "abandoned by operator")
+    except Exception as exc:
+        print(f"[warn] release failed while killing #{issue}: {exc}",
+              file=sys.stderr)
 
 
 def _apply_kill_intent(cfg: Config, deps: Deps, by_name: dict,
@@ -3053,10 +3081,16 @@ def _cancel_board_issue(deps: Deps, by_name: dict, repository_name: str,
         log.warning("cancel intent for %s/#%d: repository left the config "
                     "— board/issue untouched", repository_name, issue)
         return
+    _cancel_issue(deps, repository, issue)
+
+
+def _cancel_issue(deps: Deps, repository: Repository, issue: int) -> None:
+    """A cancel: the card to Wont do, the issue closed as not planned; a
+    GitHub failure only warns."""
     try:
         deps.github.cancel(repository, issue)
     except Exception:
-        log.warning("github cancel failed for %s/#%d", repository_name, issue,
+        log.warning("github cancel failed for %s/#%d", repository.name, issue,
                     exc_info=True)
 
 
@@ -3116,8 +3150,13 @@ def _require_resume_model(cfg: Config, by_name: dict,
 
 def _save_queued_resume(cfg: Config, task: TaskState, model: str,
                         bypass_usage: bool) -> None:
-    save(cfg.state_dir, replace(task, resume_model_override=model,
-                                resume_bypass_usage=bypass_usage))
+    save(cfg.state_dir, _with_resume_override(task, model, bypass_usage))
+
+
+def _with_resume_override(task: TaskState, model: str, bypass_usage: bool) -> TaskState:
+    """The model the next wake runs on, and whether it launches past the
+    usage gate."""
+    return replace(task, resume_model_override=model, resume_bypass_usage=bypass_usage)
 
 
 def _to_resume(task: TaskState | None, issue: int) -> TaskState | None:
