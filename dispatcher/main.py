@@ -132,13 +132,17 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     if not claims_paused:
         _claim_new(eff, deps, eff.repositories, admit, order, dry_run, pass_started)
     if not dry_run:
-        try:   # outside task capacity, under usage admission; never aborts the pass
-            exam_runner.tick(cfg, deps, usages)
-        except Exception as exc:  # noqa: BLE001
-            print(f"exam work failed: {exc}", file=sys.stderr)
+        _launch_exams(cfg, config_path)
     _sync_artifacts(cfg, dry_run=dry_run, auth=deps.github.auth)
     _flush_finished(cfg, deps, dry_run)
     _write_heartbeat(cfg, pass_started)
+
+
+def _launch_exams(cfg: Config, config_path: str) -> None:
+    try:   # the runner does the work, outside task capacity; never aborts the pass
+        exam_runner.launch(cfg, config_path)
+    except Exception as exc:  # noqa: BLE001
+        print(f"exam runner launch failed: {exc}", file=sys.stderr)
 
 
 def _housekeep(cfg: Config, deps: Deps, config_path: str) -> None:
@@ -252,12 +256,16 @@ def main() -> None:
     ap.add_argument("--digest", action="store_true")
     ap.add_argument("--triage", action="store_true")
     ap.add_argument("--triage-run", action="store_true")
+    ap.add_argument("--exam-run", action="store_true")
     ap.add_argument("--migrate-tmux", action="store_true")
     args = ap.parse_args()
     boot, cfg = _load(args.config)
     _warn_unadapted(cfg)
     deps = _deps(cfg, args.dry_run)
     migrate.refuse_legacy_task_files(cfg.state_dir, args)
+    if args.exam_run:
+        exam_runner.run(cfg, deps)
+        return
     _run_mode(args, boot, cfg, deps)
 
 

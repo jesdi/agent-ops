@@ -12,14 +12,6 @@ from tests.webfakes import make_config
 NOW = datetime(2026, 11, 19, 23, 59, tzinfo=timezone.utc)
 
 
-def test_a_delayed_worker_does_not_claim_an_exam_that_already_opened(tmp_path):
-    cfg = make_config(tmp_path)
-    stale = exams.request(cfg.state_dir, "o/r", 1)   # what the delayed worker read
-    exams._update(cfg.state_dir, "o/r", 1, state="open", wanted=False, job=None)
-    assert exams._claim(cfg, stale, "m", lambda: NOW) is False
-    assert exams.read(cfg.state_dir, "o/r", 1)["job"] is None
-
-
 def test_the_exam_container_has_no_token_and_no_clone(monkeypatch):
     cmd = containers.exam_cmd("exam-x", "/job", "/rec", "/skill-dir", "1g", "1",
                               "anthropic/claude-opus-5-5", "/job/prompt.md")

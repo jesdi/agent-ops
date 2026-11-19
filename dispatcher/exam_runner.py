@@ -5,12 +5,17 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
 
-from dispatcher import containers, exams, github_app
+from dispatcher import containers, exams, github_app, herdr, triage
+from dispatcher.state import state_lock
+from dispatcher.usage_providers import fetch_all
 
+TAB = "exam-runner"
+RUN_LOCK = "exam-runner.lock"
 PERMISSIONS = {"statuses": "write", "pull_requests": "read", "contents": "read",
                "metadata": "read"}
 SCRIPT = Path(__file__).resolve().parent.parent / ".my-skills" / "pr-exam" / "pr_exam.py"
@@ -129,3 +134,28 @@ def tick(cfg, deps, usages) -> None:
     exams.work(cfg, github=Github(deps.access, deps.app), run=session(cfg), pr_exam=PrExam(),
                notify=lambda text: deps.notifier.send("status", lines=[text]),
                now=deps.clock, usages=usages)
+
+
+def _running() -> bool:
+    tab = herdr.Tab.find(TAB)
+    return tab is not None and tab.alive
+
+
+def launch(cfg, config_path: str) -> None:
+    """Once per pass: start the runner in its herdr tab when an exam has work. The pass
+    never waits on an exam session; the runner outlives the pass's oneshot unit."""
+    if not exams.pending(cfg.state_dir) or _running():
+        return
+    tab = herdr.Tab.ensure(herdr.SYSTEM_WORKSPACE, TAB, triage._repo_dir(), env=triage._launch_env())
+    if tab is None or not tab.run(f"{shlex.quote(sys.executable)} -m dispatcher.main "
+                                  f"--config {shlex.quote(config_path)} --exam-run; exit"):
+        print("exam runner launch failed: herdr tab could not run it", file=sys.stderr)
+
+
+def run(cfg, deps) -> None:
+    """The runner's one round of exam work. Runners never overlap: a second exits at once."""
+    try:
+        with state_lock(cfg.state_dir, RUN_LOCK, timeout=0):
+            tick(cfg, deps, fetch_all(cfg))
+    except TimeoutError:
+        print("exam runner already running", file=sys.stderr)
