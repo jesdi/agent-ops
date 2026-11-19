@@ -16,20 +16,19 @@ test_exam_records.py:
                merged, never an exam         -> nothing is created.
     Passing a debt exam writes its records and posts no status.
 """
+import dataclasses
 import sys
 from types import SimpleNamespace
 
 import pytest
 
-from tests.test_exam_bypass import DEFER, OWNER, Config, Hub
+from tests.test_exam_bypass import DEFER, OWNER, SKIP, Hub
 from tests.test_exam_generation import HEADERS, NOW, REPO
-from tests.test_exam_records import PASS_ALL, Box, Recording
+from tests.test_exam_grading import RETRY
+from tests.test_exam_pushes import NEW, passed_box
+from tests.test_exam_records import PASS_ALL, Box
 
 CLAUDE = "jesdi/claude-config"
-
-
-class Both(Recording, Config):
-    pass
 
 
 class Gh(Hub):
@@ -50,9 +49,8 @@ class Gh(Hub):
 
 
 def make(tmp_path, monkeypatch, label=None):
-    import dataclasses
     box = Box(tmp_path, monkeypatch, grades=PASS_ALL)
-    box.pr_exam, box.github = Both(), Gh()
+    box.github = Gh()
     box.cfg = dataclasses.replace(box.cfg, operator_login=OWNER)
     if label:
         box.github.labels = [label]
@@ -197,3 +195,81 @@ def test_a_github_error_on_one_pr_does_not_stop_the_sweep_of_the_others(tmp_path
     sweep(box, monkeypatch)
     assert read(box, REPO, 241).status_code == 404
     assert read(box, REPO, 240).json()["state"] == "open"
+
+
+def passed_then_pushed_and_merged(tmp_path, monkeypatch, delta):
+    """A pass on the first head, then a push and a merge with no request in between."""
+    box = passed_box(tmp_path, monkeypatch, delta=delta)
+    diff, box.github = box.github.diff, Gh()
+    box.github.diff = diff
+    box.api = lambda repo, pr: f"/api/exam/{repo}/{pr}"
+    box.github.head = NEW
+    box.github.merge(REPO, 240)
+    request(box, REPO, 240)
+    return box
+
+
+def test_a_pass_on_an_older_head_leaves_the_merged_heads_new_concept_as_debt(tmp_path, monkeypatch):
+    box = passed_then_pushed_and_merged(tmp_path, monkeypatch, delta=[RETRY])
+    body = read(box, REPO, 240).json()
+    assert (body["state"], body["debt"], body["head_sha"]) == ("open", True, NEW)
+    assert len(body["exam"]["questions"]) == 1
+    assert listed(box)[(REPO, 240)]["debt"] is True
+    assert not any(sha == NEW for _, sha, _, _ in box.posted())
+
+
+def test_a_pass_on_an_older_head_is_judged_against_the_merged_head_before_cleanup(tmp_path, monkeypatch):
+    box = passed_then_pushed_and_merged(tmp_path, monkeypatch, delta=[])
+    assert len(box.session.deltas()) == 1
+    assert read(box, REPO, 240).status_code == 404
+
+
+def test_a_skip_whose_label_was_removed_before_the_merge_becomes_debt(tmp_path, monkeypatch):
+    box = make(tmp_path, monkeypatch, SKIP)
+    request(box, REPO, 240)
+    assert read(box, REPO, 240).json()["state"] == "skipped"
+    box.github.labels = []
+    box.github.merge(REPO, 240)
+    assert sweep(box, monkeypatch) == 0
+    body = read(box, REPO, 240).json()
+    assert body["state"] == "open" and body["debt"] is True
+    assert listed(box)[(REPO, 240)]["debt"] is True
+
+
+def merged_debt(tmp_path, monkeypatch):
+    box = make(tmp_path, monkeypatch)
+    body = box.open(CLAUDE, 12)
+    box.github.merge(CLAUDE, 12)
+    sweep(box, monkeypatch)
+    return box, body
+
+
+def test_a_debt_exam_stays_listed_while_it_is_graded_and_after_a_failed_attempt(tmp_path, monkeypatch):
+    box, body = merged_debt(tmp_path, monkeypatch)
+    box.grade(CLAUDE, 12, body, wrong=("q0", "q1"))
+    entry = listed(box)[(CLAUDE, 12)]
+    assert (entry["state"], entry["debt"]) == ("grading", True)
+    box.work()
+    body = read(box, CLAUDE, 12).json()
+    assert (body["state"], body["attempt"], body["debt"]) == ("open", 2, True)
+    assert listed(box)[(CLAUDE, 12)]["debt"] is True
+
+
+def test_a_debt_exam_whose_grading_failed_stays_listed(tmp_path, monkeypatch):
+    import subprocess
+    box, body = merged_debt(tmp_path, monkeypatch)
+    box.session.grade_error = subprocess.CalledProcessError(1, "session")
+    box.grade(CLAUDE, 12, body)
+    box.work()
+    entry = listed(box)[(CLAUDE, 12)]
+    assert (entry["state"], entry["debt"]) == ("error", True)
+
+
+def test_a_passed_debt_exam_of_a_merged_pr_is_deleted_with_its_records_kept(tmp_path, monkeypatch):
+    box, body = merged_debt(tmp_path, monkeypatch)
+    posted = list(box.github.statuses)
+    box.grade(CLAUDE, 12, body)
+    box.work()
+    assert read(box, CLAUDE, 12).status_code == 404
+    assert len(box.records(CLAUDE)) == 5
+    assert box.github.statuses == posted

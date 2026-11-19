@@ -14,10 +14,9 @@ Interface under test (defined here, built by the ticket), on top of test_exam_ge
 """
 import dataclasses
 import json
-from pathlib import Path
 
-from tests.test_exam_generation import GLOSSARY, HEAD, HEADERS, NOW, REPO, Github
-from tests.test_exam_grading import Exam, Scoring
+from tests.test_exam_generation import HEAD, HEADERS, NOW, REPO, Github
+from tests.test_exam_grading import Exam, Scoring, Session as GradingSession, graded_once, opened
 
 NEW = "def456"
 OWNER, BOT, MEMBER = "jesdi", "some-bot[bot]", "org-member"
@@ -25,34 +24,11 @@ SKIP, DEFER = "exam:skip", "exam:defer"
 CONFIG = {"labels": {SKIP: "skip", DEFER: "defer"}}
 
 
-class Config(Scoring):
-    """Fake of `pr_exam.py config`: reads the JSON file it is given."""
-
-    def config(self, path):
-        doc = json.loads(Path(path).read_text())
-        errors = [f"unknown key: {k}" for k in doc if k not in ("enabled", "labels")]
-        return {"errors": errors, "enabled": doc.get("enabled", True),
-                "labels": doc.get("labels", {})}
-
-
 class Hub(Github):
     def __init__(self):
         super().__init__()
-        self.labels, self.events = [], []
-        self.configs = {"main": json.dumps(CONFIG)}   # ref -> .pr-exam.json text
+        self.configs = {"main": json.dumps(CONFIG)}
         self.described = []
-
-    def pr(self, repo, n):
-        return {**super().pr(repo, n), "labels": list(self.labels)}
-
-    def label_events(self, repo, n):
-        return list(self.events)
-
-    def file(self, repo, ref, path):
-        if path == ".pr-exam.json":
-            self.files.append((repo, ref, path))
-            return self.configs.get(ref)
-        return GLOSSARY
 
     def post_status(self, repo, sha, context, state, description):
         super().post_status(repo, sha, context, state, description)
@@ -66,13 +42,6 @@ def box_for(tmp_path, monkeypatch, label=None, actor=OWNER, operator=OWNER):
     if label:
         box.github.labels = [label]
         box.github.events = [{"event": "labeled", "label": label, "actor": actor}]
-
-    def work():
-        from dispatcher import exams
-        exams.work(box.cfg, github=box.github, run=box.session, pr_exam=Config(),
-                   notify=box.notes.append, now=lambda: NOW, usages=box.usages)
-
-    box.work = work
     return box
 
 
@@ -223,7 +192,7 @@ def test_a_config_command_exiting_nonzero_is_an_error_with_its_output_and_no_suc
     from dispatcher import exams
     from dispatcher.exam_runner import PrExam
 
-    class Refusing(Config):
+    class Refusing(Scoring):
         def config(self, path):
             fake = lambda *a, **k: subprocess.CompletedProcess(a, 1, "", "unknown key: bogus\n")
             return PrExam(run=fake).config(path)
@@ -245,3 +214,41 @@ def test_a_disabled_repo_runs_no_session_and_posts_no_status(tmp_path, monkeypat
     box.work()
     assert box.session.calls == []
     assert box.github.statuses == []
+
+
+def unlabel(box, label):
+    box.github.labels = []
+    box.github.events.append({"event": "unlabeled", "label": label, "actor": OWNER})
+    box.request()
+    box.work()
+
+
+def test_removing_the_owners_defer_puts_the_head_back_to_pending(tmp_path, monkeypatch):
+    box = box_for(tmp_path, monkeypatch, DEFER)
+    box.request()
+    box.work()
+    assert box.github.described[-1] == (HEAD, "success", "deferred")
+    unlabel(box, DEFER)
+    assert box.github.described[-1][:2] == (HEAD, "pending")
+    body = box.read().json()
+    assert body["state"] == "open" and body["debt"] is False
+
+
+def test_removing_the_owners_skip_puts_the_head_back_to_pending_and_examines_it(tmp_path, monkeypatch):
+    box = box_for(tmp_path, monkeypatch, SKIP)
+    box.request()
+    box.work()
+    assert box.github.described[-1] == (HEAD, "success", "bypassed")
+    unlabel(box, SKIP)
+    assert box.github.described[-1][:2] == (HEAD, "pending")
+    assert box.read().json()["state"] == "open"
+
+
+def test_removing_the_owners_defer_after_a_pass_keeps_the_success(tmp_path, monkeypatch):
+    box = box_for(tmp_path, monkeypatch, DEFER)
+    box.session = GradingSession(grades={"t0": "pass", "t1": "pass"})
+    assert graded_once(box, opened(box))["state"] == "passed"
+    assert box.github.described[-1] == (HEAD, "success", "Exam passed")
+    unlabel(box, DEFER)
+    assert box.github.described[-1] == (HEAD, "success", "Exam passed")
+    assert box.read().json()["state"] == "passed"

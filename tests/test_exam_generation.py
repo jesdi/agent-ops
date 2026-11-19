@@ -2,7 +2,8 @@
 
 Interface under test (defined here, built by the ticket):
     exams.work(cfg, *, github, run, pr_exam, notify, now, usages)
-    github.pr(repo, n) -> {"head_sha", "base_ref", "title", "body", "state", "merged"}
+    github.pr(repo, n) -> {"head_sha", "base_ref", "title", "body", "state", "merged", "labels"}
+    github.label_events(repo, n) -> [{"event", "label", "actor"}], oldest first
     github.diff(repo, n) -> str
     github.file(repo, ref, path) -> str | None
     github.post_status(repo, sha, context, state, description)   (as the App)
@@ -10,6 +11,7 @@ Interface under test (defined here, built by the ticket):
     run(request: Path, *, model: str, timeout: int) -> None   (the session writes `out`)
     pr_exam.validate(exam: Path, request: Path) -> list[str]   (errors, empty = valid)
     pr_exam.public(exam: Path) -> dict                         (the served projection)
+    pr_exam.config(path: Path) -> {"errors", "enabled", "labels"}   (of the repo's .pr-exam.json)
     notify(text: str); now() -> aware datetime; usages: provider -> ProviderUsage
     exam_runner.PERMISSIONS: the only token scope that holds `statuses: write`.
 """
@@ -46,17 +48,22 @@ class Github:
         self.glossary = glossary
         self.head = HEAD
         self.statuses, self.files = [], []
+        self.labels, self.events = [], []   # the PR's labels now, and its label events
+        self.configs = {}                   # ref -> the text of .pr-exam.json there
 
     def pr(self, repo, n):
         return {"head_sha": self.head, "base_ref": "main", "title": "Leases", "body": BODY,
-                "state": "open", "merged": False}
+                "state": "open", "merged": False, "labels": list(self.labels)}
+
+    def label_events(self, repo, n):
+        return list(self.events)
 
     def diff(self, repo, n):
         return DIFF
 
     def file(self, repo, ref, path):
         self.files.append((repo, ref, path))
-        return self.glossary
+        return self.configs.get(ref) if path == ".pr-exam.json" else self.glossary
 
     def post_status(self, repo, sha, context, state, description):
         self.statuses.append((repo, sha, context, state))
@@ -105,7 +112,14 @@ class Session:
 
 
 class PrExam:
-    """Fake of pr_exam.py: validate refuses an exam without questions."""
+    """Fake of pr_exam.py: validate refuses an exam without questions, config reads the
+    JSON file it is given."""
+
+    def config(self, path):
+        doc = json.loads(Path(path).read_text())
+        errors = [f"unknown key: {k}" for k in doc if k not in ("enabled", "labels")]
+        return {"errors": errors, "enabled": doc.get("enabled", True),
+                "labels": doc.get("labels", {})}
 
     def validate(self, exam, request):
         return [] if json.loads(Path(exam).read_text())["questions"] else ["no questions: refused"]
@@ -171,7 +185,8 @@ def test_the_request_file_names_diff_body_glossary_records_and_utc_date(box):
     [seen] = box.session.requests
     req = seen["request"]
     assert (seen["diff"], seen["body"], seen["glossary"]) == (DIFF, BODY, GLOSSARY)
-    assert box.github.files == [(REPO, "main", "GLOSSARY.md")]
+    assert [f for f in box.github.files if f[2] == "GLOSSARY.md"] == [(REPO, "main", "GLOSSARY.md")]
+    assert {(repo, ref) for repo, ref, _ in box.github.files} == {(REPO, "main")}
     assert req["today"] == "2026-11-19"
     assert seen["records_is_dir"]
     assert req["records"] == str(Path(box.cfg.state_dir) / "exam-records" / REPO)
