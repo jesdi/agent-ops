@@ -309,6 +309,11 @@ def _max_open(raw: dict, capacity: int) -> int:
     return v
 
 
+def _text(raw: dict, key: str) -> str:
+    """An optional text field; "" when it is missing or empty."""
+    return str(raw.get(key) or "")
+
+
 def load_config(path: str | Path) -> Config:
     return parse_config(yaml.safe_load(Path(path).read_text()))
 
@@ -334,14 +339,14 @@ def parse_config(raw: dict) -> Config:
         repositories=_repositories(raw, capacity, state_dir),
         infra_repo=raw.get("infra_repo", ""),
         models=parse_policy(raw.get("models")),
-        operator_login=str(raw.get("operator_login") or ""),
-        console_url=str(raw.get("console_url") or "").rstrip("/"),
+        operator_login=_text(raw, "operator_login"),
+        console_url=_text(raw, "console_url").rstrip("/"),
         stall_after_seconds=int(raw.get("stall_after_seconds", 600)),
         background_wait_seconds=_background_wait_seconds(raw),
         spec_review_grace_minutes=_grace_minutes(raw),
         done_retention_days=int(raw.get("done_retention_days", 7)),
-        usage_socket=str(raw.get("usage_socket") or ""),
-        usage_socket_group=str(raw.get("usage_socket_group") or ""),
+        usage_socket=_text(raw, "usage_socket"),
+        usage_socket_group=_text(raw, "usage_socket_group"),
         pass_interval_minutes=int(raw.get("pass_interval_minutes", 5)),
         loop_caps=_loop_caps(raw.get("loop_caps")),
         pace=_pace(raw),
