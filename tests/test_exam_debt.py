@@ -291,3 +291,20 @@ def test_the_listing_holds_every_exam_on_the_box_debt_or_not(tmp_path, monkeypat
 def test_the_listing_is_refused_without_the_tailscale_header(tmp_path, monkeypatch):
     box = make(tmp_path, monkeypatch)
     assert box.client.get("/api/exams").status_code == 401
+
+
+def test_a_push_and_merge_during_grading_leaves_the_merged_head_as_debt(tmp_path, monkeypatch):
+    box = make(tmp_path, monkeypatch)
+    body = box.open(REPO, 240)
+
+    def pushed_and_merged():
+        box.github.head = NEW
+        box.github.merge(REPO, 240)
+    box.session.during = pushed_and_merged
+    box.grade(REPO, 240, body)
+    box.work()
+    box.work()
+    body = read(box, REPO, 240).json()
+    assert (body["state"], body["debt"], body["head_sha"]) == ("open", True, NEW)
+    assert listed(box)[(REPO, 240)]["debt"] is True
+    assert box.records(REPO) == []

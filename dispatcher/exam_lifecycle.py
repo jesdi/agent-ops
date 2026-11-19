@@ -90,14 +90,16 @@ def busy(cur: dict) -> bool:
 
 
 def restart(cur: dict, d: Path) -> None:
-    """Drop every attempt and everything kept for them; the exam is generated afresh."""
+    """Drop every attempt and everything kept for them; the exam is generated afresh. The
+    last status posted stays: it is what GitHub shows, and what tells a restarted exam
+    from one that never started."""
     for path in d.iterdir():
         if path.is_dir():
             shutil.rmtree(path, ignore_errors=True)
         elif path.name != STATE_FILE:
             path.unlink(missing_ok=True)
     cur.update(state=ExamState.GENERATING, head_sha=None, attempt=0, results=[], passed_concepts=[],
-               status=None, grading=None, followup=None, delta=False, detail="", job=None)
+               grading=None, followup=None, delta=False, detail="", job=None)
 
 
 def new_head(cur: dict, d: Path) -> None:
