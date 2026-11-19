@@ -8,15 +8,15 @@ import pytest
 import yaml
 from fastapi.testclient import TestClient
 
-from dispatcher import main, model_settings
+from dispatcher import drive, main, model_settings
 from dispatcher.config import apply_stored_models, load_config
 from dispatcher.convergence import pass_lock
 from dispatcher.models import Entry
 from dispatcher.state import (Stage, load)
 from tests.test_config import SAMPLE
-from tests.test_main import (ADMIT_ALL, DENY_ALL, LOGIN_TAIL, FakeSessions, cfg, deps, patch_usage,
-                             patch_workspace)
-from tests.test_main import make_task as make_saved_task
+from tests.dispatchfakes import (ADMIT_ALL, DENY_ALL, LOGIN_TAIL, FakeSessions, cfg, deps, patch_usage,
+                                 patch_workspace)
+from tests.dispatchfakes import make_task as make_saved_task
 from tests.webfakes import HEADERS, FakeSources, make_task, tracks_policy
 from web import app as web_app
 from web.app import create_app
@@ -267,7 +267,7 @@ def test_the_dispatcher_parks_a_launch_picked_on_a_provider_no_entry_names(tmp_p
                                 "review": "openai/gpt-luna@high"})
     (wt / ".agent" / "stage.json").write_text(json.dumps({"stage": "implement", "status": "done"}))
 
-    main._drive_task(c, deps(sess=FakeSessions(alive={42})), c.repositories[0],
+    drive._drive_task(c, deps(sess=FakeSessions(alive={42})), c.repositories[0],
                      load(c.state_dir, "portfolio_eval", 42), ANTHROPIC_ONLY, tuple)
 
     t = load(c.state_dir, "portfolio_eval", 42)
@@ -280,7 +280,7 @@ def test_a_wake_picked_on_a_provider_no_entry_names_parks_again(tmp_path):
     make_saved_task(c, issue=42, stage=Stage.IMPLEMENT, status=waking(),
                     picks={"implement": "openai/gpt-luna@high"})
 
-    main._resume_woken(c, deps(), ANTHROPIC_ONLY, tuple)
+    main._drive_wakes(c, deps(), ANTHROPIC_ONLY, tuple)
 
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.status.kind, t.status.reason) == (Kind.PARKED_HUMAN, HumanReason.CONFIG)
@@ -295,8 +295,8 @@ def test_a_feedback_round_picked_on_a_provider_no_entry_names_parks(tmp_path):
                     picks={"feedback": "openai/gpt-luna@high"})
     d = deps()
 
-    main._spawn_feedback(c, d, ANTHROPIC_ONLY, tuple)
-    main._spawn_feedback(c, d, ANTHROPIC_ONLY, tuple)
+    main._drive_wakes(c, d, ANTHROPIC_ONLY, tuple)
+    main._drive_wakes(c, d, ANTHROPIC_ONLY, tuple)
 
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.status.kind, t.status.reason) == (Kind.PARKED_HUMAN, HumanReason.CONFIG)
@@ -313,8 +313,8 @@ def test_a_stranded_feedback_round_at_a_login_prompt_parks_for_the_config(tmp_pa
                     picks={"feedback": "openai/gpt-luna@high"})
     d = deps(sess=FakeSessions(alive=[42], tail=LOGIN_TAIL))
 
-    main._spawn_feedback(c, d, ANTHROPIC_ONLY, tuple)
-    main._spawn_feedback(c, d, ANTHROPIC_ONLY, tuple)   # parked: left alone
+    main._drive_wakes(c, d, ANTHROPIC_ONLY, tuple)
+    main._drive_wakes(c, d, ANTHROPIC_ONLY, tuple)   # parked: left alone
 
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.status.kind, t.status.reason) == (Kind.PARKED_HUMAN, HumanReason.CONFIG)
@@ -326,7 +326,7 @@ def test_a_feedback_round_denied_for_headroom_only_waits(tmp_path):
     make_saved_task(c, issue=42, stage=Stage.PR_OPEN, status=waking(PR, "attention(feedback)"),
                     picks={"feedback": "anthropic/claude-sonnet-5"})
 
-    main._spawn_feedback(c, deps(), DENY_ALL, tuple)
+    main._drive_wakes(c, deps(), DENY_ALL, tuple)
 
     t = load(c.state_dir, "portfolio_eval", 42)
     assert t.status == waking(PR, "attention(feedback)")

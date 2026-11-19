@@ -51,7 +51,7 @@ def saved(answers):
 
 
 def test_valid_body_returns_202_and_writes_one_intent(tmp_path):
-    fake, client = rig(tmp_path)
+    fake, client = rig(tmp_path, answers_req())
     r = client.post(URL, headers=HEADERS, json=OK)
     assert r.status_code == 202, r.text
     assert r.json() == {"status": "pending",
@@ -94,7 +94,7 @@ def test_invalid_bodies_are_422_and_write_nothing(tmp_path, body):
     ids=["string", "list", "bool", "note", "track", "empty"])
 @pytest.mark.parametrize("submit", [None, "changes", "approve"])
 def test_valid_values_pass(tmp_path, answers, submit):
-    fake, client = rig(tmp_path)
+    fake, client = rig(tmp_path, answers_req())
     body = {"answers": answers, "submit": submit, "revision": "r1"}
     assert client.post(URL, headers=HEADERS, json=body).status_code == 202
     assert len(fake.intents) == 1
@@ -175,7 +175,7 @@ def test_other_pending_intents_do_not_leak(tmp_path, other):
 
 
 def test_unknown_task_is_404_on_both_routes(tmp_path):
-    _, client = rig(tmp_path)
+    _, client = rig(tmp_path, answers_req())
     assert client.post(URL, headers=HEADERS, json=OK).status_code == 202  # route exists
     assert client.get("/api/task/alpha/999/request", headers=HEADERS).status_code == 404
     assert client.post("/api/task/alpha/999/answers", headers=HEADERS,

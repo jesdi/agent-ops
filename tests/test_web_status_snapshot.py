@@ -36,7 +36,7 @@ TASKS = {
     11: dict(stage=Stage.REVIEW, slot=NO_SLOT, status=waking(cause="next-stage"),
              implement_providers=["anthropic"]),
     12: dict(stage=Stage.QUEUED, slot=NO_SLOT, status=waking(cause="launch")),
-    13: dict(stage=Stage.PR_OPEN, slot=NO_SLOT, pr_number=13, attention="check-failed",
+    13: dict(stage=Stage.PR_OPEN, slot=NO_SLOT, pr_number=13,
              status=waking(PR, "attention(check-failed)")),
     14: dict(stage=Stage.IMPLEMENT, slot=NO_SLOT, status=failed("session-crash")),
     15: dict(stage=Stage.SPEC, slot=NO_SLOT, status=failed("task-crash")),

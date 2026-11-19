@@ -73,7 +73,7 @@ def test_a_failed_stage_signal_ends_the_task_failed_at_its_stage(tmp_path, monke
     from datetime import datetime, timezone
 
     import dispatcher.main as main
-    from tests.test_main import FakeSessions, cfg, deps, make_task, patch_usage
+    from tests.dispatchfakes import FakeSessions, cfg, deps, make_task, patch_usage
 
     patch_usage(monkeypatch)
     c = cfg(tmp_path)

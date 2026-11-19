@@ -4,7 +4,7 @@ review page by shape.
 Spec: specs/2026-10-07-review-page/spec.md, requirements 1, 3 and 15 and the
 scenarios "the plan session signals the gate with the page", "a page without
 the template marker is bounced" and "a page over the size limit is bounced".
-Black-box, through dispatcher.main.run_pass over the fakes of tests/test_main.py
+Black-box, through dispatcher.main.run_pass over the fakes of tests/dispatchfakes.py
 (helpers of tests/test_plan_review_gate_acceptance.py), the console route
 GET /api/task/{repository}/{issue}/request and the rendered plan prompt.
 """
@@ -19,7 +19,7 @@ import dispatcher.artifacts as artifacts
 import dispatcher.main as main
 from dispatcher.state import (Stage)
 
-from tests.test_main import FakeSessions, deps
+from tests.dispatchfakes import FakeSessions, deps
 from tests.test_plan_review_gate_acceptance import (
     ISSUE, _plan_prompt, _plan_task, _setup, _signal, _task)
 from dispatcher.state import operator_request

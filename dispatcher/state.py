@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import stat
+import sys
 import tempfile
 import time
 from contextlib import contextmanager
@@ -169,11 +170,14 @@ class TaskState:
     ci_rounds: int = 0
     check_cursor: str = ""               # completedAt of the newest red check acted on
     conflict_cursor: str = ""            # head sha of the last conflict acted on
-    attention: str = ""                  # why address-review is pending: feedback|check-failed|conflict|operator
+    # Why the address-review round runs, as its prompt says: a PR attention
+    # kind or "operator". Set at the round's start, so a relaunch keeps it.
+    round_reason: str = ""
     # One-shot operator choice for a wake already queued behind admission.
     # Cleared after the session successfully resumes.
     resume_model_override: str = ""
     resume_bypass_usage: bool = False
+    resume_text: str = ""                # what a resume wake's launch tells the session
     # The background wait the dispatcher has seen (see machine.pass_actions):
     # the marker's `reported` it last recorded, and herdr's state-change
     # counter at that moment. A different counter later means a new turn.
@@ -233,7 +237,7 @@ def end(t: TaskState, status: Status) -> TaskState:
 
 
 def launch_track(t: TaskState, policy: ModelPolicy) -> str:
-    """The track whose list t's next launch (next_launch) reads, or "" when
+    """The track whose list t's next launch reads, or "" when
     it has none: the task track. A task with no track (claimed before tracks
     existed) is untracked work."""
     track = t.track or policy.untracked
@@ -275,6 +279,9 @@ class StageSignal:
 # The "waiting for a free slot" marker, wake-blocked-<repository>-<issue> in
 # state_dir. Written by dispatcher.main, read by web.sources.
 WAKE_BLOCKED_PREFIX = "wake-blocked-"
+# rank-rejected-<repository>-<issue>: the done task's updated_at the table
+# last refused `candidate-ranked` for (dispatcher.state._rank_rejected).
+RANK_REJECTED_PREFIX = "rank-rejected-"
 
 
 def task_key(repository: str, issue: int) -> str:
@@ -454,11 +461,12 @@ def _read_terminal(d: dict) -> None:
 
 # Retired fields, dropped on load (ADR 0004): the park fields the status
 # replaced (#132), the one implement session's ticket tracks, slice 24's
-# artifact and the pending reply the message queue replaced.
+# artifact, the pending reply the message queue replaced and the PR
+# attention the status cause carries.
 _RETIRED = ("park", "park_reason", "park_note", "ci_run_id", "crashed_stage",
             "unlaunched", "operator_request", "feedback_pending",
             "ticket_cursor", "ticket_tracks", "ticket_names", "ticket_without_pick",
-            "artifact", "pending_reply")
+            "artifact", "pending_reply", "attention")
 
 
 def _read(p: Path) -> TaskState | None:
@@ -759,3 +767,39 @@ def archive(state_dir: str | Path, task: TaskState) -> None:
 def load_archived(state_dir: str | Path, repository: str, issue: int) -> TaskState | None:
     task = _read(archive_root(state_dir, repository, issue) / SNAPSHOT)
     return task if task and ended(task.status) else None
+
+
+def _wake_blocked_path(state_dir: str | Path, repository: str, issue: int) -> Path:
+    return Path(state_dir) / f"{WAKE_BLOCKED_PREFIX}{task_key(repository, issue)}"
+
+
+def _clear_wake_blocked(state_dir: str | Path, repository: str, issue: int) -> None:
+    _wake_blocked_path(state_dir, repository, issue).unlink(missing_ok=True)
+
+
+def _rank_rejected_path(state_dir: str | Path, repository: str, issue: int) -> Path:
+    return Path(state_dir) / f"{RANK_REJECTED_PREFIX}{task_key(repository, issue)}"
+
+
+def _rank_rejected(state_dir: str | Path, task: TaskState) -> bool:
+    """Edge-triggered like _mark_wake_blocked: the table already refused this
+    very task state on `candidate-ranked` (the marker holds its updated_at),
+    so a card left in Ready is not refused, and logged, every pass. Any
+    change to the task reopens the question."""
+    p = _rank_rejected_path(state_dir, task.repository, task.issue)
+    return p.exists() and p.read_text() == task.updated_at
+
+
+UNREADABLE_TASK_FILE = "unreadable task file"
+
+
+def _readable_tasks(state_dir: str | Path) -> list[TaskState] | None:
+    """Every task, or None (with a warning) when a task file cannot be read.
+    The one gate of every claim, wake and launch: the task it cannot see may
+    hold an issue, a capacity unit and a slot no count can see."""
+    all_tasks, unreadable = scan(state_dir)
+    if unreadable:
+        print(f"[warn] no claims, wakes or launches: task file(s) cannot be read: "
+              f"{', '.join(p.name for p in unreadable)}", file=sys.stderr)
+        return None
+    return all_tasks

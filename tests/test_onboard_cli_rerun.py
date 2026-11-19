@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from dispatcher import onboard, onboard_cli
-from tests.test_main import EveryRepoApp
+from tests.dispatchfakes import EveryRepoApp
 from tests.test_onboard import FakeSh, NOW, box, no_get, record, state  # noqa: F401
 
 ADD = ("analytics", "jesdi/analytics", "--board", "jesdi/4")

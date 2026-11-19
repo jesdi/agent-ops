@@ -81,6 +81,13 @@ class Decision:
         base = f"{self.loop.value} round {self.round}/{self.cap}"
         return f"{base}: {self.detail}" if self.detail else base
 
+    @property
+    def cap_note(self) -> str:
+        """Why an exhausted loop parks: '{loop} loop exceeded its cap of {cap}
+        rounds', suffixed with ' ({detail})' when detail is non-empty."""
+        note = f"{self.loop.value} loop exceeded its cap of {self.cap} rounds"
+        return note + (f" ({self.detail})" if self.detail else "")
+
     def apply_to(self, task: TaskState) -> TaskState:
         """Return a new TaskState with only this decision's counter updated.
         UNCHANGED decisions return the task unchanged. The input task is not mutated."""

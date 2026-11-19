@@ -11,14 +11,15 @@ from pathlib import Path
 import pytest
 
 import dispatcher.main as main
+from dispatcher.deps import Deps
 from dispatcher import eventlog, messages
 from dispatcher.models import parse_policy
 from dispatcher.state import (SessionRecord, Stage, at_gate, load, write_session)
 from telegram.inbound import Command
-from tests.test_main import (
-    REVIEW_PAGE_STUB, EveryRepoApp, FakeGitHub, FakeNotifier, FakeSessions, cfg, gate_signal,
-    make_task, patch_events, write_tickets,
-)
+from tests.dispatchfakes import (
+        REVIEW_PAGE_STUB, EveryRepoApp, FakeGitHub, FakeNotifier, FakeSessions, cfg, gate_signal,
+        make_task, patch_events, write_tickets,
+    )
 from tests.usagefakes import session_usage
 from tests.statuses import RUNNING, human, review, waking
 from dispatcher.status import Kind
@@ -152,7 +153,7 @@ def _arrange(tmp_path, monkeypatch, model, kind="wake", record="absent",
         # Each retry policy permits exactly one bounce for its rejection.
         sessions.alive_set.add(issue)
     notifier = FakeNotifier()
-    dependencies = main.Deps(github=FakeGitHub(), sessions=sessions, notifier=notifier,
+    dependencies = Deps(github=FakeGitHub(), sessions=sessions, notifier=notifier,
                              app=EveryRepoApp())
     before = load(c.state_dir, "portfolio_eval", issue)
     return c, dependencies, before, (queued, second)

@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from dispatcher import state
 from tests.test_web_sources import FakeGitHub, FakeSessions
+from tests.statuses import human
 from tests.webfakes import HEADERS, make_config, make_task
 from web.app import create_app
 from web.sources import Sources
@@ -26,7 +27,7 @@ def test_resume_acknowledges_persisted_intent_before_dispatcher_finishes(tmp_pat
     )
     command.chmod(0o755)
     monkeypatch.setenv("PATH", str(tmp_path) + os.pathsep + os.environ["PATH"])
-    state.save(tmp_path, make_task())
+    state.save(tmp_path, make_task(status=human()))
     sources = Sources(str(tmp_path), FakeSessions(), FakeGitHub())
     with TestClient(create_app(make_config(tmp_path), sources)) as client:
         with ThreadPoolExecutor(max_workers=1) as pool:

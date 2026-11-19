@@ -8,7 +8,7 @@ import pytest
 
 import dispatcher.main as main
 from dispatcher.state import (SessionRecord, Stage, has_waiting, load, read_session, save, write_session)
-from tests.test_main import deps, patch_events
+from tests.dispatchfakes import deps, patch_events
 from tests.test_session_resume_acceptance import CODEX_MODEL, RecordingSessions, _config
 from tests.test_stop_hook_session_acceptance import (
     CLAUDE_ID,

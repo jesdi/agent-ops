@@ -160,7 +160,7 @@ def test_github_redirect_remains_after_cleanup(tmp_path, monkeypatch):
 
 
 def test_dispatcher_archives_before_workspace_teardown_and_done_flush(tmp_path, monkeypatch):
-    from dispatcher import main
+    from dispatcher import drive, executor, upkeep
     from tests.webfakes import make_repository
     from types import SimpleNamespace
     from dispatcher import host_auth
@@ -173,16 +173,18 @@ def test_dispatcher_archives_before_workspace_teardown_and_done_flush(tmp_path, 
         assert artifacts.content_path(state, task.repository, task.issue, 'prototype')
         assert '/blob/abc123/' in artifacts.read(state, task.repository, task.issue).items[0].publication.url
         shutil.rmtree(task.worktree, ignore_errors=True)  # the flush calls it again
-    monkeypatch.setattr(main, 'remove_workspace', remove_workspace)
-    monkeypatch.setattr(main, '_notify', lambda *a, **kw: None)
+    monkeypatch.setattr(executor, 'remove_workspace', remove_workspace)
     deps = SimpleNamespace(
         sessions=SimpleNamespace(end=lambda *a: None),
+        notifier=SimpleNamespace(send=lambda *a, **kw: 0),
         github=SimpleNamespace(delete_branch=lambda *a: None, issue_state=lambda *a: 'CLOSED',
                                set_status=lambda *a: None, auth=host_auth.STORED),
     )
-    main._finish_merged(cfg, deps, repository, task)
-    main._sync_artifacts(cfg)
-    main._flush_finished(cfg)
+    from dispatcher.lifecycle import Event, EventType
+    executor._apply(executor._Turn(cfg, deps, repository, None, None, False), task,
+                Event(EventType.PR_MERGED))
+    upkeep._sync_artifacts(cfg)
+    drive._flush_finished(cfg, deps)
     assert load(state, task.repository, task.issue) is None
     assert load_archived(state, task.repository, task.issue).status.kind is Kind.DONE
     assert artifacts.content_path(state, task.repository, task.issue, 'prototype')

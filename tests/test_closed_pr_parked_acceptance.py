@@ -4,6 +4,7 @@ Seam: main.run_pass with the shared fakes, and GET /api/board for the column.
 """
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -12,9 +13,9 @@ from fastapi.testclient import TestClient
 import dispatcher.main as main
 from dispatcher import intents, messages
 from dispatcher.state import Stage, _path, load
-from tests.test_main import (FakeGitHub, FakeNotifier, FakeSessions, cfg, deps,
-                             make_task, patch_teardown, patch_usage, payload,
-                             pr_open_task)
+from tests.dispatchfakes import (FakeGitHub, FakeNotifier, FakeSessions, cfg, deps,
+                                 make_task, patch_teardown, patch_usage, payload,
+                                 pr_open_task)
 from tests.webfakes import HEADERS
 from web.app import create_app
 from web.sources import Sources
@@ -56,7 +57,7 @@ def _setup(tmp_path, monkeypatch):
     pr_open_task(c, pr_number=88, **PARKED)
     gh = FakeGitHub()
     gh.pr_payloads[88] = payload(state="CLOSED")
-    notif, sess = FakeNotifier(), FakeSessions(alive=(42,))
+    notif, sess = FakeNotifier(), FakeSessions()
     return c, lambda: main.run_pass(c, deps(gh, sess, notifier=notif)), notif, sess
 
 
@@ -70,7 +71,7 @@ def test_closed_pr_ends_a_parked_task_failed_and_in_the_failed_column(
     on_disk = json.loads(_path(c.state_dir, "portfolio_eval", 42).read_text())
     assert on_disk["status"] == {"kind": "failed", "detail": {"reason": "pr-closed"}}
     assert on_disk["park_msg_id"] == 0
-    assert 42 in sess.ended
+    assert sess.ended == [42]  # the close ends whatever session is left
     assert notif.sent.count("pr_closed") == 1
     _failed_card_asks_nothing(c, 42)
 
@@ -82,6 +83,8 @@ def test_a_reply_after_the_close_is_queued_and_wakes_nothing(
     _reply(c, run)
     t = load(c.state_dir, "portfolio_eval", 42)
     assert (t.stage, t.status) == (Stage.PR_OPEN, failed("pr-closed"))
+    assert any(json.loads(line)["event"] == "transition-rejected"
+               for line in (Path(c.state_dir) / "events.jsonl").read_text().splitlines())
     assert [m.text for m in messages.undelivered(c.state_dir, "portfolio_eval", 42)] == [
         "please retry"]
 

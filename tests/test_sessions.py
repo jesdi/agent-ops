@@ -707,7 +707,7 @@ def test_end_records_a_container_that_survives_its_rm(tmp_path, monkeypatch):
 
 
 def test_end_empty_capture_keeps_the_existing_snapshot(tmp_path, monkeypatch):
-    # end() runs again on already-dead sessions (e.g. _resume_woken ends
+    # end() runs again on already-dead sessions (e.g. _drive_wakes ends
     # before resuming) — an empty capture must not truncate the park's snapshot.
     snap = tmp_path / "snapshots" / "task-acme-42.txt"
     snap.parent.mkdir(parents=True)

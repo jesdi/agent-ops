@@ -6,7 +6,7 @@ from dispatcher.config import Config
 from tests.webfakes import (FakeSources, HEADERS, make_config, make_repository,
                            make_task, tracks_policy)
 from web.app import create_app
-from tests.statuses import DONE, human, failed
+from tests.statuses import DONE, PR, human, failed, login, waking
 
 
 def rig(tmp_path):
@@ -55,6 +55,7 @@ def test_park_kill_resume(tmp_path):
                        json={}).status_code == 202
     assert client.post("/api/task/alpha/7/kill", headers=HEADERS,
                        json={}).status_code == 202
+    _at(fake, Stage.IMPLEMENT, human())
     assert client.post("/api/task/alpha/7/resume", headers=HEADERS,
                        json={"text": "go on"}).status_code == 202
     assert [(i[0], i[3]) for i in fake.intents] == [
@@ -63,6 +64,7 @@ def test_park_kill_resume(tmp_path):
 
 def test_resume_accepts_model_and_usage_override(tmp_path):
     fake, client = rig(tmp_path)
+    _at(fake, Stage.IMPLEMENT, human())
     r = client.post("/api/task/alpha/7/resume", headers=HEADERS,
                     json={"model": "anthropic/claude-opus-5",
                           "bypass_usage": True})
@@ -79,8 +81,9 @@ def test_resume_rejects_unconfigured_model(tmp_path):
     assert fake.intents == []
 
 
-def test_force_run_arms_an_active_task_without_resuming_it(tmp_path):
+def test_force_run_arms_a_waking_task_without_resuming_it(tmp_path):
     fake, client = rig(tmp_path)
+    _at(fake, Stage.IMPLEMENT, waking(cause="next-stage"))
     r = client.post("/api/task/alpha/7/run", headers=HEADERS,
                     json={"model": "anthropic/claude-opus-5",
                           "bypass_usage": True})
@@ -107,7 +110,7 @@ def test_force_run_resumes_a_parked_task(tmp_path):
 def test_force_run_with_no_model_keeps_the_sticky_pick_s_effort(tmp_path):
     fake, client = rig(tmp_path)
     fake.tasks_list = [make_task(
-        issue=7, picks={"implement": "anthropic/claude-opus-5@high"})]
+        issue=7, picks={"implement": "anthropic/claude-opus-5@high"}, status=waking(cause="next-stage"))]
     r = client.post("/api/task/alpha/7/run", headers=HEADERS, json={})
     assert r.status_code == 200
     assert fake.execution_overrides[("alpha", 7)] == (
@@ -293,6 +296,7 @@ def _no_usage(routed=()):
 
 def test_force_run_with_no_model_keeps_a_pending_override_s_effort(tmp_path):
     fake, client = rig(tmp_path)
+    _at(fake, Stage.IMPLEMENT, waking(cause="next-stage"))
     fake.execution_overrides[("alpha", 7)] = ("anthropic/claude-opus-5@high", False)
     fake.usage = _no_usage
     r = client.post("/api/task/alpha/7/run", headers=HEADERS, json={})
@@ -305,7 +309,7 @@ def test_force_run_fetches_no_usage_when_a_pick_or_model_decides(tmp_path):
     fake, client = rig(tmp_path)
     fake.usage = _no_usage
     fake.tasks_list = [make_task(
-        issue=7, picks={"implement": "anthropic/claude-opus-5@high"})]
+        issue=7, picks={"implement": "anthropic/claude-opus-5@high"}, status=waking(cause="next-stage"))]
     assert client.post("/api/task/alpha/7/run", headers=HEADERS,
                        json={}).status_code == 200
     assert client.post("/api/task/alpha/7/run", headers=HEADERS,
@@ -317,3 +321,115 @@ def test_force_run_fetches_no_usage_when_a_pick_or_model_decides(tmp_path):
     }], "now", False)
     assert client.post("/api/task/alpha/9/run", headers=HEADERS,
                        json={}).status_code == 200
+
+
+def _at(fake, stage, status):
+    fake.tasks_list = [make_task(issue=7, stage=stage, status=status)]
+
+
+def test_resume_of_a_closed_pr_failure_is_refused_before_any_intent(tmp_path):
+    fake, client = rig(tmp_path)
+    _at(fake, Stage.PR_OPEN, failed("pr-closed"))
+    r = client.post("/api/task/alpha/7/resume", headers=HEADERS, json={})
+    assert r.status_code == 409
+    assert r.json()["detail"] == "reopen the PR on GitHub or re-queue the issue"
+    assert fake.intents == []
+
+
+def test_resume_of_a_migrated_failure_with_no_known_stage_is_refused(tmp_path):
+    fake, client = rig(tmp_path)
+    _at(fake, Stage.QUEUED, failed("unknown"))
+    r = client.post("/api/task/alpha/7/resume", headers=HEADERS, json={})
+    assert r.status_code == 409
+    assert r.json()["detail"] == "re-queue the issue instead"
+    assert fake.intents == []
+
+
+def test_resume_of_a_killed_task_is_accepted(tmp_path):
+    fake, client = rig(tmp_path)
+    _at(fake, Stage.PLAN, failed("killed"))
+    assert client.post("/api/task/alpha/7/resume", headers=HEADERS,
+                       json={}).status_code == 202
+    assert fake.intents[-1][0] == "resume"
+
+
+def test_park_intent_on_a_task_that_is_not_running_is_refused(tmp_path):
+    fake, client = rig(tmp_path)
+    _at(fake, Stage.PLAN, human())
+    r = client.post("/api/task/alpha/7/park", headers=HEADERS, json={})
+    assert r.status_code == 409
+    assert r.json()["detail"] == (
+        "only a running task or one at the plan gate can be parked")
+    assert fake.intents == []
+
+
+def test_kill_of_an_ended_task_is_refused(tmp_path):
+    fake, client = rig(tmp_path)
+    _at(fake, Stage.QUEUED, DONE)
+    r = client.post("/api/task/alpha/7/kill", headers=HEADERS, json={})
+    assert r.status_code == 409
+    assert fake.intents == []
+
+
+def test_reply_to_a_task_held_for_login_keeps_the_login_code_path(tmp_path):
+    fake, client = rig(tmp_path)
+    _at(fake, Stage.IMPLEMENT, login())
+    assert client.post("/api/task/alpha/7/reply", headers=HEADERS,
+                       json={"text": "123456"}).status_code == 202
+    assert fake.intents[-1][0] == "reply"
+
+
+def test_answers_with_no_open_request_is_refused(tmp_path):
+    fake, client = rig(tmp_path)
+    r = client.post("/api/task/alpha/7/answers", headers=HEADERS,
+                    json={"answers": {"format": "a"}, "revision": "r1"})
+    assert r.status_code == 409
+    assert r.json()["detail"] == "no open request"
+    assert fake.intents == []
+
+
+def test_force_run_on_a_task_parked_on_its_pr_is_refused(tmp_path):
+    fake, client = rig(tmp_path)
+    _at(fake, Stage.PR_OPEN, PR)
+    r = client.post("/api/task/alpha/7/run", headers=HEADERS,
+                    json={"model": "anthropic/claude-opus-5"})
+    assert r.status_code == 409
+    assert r.json()["detail"] == "the task is not parked"
+    assert fake.intents == [] and ("alpha", 7) not in fake.execution_overrides
+
+
+def test_force_run_on_a_running_task_is_refused(tmp_path):
+    fake, client = rig(tmp_path)
+    r = client.post("/api/task/alpha/7/run", headers=HEADERS,
+                    json={"model": "anthropic/claude-opus-5"})
+    assert r.status_code == 409
+    assert fake.intents == [] and ("alpha", 7) not in fake.execution_overrides
+
+
+def test_reply_for_an_issue_with_no_task_file_writes_the_intent(tmp_path):
+    fake, client = rig(tmp_path)
+    fake.tasks_list = []
+    r = client.post("/api/task/alpha/7/reply", headers=HEADERS,
+                    json={"text": "pre-brief"})
+    assert r.status_code == 202
+    assert fake.intents == [("reply", "alpha", 7, {"text": "pre-brief"},
+                             "jesdi@github")]
+
+
+def test_resume_of_a_session_crash_at_implement_is_accepted(tmp_path):
+    fake, client = rig(tmp_path)
+    _at(fake, Stage.IMPLEMENT, failed("session-crash"))
+    assert client.post("/api/task/alpha/7/resume", headers=HEADERS,
+                       json={}).status_code == 202
+    assert fake.intents[-1][0] == "resume"
+
+
+def test_force_run_on_a_killed_task_sends_a_resume_intent(tmp_path):
+    fake, client = rig(tmp_path)
+    _at(fake, Stage.PLAN, failed("killed"))
+    r = client.post("/api/task/alpha/7/run", headers=HEADERS,
+                    json={"model": "anthropic/claude-opus-5"})
+    assert r.status_code == 202
+    assert fake.intents[-1][0] == "resume"
+    assert fake.intents[-1][3] == {"model": "anthropic/claude-opus-5"}
+    assert ("alpha", 7) not in fake.execution_overrides

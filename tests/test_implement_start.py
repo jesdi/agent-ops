@@ -4,10 +4,10 @@ import json
 
 import pytest
 
-from dispatcher import eventlog, intents, main, messages
+from dispatcher import intents, main, messages
 from dispatcher.state import (PlanApprovalRequest, Stage, load, read_stage_signal)
-from tests.test_main import (FakeSessions, approve_plan, cfg, deps, make_task, patch_usage,
-                             write_tickets)
+from tests.dispatchfakes import (FakeSessions, approve_plan, cfg, deps, make_task, patch_usage,
+                                 write_tickets, _events)
 from tests.statuses import failed, held, waking
 from dispatcher.state import operator_request
 from dispatcher.status import Kind, crashed
@@ -31,10 +31,6 @@ def _approved(tmp_path, tickets=3, sessions=None, **task_fields):
 
 def _task(config):
     return load(config.state_dir, "portfolio_eval", 42)
-
-
-def _events(config, name):
-    return [e for e in eventlog.read_tail(config.state_dir) if e["event"] == name]
 
 
 @pytest.mark.parametrize("denied_passes", [1, 3], ids=["one-denial", "repeated-denials"])

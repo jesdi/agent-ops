@@ -2,7 +2,7 @@
 resume heals the task identity file (.agent/task.json).
 
 Spec: specs/plan-gate-stage-loss/spec.md, requirements 4-5 and their scenarios.
-Black-box, through dispatcher.main.run_pass over the fakes of tests/test_main.py
+Black-box, through dispatcher.main.run_pass over the fakes of tests/dispatchfakes.py
 with a real worktree, and dispatcher.waitd.handle_ping for the turn end.
 """
 import json
@@ -13,9 +13,9 @@ import dispatcher.main as main
 from dispatcher.state import Stage, read_session
 from dispatcher.waitd import handle_ping
 
-from tests.test_main import FakeSessions, deps
+from tests.dispatchfakes import FakeSessions, deps
 from tests.test_plan_gate_stage_loss_acceptance import _approve, _gated, _setup
-from tests.test_plan_review_gate_acceptance import BRANCH, ISSUE, _task
+from tests.test_plan_review_gate_acceptance import BRANCH, ISSUE, _ready, _task
 
 REPOSITORY = "portfolio_eval"
 HEALED = {"issue": ISSUE, "repository": REPOSITORY, "branch": BRANCH}
@@ -108,8 +108,11 @@ def test_a_healed_worktree_records_and_resumes_its_conversation(tmp_path, monkey
     wt, sess = _wake_with(c, tmp_path, OLD_SHAPE, session=False)
     assert [s[:2] for s in sess.spawned] == [(ISSUE, "plan")]
 
-    # the session ends its turn: the Stop hook pings, the task parks
+    # the session reports the plan ready and ends its turn: the Stop hook
+    # pings, the task is held at the gate (a reply to a running session
+    # waits for its next session boundary, ticket 08)
     sess.alive_set.add(ISSUE)
+    _ready(wt)
     handle_ping(_stop_hook_ping(wt, "abc-123"), c.state_dir)
     main.run_pass(c, deps(sess=sess))
     rec = read_session(c.state_dir, REPOSITORY, ISSUE)

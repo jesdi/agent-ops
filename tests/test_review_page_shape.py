@@ -1,5 +1,5 @@
 """Shape checks of the review page beyond the acceptance tests (ticket 01)."""
-from tests.test_main import FakeSessions, deps  # noqa: F401
+from tests.dispatchfakes import FakeSessions, deps  # noqa: F401
 from tests.test_plan_review_gate_acceptance import _plan_task, _setup
 from tests.test_review_page_gate_acceptance import FIXTURE, KIB, PAGE, _bounced, _pass, _padded
 

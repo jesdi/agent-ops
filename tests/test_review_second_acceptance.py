@@ -19,11 +19,12 @@ from pathlib import Path
 import pytest
 
 import dispatcher.main as main
+from dispatcher.usage import Verdict
 from dispatcher import containers, execution_overrides, herdr, sessions
 from dispatcher.models import Entry, parse_policy
 from dispatcher.state import Stage, TaskState, load, save, SessionRecord, write_session
 from tests.test_containers import TOKENS, make_worktree
-from tests.test_main import FakeSessions, cfg, deps, make_task
+from tests.dispatchfakes import FakeSessions, cfg, deps, make_task
 from tests.usagefakes import session_usage
 from tests.statuses import waking
 
@@ -129,7 +130,7 @@ def _cfg(tmp_path):
 def _verdict(openai_ok: bool, anthropic_ok: bool = True):
     def admit(model_id):
         ok = openai_ok if model_id.startswith("openai/") else anthropic_ok
-        return main.Verdict(admitted=ok, provider=model_id.split("/")[0],
+        return Verdict(admitted=ok, provider=model_id.split("/")[0],
                             binding=None, reason="ok" if ok else "unavailable")
     return admit
 
@@ -183,12 +184,12 @@ def test_bypassed_review_resume_gets_second_only_if_gate_admits_it(tmp_path):
               resume_bypass_usage=True)
     sess = GrantSessions()
     # Anthropic denied too: only the bypass lets the review resume at all.
-    main._resume_woken(c, deps(sess=sess),
+    main._drive_wakes(c, deps(sess=sess),
                        admit=_verdict(openai_ok=False, anthropic_ok=False), order=tuple)
     assert sess.resume_seconds == [None]
     make_task(c, issue=42, stage=Stage.REVIEW, status=waking(),
               resume_bypass_usage=True)
-    main._resume_woken(c, deps(sess=sess),
+    main._drive_wakes(c, deps(sess=sess),
                        admit=_verdict(openai_ok=True, anthropic_ok=False), order=tuple)
     assert sess.resume_seconds == [None, SECOND]
 
@@ -286,8 +287,8 @@ def test_review_resume_re_asks_the_gate_each_time(tmp_path, monkeypatch):
     task = load(c.state_dir, "portfolio_eval", 2)
     write_session(c.state_dir, "portfolio_eval", 2, SessionRecord("review-2", "review"))
     save(c.state_dir, replace(task, status=waking()))
-    main._resume_woken(c, deps(sess=sess), admit=_verdict(openai_ok=False), order=tuple)
+    main._drive_wakes(c, deps(sess=sess), admit=_verdict(openai_ok=False), order=tuple)
     # ...and resumed again once it is back: granted afresh.
     save(c.state_dir, replace(load(c.state_dir, "portfolio_eval", 2), status=waking()))
-    main._resume_woken(c, deps(sess=sess), admit=_verdict(openai_ok=True), order=tuple)
+    main._drive_wakes(c, deps(sess=sess), admit=_verdict(openai_ok=True), order=tuple)
     assert sess.resume_seconds == [None, SECOND]

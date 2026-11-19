@@ -12,13 +12,14 @@ from pathlib import Path
 import pytest
 
 import dispatcher.main as main
+from dispatcher import claiming
 import dispatcher.workspace as workspace
 from dispatcher import failures
 from dispatcher.github import Candidate
 from dispatcher.state import Stage, TaskState, load, save
 
-from tests.test_main import (FakeGitHub, FakeNotifier, FakeSessions, cfg, deps,
-                             patch_usage)
+from tests.dispatchfakes import (FakeGitHub, FakeNotifier, FakeSessions, cfg, deps,
+                                 patch_usage)
 
 
 class BodyGitHub(FakeGitHub):
@@ -44,7 +45,7 @@ class Origin:
             wt = Path(repository.worktrees_path) / f"task-{issue}"
             (wt / ".agent").mkdir(parents=True, exist_ok=True)
             return str(wt)
-        monkeypatch.setattr(main, "create_workspace", fake_create)
+        monkeypatch.setattr(claiming, "create_workspace", fake_create)
 
 
 @pytest.fixture
@@ -211,7 +212,7 @@ def test_other_provisioning_failure_still_reports_and_quarantines(tmp_path, monk
     def boom(repository, issue, base="main", dry_run=False, auth=None):
         seen.append(base)
         raise RuntimeError("disk full")
-    monkeypatch.setattr(main, "create_workspace", boom)
+    monkeypatch.setattr(claiming, "create_workspace", boom)
     gh = gh_for({42: "Base: feat/new-cart\n"})
     run(c, gh)
     assert seen == ["feat/new-cart"]

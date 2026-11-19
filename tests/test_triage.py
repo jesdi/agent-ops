@@ -16,7 +16,7 @@ from dispatcher import herdr, triage
 from dispatcher.config import Board, Config, Project, Repository
 from dispatcher.models import parse_policy
 from dispatcher.triage_apply import ApplyResult
-from tests.test_main import EveryRepoApp
+from tests.dispatchfakes import EveryRepoApp
 from tests.usagefakes import session_usage
 
 H_NO_TABS = '{"id":"i","result":{"tabs":[],"type":"tab_list"}}'
@@ -805,7 +805,7 @@ def test_pass_skips_claims_and_reduces_capacity_while_triage(tmp_path,
     monkeypatch.setattr(triage, "tick", lambda *a, **k: None)
     monkeypatch.setattr(dmain, "fetch_all", lambda *a, **k: OK_USAGE)
     for fn in ("_handle_telegram", "_budget_edge", "_wake_ci", "_poll_prs",
-               "_spawn_feedback", "_flush_finished",
+               "_flush_finished",
                "_prune_snapshots", "_apply_intents"):
         monkeypatch.setattr(dmain, fn, lambda *a, **k: None)
     seen_claim = {}
@@ -818,15 +818,15 @@ def test_pass_skips_claims_and_reduces_capacity_while_triage(tmp_path,
         seen_resume["capacity"] = cfg_seen.capacity
 
     monkeypatch.setattr(dmain, "_claim_new", spy_claim)
-    monkeypatch.setattr(dmain, "_resume_woken", spy_resume)
-    # running → pending → no claim; _resume_woken sees the reduced capacity
+    monkeypatch.setattr(dmain, "_drive_wakes", spy_resume)
+    # running → pending → no claim; _drive_wakes sees the reduced capacity
     dmain.run_pass(cfg, deps)
     assert seen_claim == {}
     assert seen_resume["capacity"] == cfg.capacity - 1
 
     seen_resume.clear()
     monkeypatch.setattr(triage, "running", lambda: False)
-    # idle → claims run at full capacity; _resume_woken also sees full capacity
+    # idle → claims run at full capacity; _drive_wakes also sees full capacity
     dmain.run_pass(cfg, deps)
     assert seen_claim["capacity"] == cfg.capacity
     assert seen_resume["capacity"] == cfg.capacity

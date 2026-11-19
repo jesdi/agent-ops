@@ -8,8 +8,8 @@ import dispatcher.main as main
 from dispatcher import messages, runtimes
 from dispatcher.sessions import Sessions
 from dispatcher.state import (Stage, load, read_session)
-from tests.test_main import (REVIEW_PAGE_STUB, FakeGitHub, deps, gate_signal,
-                             make_task, valid_spec)
+from tests.dispatchfakes import (REVIEW_PAGE_STUB, FakeGitHub, deps, gate_signal,
+                                 make_task, valid_spec)
 from tests.test_session_resume_acceptance import (
     CLAUDE_MODEL, CODEX_ID, CODEX_MODEL, RecordingSessions, _config, _tab_fake, _task,
 )

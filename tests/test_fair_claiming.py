@@ -10,9 +10,10 @@ from dataclasses import replace as dc_replace
 from pathlib import Path
 
 import dispatcher.main as main
+from dispatcher import claiming
 from dispatcher.github import Candidate
 
-from tests.test_main import FakeSessions, deps, patch_usage, patch_workspace
+from tests.dispatchfakes import FakeSessions, deps, patch_usage, patch_workspace
 from tests.test_multi_project_capacity import mk_task, two_repository_cfg
 from tests.configfakes import with_project
 
@@ -37,7 +38,7 @@ def test_free_unit_goes_to_repository_with_fewer_active_tasks(tmp_path, monkeypa
     c = two_repository_cfg(tmp_path)  # portfolio_eval listed first
     mk_task(c, "portfolio_eval", 1, slot=0)
     mk_task(c, "portfolio_eval", 2, slot=1)
-    from tests.test_main import FakeGitHub
+    from tests.dispatchfakes import FakeGitHub
     gh = FakeGitHub(cands_by_repository={
         "portfolio_eval": [Candidate(10, "PE candidate", "u10")],
         "factorial": [Candidate(20, "F candidate", "u20")],
@@ -54,7 +55,7 @@ def test_empty_box_alternates_by_least_recently_claimed(tmp_path, monkeypatch):
     c = two_repository_cfg(tmp_path)  # portfolio_eval listed first
     append_claimed(c, "portfolio_eval", 900, "2026-07-21T09:00:00+00:00")
     append_claimed(c, "factorial", 800, "2026-07-21T08:00:00+00:00")
-    from tests.test_main import FakeGitHub
+    from tests.dispatchfakes import FakeGitHub
     gh = FakeGitHub(cands_by_repository={
         "portfolio_eval": [Candidate(n, f"PE {n}", f"u{n}") for n in (101, 102, 103)],
         "factorial": [Candidate(n, f"F {n}", f"u{n}") for n in (201, 202, 203)],
@@ -73,7 +74,7 @@ def test_repository_with_no_candidates_yields_its_share(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
     c = two_repository_cfg(tmp_path)
-    from tests.test_main import FakeGitHub
+    from tests.dispatchfakes import FakeGitHub
     gh = FakeGitHub(cands_by_repository={
         "factorial": [],
         "portfolio_eval": [Candidate(n, f"PE {n}", f"u{n}") for n in (101, 102, 103)],
@@ -87,7 +88,7 @@ def test_repository_with_no_candidates_yields_its_share(tmp_path, monkeypatch):
 def test_max_active_boundary(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
-    from tests.test_main import FakeGitHub
+    from tests.dispatchfakes import FakeGitHub
 
     # 1 active, max_active=2 -> exactly one more claim, even with free box
     # capacity and 3 candidates.
@@ -122,7 +123,7 @@ def test_provisioning_failure_scoped_to_repository_other_repository_still_claims
         tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = two_repository_cfg(tmp_path)
-    from tests.test_main import FakeGitHub
+    from tests.dispatchfakes import FakeGitHub
     gh = FakeGitHub(cands_by_repository={
         "factorial": [Candidate(20, "Bad", "u20"), Candidate(21, "Also good", "u21")],
         "portfolio_eval": [Candidate(10, "PE candidate", "u10")],
@@ -135,7 +136,7 @@ def test_provisioning_failure_scoped_to_repository_other_repository_still_claims
         (wt / ".agent").mkdir(parents=True, exist_ok=True)
         return str(wt)
 
-    monkeypatch.setattr(main, "create_workspace", failing_workspace)
+    monkeypatch.setattr(claiming, "create_workspace", failing_workspace)
     main.run_pass(c, deps(gh, FakeSessions(alive=set())))
 
     assert len(gh.created_issues) == 1, "exactly one provisioning failure reported"
@@ -150,7 +151,7 @@ def test_candidates_not_called_for_repository_that_never_gets_a_turn(tmp_path, m
     is never called (its board is never read)."""
     patch_usage(monkeypatch)
     patch_workspace(monkeypatch, tmp_path)
-    from tests.test_main import FakeGitHub
+    from tests.dispatchfakes import FakeGitHub
 
     class CountingGitHub(FakeGitHub):
         def __init__(self, *a, **kw):

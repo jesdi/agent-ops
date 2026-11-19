@@ -7,10 +7,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import Callable, NamedTuple
+from typing import Callable, Mapping, NamedTuple
 
 from dispatcher.artifacts import REVIEW_PAGE, CheckResult, PlanRevision
-from dispatcher.loops import Decision, Retry
+from dispatcher.loops import Decision, ResetCause, Retry
 from dispatcher.loops import Outcome as Rounds
 from dispatcher.state import Stage, StageSignal, TaskState, operator_request
 from dispatcher.status import Cause, FailReason, HumanReason, Kind, Status, occupies
@@ -169,6 +169,7 @@ class ResumeChoice:
     """op-resume."""
     model: str                # the model override
     bypass_usage: bool        # launch past the usage gate
+    text: str = ""            # what the woken session reads; "" for the default
 
 
 @dataclass(frozen=True)
@@ -181,11 +182,17 @@ class LoginCode:
 @dataclass(frozen=True)
 class Attempt:
     """ci-finished, pr-check-failed, pr-conflict."""
-    exhausted: bool           # no ci round left
+    round: Decision | None    # the round a failure spends; None: a success spends none
+
+
+@dataclass(frozen=True)
+class Feedback:
+    """pr-feedback."""
+    note: str                 # what the pr_feedback notice says of it
 
 
 Detail = (Report | Silence | Wait | Death | Stranded | LaunchFailure | Woken | Ranked
-          | ResumeChoice | LoginCode | Attempt)
+          | ResumeChoice | LoginCode | Attempt | Feedback)
 _DETAIL: dict[EventType, type] = {
     EventType.SESSION_SIGNAL: Report, EventType.SESSION_IDLE: Silence,
     EventType.SESSION_WAITING: Wait, EventType.SESSION_DIED: Death,
@@ -193,7 +200,7 @@ _DETAIL: dict[EventType, type] = {
     EventType.RESUME_ADMITTED: Woken, EventType.CANDIDATE_RANKED: Ranked,
     EventType.OP_RESUME: ResumeChoice, EventType.OP_LOGIN_CODE: LoginCode,
     EventType.CI_FINISHED: Attempt, EventType.PR_CHECK_FAILED: Attempt,
-    EventType.PR_CONFLICT: Attempt}
+    EventType.PR_CONFLICT: Attempt, EventType.PR_FEEDBACK: Feedback}
 # The facts a live session's park reads: the login prompt its pane shows.
 _LOGIN_FACTS = (Report, Silence, Wait, Stranded)
 
@@ -211,6 +218,21 @@ class Event:
             got = type(self.detail).__name__
             raise ValueError(f"{self.type.value} carries {want.__name__ if want else 'no facts'}"
                              f", not {got}")
+
+
+OPERATOR_INTENTS = {"park": EventType.OP_PARK, "kill": EventType.OP_KILL,
+                    "cancel": EventType.OP_CANCEL, "reply": EventType.OP_REPLY,
+                    "answers": EventType.OP_ANSWERS, "resume": EventType.OP_RESUME}
+
+
+def operator_event(action: str, payload: Mapping) -> Event:
+    """The table's event for an operator intent; a resume carries its choice."""
+    kind = OPERATOR_INTENTS[action]
+    if kind is not EventType.OP_RESUME:
+        return Event(kind)
+    return Event(kind, ResumeChoice(str(payload.get("model") or ""),
+                                    payload.get("bypass_usage") is True,
+                                    str(payload.get("text") or "")))
 
 
 def login_at(event: Event) -> str:
@@ -280,11 +302,15 @@ class WakeBlocked:
 class SetResumeOverride:
     model: str
     bypass_usage: bool
+    text: str = ""
 
 
 @dataclass(frozen=True)
 class ResetRounds:
-    """An operator wake: loops.reset(task, ResetCause.OPERATOR_WAKE)."""
+    """loops.reset(task, cause): an operator wake, or a PR cycle that starts
+    (feedback gives the ci rounds back; a red check or a conflict, which
+    spends one, does not)."""
+    cause: ResetCause = ResetCause.OPERATOR_WAKE
 
 
 @dataclass(frozen=True)
@@ -455,11 +481,29 @@ def respawns(f: Facts) -> bool:
 
 
 def loop_exhausted(f: Facts) -> bool:
-    return f.event.detail.exhausted
+    d = f.event.detail.round
+    return d is not None and d.outcome is Rounds.EXHAUSTED
+
+
+def counted(f: Facts) -> bool:
+    return f.event.detail.round is not None
 
 
 def left_login_prompt(f: Facts) -> bool:
     return f.event.detail.left_login_prompt
+
+
+def _capped(f: Facts) -> Status:
+    return Status(Kind.PARKED_HUMAN, reason=HumanReason.LOOP_CAP,
+                  note=f.event.detail.round.cap_note)
+
+
+def _ask_capped(f: Facts) -> Notify:
+    return Notify("parked_question", f.event.detail.round.cap_note)
+
+
+def _round(f: Facts) -> ApplyRound:
+    return ApplyRound(f.event.detail.round)
 
 
 def _wake(cause: Cause) -> Callable[[Facts], Status]:
@@ -477,13 +521,28 @@ def _wake_through_review(f: Facts) -> Status:
     return Status(Kind.WAKING, origin=_review_park(f), cause=Cause.REPLY)
 
 
-_PR_ATTENTION = {EventType.PR_FEEDBACK: Cause.ATTENTION_FEEDBACK,
-                 EventType.PR_CHECK_FAILED: Cause.ATTENTION_CHECK_FAILED,
-                 EventType.PR_CONFLICT: Cause.ATTENTION_CONFLICT}
+class Attention(NamedTuple):
+    """A kind of PR attention: the PR poll's name for it, which the
+    address-review prompt gives as its reason, and the cause its wake carries."""
+    kind: str
+    cause: Cause
+
+
+PR_ATTENTION = {EventType.PR_FEEDBACK: Attention("feedback", Cause.ATTENTION_FEEDBACK),
+                EventType.PR_CHECK_FAILED: Attention("check-failed", Cause.ATTENTION_CHECK_FAILED),
+                EventType.PR_CONFLICT: Attention("conflict", Cause.ATTENTION_CONFLICT)}
 
 
 def _wake_for_pr(f: Facts) -> Status:
-    return Status(Kind.WAKING, origin=f.status, cause=_PR_ATTENTION[f.event.type])
+    return Status(Kind.WAKING, origin=f.status, cause=PR_ATTENTION[f.event.type].cause)
+
+
+def _feedback_told(f: Facts) -> Notify:
+    return Notify("pr_feedback", f.event.detail.note)
+
+
+def _attention_told(f: Facts) -> Notify:
+    return Notify("pr_attention", f.event.detail.round.detail)
 
 
 def _stay(f: Facts) -> Status:
@@ -507,7 +566,8 @@ def _wake_blocked(f: Facts) -> WakeBlocked:
 
 
 def _resume_override(f: Facts) -> SetResumeOverride:
-    return SetResumeOverride(f.event.detail.model, f.event.detail.bypass_usage)
+    choice = f.event.detail
+    return SetResumeOverride(choice.model, choice.bypass_usage, choice.text)
 
 
 def _login_code(f: Facts) -> TypeLoginCode:
@@ -584,9 +644,7 @@ def _exhausted(f: Facts) -> Transition | None:
     d = f.event.detail.round
     if d is None or d.outcome is not Rounds.EXHAUSTED:
         return None
-    note = f"{d.loop.value} loop exceeded its cap of {d.cap} rounds"
-    return _asking(f, HumanReason.LOOP_CAP, note + (f" ({d.detail})" if d.detail else ""),
-                   ApplyRound(d))
+    return _asking(f, HumanReason.LOOP_CAP, d.cap_note, ApplyRound(d))
 
 
 def _stalled(f: Facts, reason: HumanReason, note: str) -> Transition:
@@ -737,7 +795,7 @@ def _implement_done(f: Facts) -> Transition | Ignore:
 def _pr_opened(template: str) -> Callable[[Facts], Transition]:
     def opened(f: Facts) -> Transition:
         return Transition(Status(Kind.PARKED_PR), Stage.PR_OPEN,
-                          (LinkPR(), Notify(template, _report(f).signal.note)))
+                          (LinkPR(), EndSession(), Notify(template, _report(f).signal.note)))
     return opened
 
 
@@ -954,7 +1012,7 @@ _LIVE = tuple(k for k in K if k not in _ENDS)
 _WAITS = (K.PARKED_HUMAN, K.PARKED_ANSWERS, K.PARKED_REVIEW, K.PARKED_ACCESS)
 _REQUEST_WAITS = (K.PARKED_ANSWERS, K.PARKED_REVIEW)
 _RESUMABLE_PARKS = _WAITS + (K.PARKED_CI,)
-_PR_POKES = tuple(_PR_ATTENTION)
+_PR_POKES = tuple(PR_ATTENTION)
 _ENDED_REJECT = Reject("the task has ended")
 
 _SESSIONS = (K.RUNNING, K.HELD_PLAN_APPROVAL)   # a session runs that a pass drives
@@ -1070,9 +1128,11 @@ TABLE: tuple[Row, ...] = _complete([
     *[Row(k, E.FLUSH_DUE, k, build=_stay, actions=(Flush(),)) for k in _ENDS],
     *_rest([E.FLUSH_DUE], Ignore("not finished")),
 
-    # ci-finished: a failed run spent a ci round (loops) before the event.
+    # ci-finished: a failed run spends a round (loops) the row counts.
     Row(K.PARKED_CI, E.CI_FINISHED, K.PARKED_HUMAN, guard=loop_exhausted,
-        build=_human(HumanReason.LOOP_CAP), actions=(Notify("parked_question"),)),
+        build=_capped, derive=(_round, _ask_capped)),
+    Row(K.PARKED_CI, E.CI_FINISHED, K.WAKING, guard=counted, build=_wake(Cause.CI),
+        derive=(_round,)),
     Row(K.PARKED_CI, E.CI_FINISHED, K.WAKING, build=_wake(Cause.CI)),
     *_rest([E.CI_FINISHED], Ignore("not waiting for CI")),
 
@@ -1080,15 +1140,15 @@ TABLE: tuple[Row, ...] = _complete([
     *_rest([E.ACCESS_REACHED], Ignore("not waiting for access")),
 
     # PR events (requirement 13)
-    Row(K.PARKED_PR, E.PR_FEEDBACK, K.WAKING, build=_wake_for_pr,
-        actions=(Notify("pr_feedback"),)),
+    Row(K.PARKED_PR, E.PR_FEEDBACK, K.WAKING, build=_wake_for_pr, derive=(_feedback_told,),
+        actions=(ResetRounds(ResetCause.PR_CYCLE_STARTED),)),
+    # a red check or a conflict spends a ci round (loops) the row counts.
     *_rows([K.PARKED_PR], (E.PR_CHECK_FAILED, E.PR_CONFLICT), K.PARKED_HUMAN,
-           guard=loop_exhausted, build=_human(HumanReason.LOOP_CAP),
-           actions=(Notify("parked_question"),)),
-    *_rows([K.PARKED_PR], (E.PR_CHECK_FAILED, E.PR_CONFLICT), K.WAKING, build=_wake_for_pr,
-           actions=(Notify("pr_attention"),)),
+           guard=loop_exhausted, build=_capped, derive=(_round, _ask_capped)),
+    *_rows([K.PARKED_PR], (E.PR_CHECK_FAILED, E.PR_CONFLICT), K.WAKING, guard=counted,
+           build=_wake_for_pr, derive=(_round, _attention_told)),
     *_rest(_PR_POKES, Ignore("the PR is acted on only while parked on it")),
-    *_rows(_LIVE, [E.PR_MERGED], K.DONE, actions=(EndSession(), FinishMerged(),
+    *_rows(_LIVE, [E.PR_MERGED], K.DONE, actions=(FinishMerged(), EndSession(),
                                                  Notify("task_done"))),
     *_rows(_LIVE, [E.PR_CLOSED], K.FAILED, build=_failed(FailReason.PR_CLOSED),
            actions=(EndSession(), Notify("pr_closed"))),
@@ -1165,7 +1225,7 @@ _PLAIN = {EventType.RESUME_ADMITTED: Woken(blocked=""),
           EventType.CANDIDATE_RANKED: Ranked(this_pass=False),
           EventType.OP_RESUME: ResumeChoice(model="", bypass_usage=False),
           EventType.OP_LOGIN_CODE: LoginCode(code="", left_login_prompt=False),
-          **{e: Attempt(exhausted=False) for e in (EventType.CI_FINISHED,
+          **{e: Attempt(round=None) for e in (EventType.CI_FINISHED,
                                                    EventType.PR_CHECK_FAILED,
                                                    EventType.PR_CONFLICT)}}
 

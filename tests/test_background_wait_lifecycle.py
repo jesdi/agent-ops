@@ -7,8 +7,8 @@ import time
 import dispatcher.main as main
 from dispatcher import intents as intents_mod
 from dispatcher.state import (Stage, has_waiting, load, mark_background, mark_waiting, read_background)
-from tests.test_main import (FakeSessions, cfg, deps, make_task, patch_usage,
-                             patch_workspace)
+from tests.dispatchfakes import (FakeSessions, cfg, deps, make_task, patch_usage,
+                                 patch_workspace)
 from dispatcher.status import Kind
 
 T, N = "portfolio_eval", 42

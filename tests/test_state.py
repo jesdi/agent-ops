@@ -412,11 +412,11 @@ def test_orchestration_fields_default_and_round_trip(tmp_path):
                    updated_at="2026-09-07T00:00:00+00:00")
     assert (ts.spec_path, ts.ticket_count) == ("", 0)
     assert (ts.review_rounds, ts.gate_rounds, ts.e2e_rounds, ts.ci_rounds) == (0, 0, 0, 0)
-    assert (ts.check_cursor, ts.conflict_cursor, ts.attention) == ("", "", "")
+    assert (ts.check_cursor, ts.conflict_cursor) == ("", "")
     full = replace(ts, spec_path="docs/specs/x.md",
                    ticket_count=5, gate_rounds=1, e2e_rounds=2, ci_rounds=3,
                    review_rounds=1, check_cursor="2026-09-07T01:00:00Z",
-                   conflict_cursor="abc123", attention="conflict")
+                   conflict_cursor="abc123")
     save(tmp_path, full)
     assert load(tmp_path, "t", 9) == full
 
@@ -598,6 +598,19 @@ def test_a_retired_field_on_a_new_shape_file_is_dropped(tmp_path):
     d.update(park="parked", park_reason="decision", park_note="q", ci_run_id=9,
              crashed_stage="spec", unlaunched=True, feedback_pending=True,
              operator_request={"kind": "answers", "path": "q.html"})
+    (tmp_path / "task-portfolio_eval-101.json").write_text(json.dumps(d))
+    assert load(tmp_path, "portfolio_eval", 101) == make()
+
+
+def test_a_saved_task_file_has_no_feedback_pending_and_no_attention_key(tmp_path):
+    save(tmp_path, make())
+    assert not {"feedback_pending", "attention"} & _file(tmp_path).keys()
+
+
+def test_an_old_task_file_with_attention_loads_without_it(tmp_path):
+    save(tmp_path, make())
+    d = _file(tmp_path)
+    d["attention"] = "conflict"
     (tmp_path / "task-portfolio_eval-101.json").write_text(json.dumps(d))
     assert load(tmp_path, "portfolio_eval", 101) == make()
 

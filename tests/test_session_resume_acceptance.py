@@ -11,14 +11,15 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 import dispatcher.main as main
+import telegram.inbound as inbound
 from dispatcher import eventlog, herdr, intents, messages, runtimes
 from dispatcher.models import parse_policy
 from dispatcher.sessions import Sessions
 from dispatcher.state import (NO_SLOT, SessionRecord, Stage, load, read_session, write_session)
 from tests.test_containers import TOKENS, make_worktree
-from tests.test_main import (
-    FakeGitHub, FakeSessions, cfg, deps, make_task, write_tickets,
-)
+from tests.dispatchfakes import (
+        FakeGitHub, FakeSessions, cfg, deps, make_task, write_tickets,
+    )
 from tests.test_sessions import _fake_podman, herdr_fake_creating
 from tests.usagefakes import session_usage
 from telegram.inbound import Command
@@ -229,7 +230,7 @@ def test_attach_with_a_valid_record_resumes_by_id_with_an_empty_note(
         tmp_path, monkeypatch):
     c = _config(tmp_path, monkeypatch)
     wt = _task(c, 281, Stage.REVIEW, session_id=OTHER_ID)
-    monkeypatch.setattr(main.inbound, "fetch_events",
+    monkeypatch.setattr(inbound, "fetch_events",
                         lambda state_dir: [Command(name="attach", issue=281)])
     sessions = RecordingSessions(c.state_dir)
     d = deps(sess=sessions)

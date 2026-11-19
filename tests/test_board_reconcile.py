@@ -12,8 +12,8 @@ from dispatcher.board import Carded
 from dispatcher.github import GitHubClient
 from tests.configfakes import with_project
 from tests.fake_github import FakeGitHub
-from tests.test_main import FakeGitHub as FakeClient
-from tests.test_main import FakeSessions, deps, patch_usage, patch_workspace
+from tests.dispatchfakes import FakeGitHub as FakeClient
+from tests.dispatchfakes import FakeSessions, deps, patch_usage, patch_workspace
 from tests.test_multi_project_capacity import two_repository_cfg
 
 

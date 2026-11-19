@@ -3,7 +3,7 @@ stage 2 and waits at the plan review gate.
 
 Spec: specs/2026-10-06-openspec-pipeline/spec.md, requirements 5-8 and 10 and
 their scenarios; design.md (Decisions, Data model, Seams). Black-box, through
-dispatcher.main.run_pass over the fakes of tests/test_main.py, with a real git
+dispatcher.main.run_pass over the fakes of tests/dispatchfakes.py, with a real git
 repo (bare origin) behind the task's worktree so the publish step is real.
 The console test goes through GET /api/task/{repository}/{issue}/request.
 """
@@ -17,13 +17,14 @@ import pytest
 
 import dispatcher.main as main
 from dispatcher import intents as intents_mod
+from dispatcher import stage_launch
 from dispatcher.github import Candidate
 from dispatcher.models import parse_policy
 from dispatcher.state import (NO_SLOT, Stage, load, save)
 
-from tests.test_main import (FakeGitHub, FakeNotifier, FakeSessions, approve_plan,
-                             armed_request, cfg, deps, make_task, patch_usage, patch_workspace,
-                             write_tickets, GOOD_TICKET)
+from tests.dispatchfakes import (FakeGitHub, FakeNotifier, FakeSessions, approve_plan,
+                                 armed_request, cfg, deps, make_task, patch_usage, patch_workspace,
+                                 write_tickets, GOOD_TICKET)
 from dispatcher.status import Kind
 from dispatcher.state import at_gate, operator_request
 from tests.statuses import held
@@ -356,7 +357,7 @@ def test_respawn_ready_report_reuses_its_round_and_starts_a_fresh_grace_clock(
     assert t.unattended_rounds == used + 1
     assert t.status.kind is Kind.HELD_PLAN_APPROVAL and t.slot != NO_SLOT
     assert operator_request(t) == armed_request(t, SUMMARY)
-    assert t.updated_at > old_clock and not main._grace_elapsed(c, t)
+    assert t.updated_at > old_clock and not stage_launch._grace_elapsed(c, t)
     assert d.notifier.sent == ["awaiting_plan_review"]
 
     # A repeated report preserves the new clock; only its expiry parks the task.

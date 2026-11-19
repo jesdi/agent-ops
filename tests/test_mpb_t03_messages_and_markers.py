@@ -41,7 +41,7 @@ import dispatcher.main as main
 from dispatcher import messages
 from dispatcher.state import NO_SLOT, Stage, TaskState, save, SessionRecord, write_session
 from tests import webfakes
-from tests.test_main import ADMIT_ALL, cfg as single_repository_cfg, deps as main_deps, patch_usage
+from tests.dispatchfakes import ADMIT_ALL, cfg as single_repository_cfg, deps as main_deps, patch_usage
 from web.sources import Sources
 from tests.statuses import RUNNING, waking
 
@@ -144,7 +144,7 @@ def test_wake_blocked_marker_is_scoped_to_its_own_repository(tmp_path):
     make_task_for(c, "factorial", issue=12, slot=NO_SLOT, status=waking())
     make_task_for(c, "portfolio_eval", issue=12, slot=0, status=RUNNING)
 
-    main._resume_woken(c, main_deps(), admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, main_deps(), admit=ADMIT_ALL, order=tuple)
 
     src = Sources(c.state_dir, sessions=None, github=None)
     blocked = src.wake_blocked_issues()

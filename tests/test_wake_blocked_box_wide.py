@@ -3,7 +3,7 @@ one box-wide: which cards show "capacity full" must not depend on repository
 order or on earlier passes."""
 from dispatcher.state import Stage
 
-from tests.test_main import FakeSessions, deps, patch_usage, patch_workspace
+from tests.dispatchfakes import FakeSessions, deps, patch_usage, patch_workspace
 from tests.test_multi_project_capacity import (mk_task, two_repository_cfg,
                                                wake_blocked_events)
 from tests.statuses import PR, waking

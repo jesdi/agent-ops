@@ -8,13 +8,16 @@ from types import SimpleNamespace
 import pytest
 
 import dispatcher.main as main
+from dispatcher import executor
+from dispatcher import launch_choice, stage_launch
+from dispatcher.deps import Deps
 from dispatcher import github_app, task_tokens
 from dispatcher.github import Candidate
 from dispatcher.models import Entry
 from dispatcher.state import NO_SLOT, Stage, TaskState, load, load_all
 from tests.test_host_installation_tokens_acceptance import INSTALL, FakeApp
-from tests.test_main import (FakeGitHub, FakeNotifier, FakeSessions, cfg, make_task, patch_usage,
-                             patch_workspace, valid_spec)
+from tests.dispatchfakes import (FakeGitHub, FakeNotifier, FakeSessions, cfg, make_task, patch_usage,
+                                 patch_workspace, valid_spec)
 from tests.test_task_container_tokens_acceptance import (SpawnFailsApp, home, spawn_pass,  # noqa: F401
                                                          world_of)
 from tests.statuses import PR, RUNNING, waking
@@ -39,7 +42,7 @@ class App(FakeApp):
 
 
 def deps_of(app, sess=None, gh=None):
-    return main.Deps(github=gh or FakeGitHub(), sessions=sess or FakeSessions(alive={42}),
+    return Deps(github=gh or FakeGitHub(), sessions=sess or FakeSessions(alive={42}),
                      notifier=FakeNotifier(), app=app)
 
 
@@ -92,8 +95,7 @@ def test_an_unreached_repository_at_a_stage_hand_over_parks_the_task_with_the_li
 def feedback_pending(tmp_path, monkeypatch):
     patch_usage(monkeypatch)
     c = cfg(tmp_path)
-    make_task(c, issue=42, stage=Stage.PR_OPEN, status=FEEDBACK, slot=NO_SLOT, pr_number=12,
-              attention="feedback")
+    make_task(c, issue=42, stage=Stage.PR_OPEN, status=FEEDBACK, slot=NO_SLOT, pr_number=12)
     return c
 
 
@@ -119,8 +121,8 @@ def test_an_unreached_repository_at_a_feedback_spawn_parks_it_with_the_feedback_
     sess = FakeSessions(alive={42})
     main.run_pass(c, deps_of(App(reached=()), sess))
     task = load(c.state_dir, "portfolio_eval", 42)
-    # the park replaces the wake; the attention it answers stays on the task
-    assert (task.status.kind, task.attention) == (Kind.PARKED_ACCESS, "feedback")
+    # the park replaces the wake
+    assert task.status.kind is Kind.PARKED_ACCESS
     assert sess.spawned == []
 
 
@@ -202,14 +204,14 @@ def test_resume_passes_the_task_token_dir(tmp_path, monkeypatch):
     deps = SimpleNamespace(access=github_app.Access(FakeApp()), sessions=Recorder())
     task = TaskState(issue=7, repository="analytics", stage=Stage.IMPLEMENT, slot=0,
                      worktree=str(tmp_path), branch="b", title="t", updated_at="")
-    monkeypatch.setattr(main, "read_session", lambda *a: SimpleNamespace(stage="implement", session_id="s1"))
-    monkeypatch.setattr(main, "_heal_identity", lambda t: None)
-    monkeypatch.setattr(main, "_drain", lambda *a: ("", []))
-    monkeypatch.setattr(main.messages, "mark_delivered", lambda *a: None)
-    monkeypatch.setattr(main.eventlog, "append_event", lambda *a, **k: None)
-    launch = main.Launch(Stage.IMPLEMENT, Entry("anthropic", "claude-opus-5"))
-    gh_config = main._task_token(cfg_, deps, REPO, task)
-    main._continue_or_restart(cfg_, deps, REPO, task, launch, gh_config=gh_config)
+    monkeypatch.setattr(stage_launch, "read_session", lambda *a: SimpleNamespace(stage="implement", session_id="s1"))
+    monkeypatch.setattr(stage_launch, "_heal_identity", lambda t: None)
+    monkeypatch.setattr(stage_launch, "_drain", lambda *a: ("", []))
+    monkeypatch.setattr(stage_launch.messages, "mark_delivered", lambda *a: None)
+    monkeypatch.setattr(stage_launch.eventlog, "append_event", lambda *a, **k: None)
+    launch = launch_choice.Launch(Stage.IMPLEMENT, Entry("anthropic", "claude-opus-5"))
+    gh_config = stage_launch._task_token(cfg_, deps, REPO, task)
+    stage_launch._continue_or_restart(cfg_, deps, REPO, task, launch, gh_config=gh_config)
     [kw] = deps.sessions.resumed
     assert kw["gh_config"] == str(task_tokens.task_dir(tmp_path, "analytics-7"))
     assert [m[0] for m in deps.access.app.mints] == [["jesdi/analytics"]]
@@ -232,18 +234,20 @@ def test_a_rejected_signal_retry_touches_nothing_without_a_token(tmp_path, monke
     task = TaskState(issue=7, repository="analytics", stage=Stage.PLAN, slot=0,
                      worktree="w", branch="b", title="t", updated_at="")
     touched = []
-    for name in ("_write_working", "_end_session", "_continued", "save", "_fail_task_crash",
-                 "_park_for_input"):
-        monkeypatch.setattr(main, name, lambda *a, _n=name, **k: touched.append(_n))
+    for name in ("_write_working", "_end_session", "_continued", "save", "_fail_task_crash"):
+        monkeypatch.setattr(executor, name, lambda *a, _n=name, **k: touched.append(_n))
+    # main's _task_token parks an unreached repository from stage_launch.
+    monkeypatch.setattr(stage_launch, "_park_for_input",
+                        lambda *a, **k: touched.append("_park_for_input"))
     from dispatcher.lifecycle import Event, EventType
     from dispatcher.loops import Retry
     from dispatcher.state import StageSignal
     from tests.test_lifecycle import admitted, report
     deps = SimpleNamespace(access=github_app.Access(app))
-    turn = main._Turn(SimpleNamespace(state_dir=str(tmp_path)), deps, REPO, None, None, False,
+    turn = executor._Turn(SimpleNamespace(state_dir=str(tmp_path)), deps, REPO, None, None, False,
                       launches={Stage.PLAN: SimpleNamespace(entry=None)})
     bounced = Event(EventType.SESSION_SIGNAL, report(
         StageSignal("plan", "done"), retries=frozenset({Retry.PLAN_SIGNAL}),
         launches=admitted(Stage.PLAN)))
-    main._apply(turn, task, bounced)
+    executor._apply(turn, task, bounced)
     assert touched == ([] if failure == "app error" else ["_park_for_input"])

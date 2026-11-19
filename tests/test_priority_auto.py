@@ -22,8 +22,8 @@ from dispatcher.state import Stage, load
 from dispatcher.usage import (PaceConfig, ProviderUsage, Window, WindowKind,
                               admits, allowance, unavailable)
 from dispatcher.github import Candidate
-from tests.test_main import (FakeGitHub, FakeSessions, approve_plan, cfg, deps, make_task,
-                             patch_workspace, write_tickets)
+from tests.dispatchfakes import (FakeGitHub, FakeSessions, freeze_clock, approve_plan, cfg, deps, make_task,
+                                 patch_workspace, write_tickets)
 from tests.statuses import PR, waking
 
 SONNET = "claude-sonnet-5-5"
@@ -76,11 +76,7 @@ def run(tmp_path, monkeypatch, usages, implement=WRITTEN, review=None,
     c = dc_replace(cfg(tmp_path), models=policy(implement, review), pace=pace)
     monkeypatch.setattr(main, "fetch_all", lambda cfg, **k: usages)
     if frozen is not None:
-        class Frozen(datetime):
-            @classmethod
-            def now(cls, tz=None):
-                return frozen
-        monkeypatch.setattr(main, "datetime", Frozen)
+        freeze_clock(monkeypatch, frozen)
     wt = make_task(c, issue=42, stage=stage, picks=picks or {},
                    gated=stage is Stage.PLAN, **task_kw)
     if stage is Stage.PLAN:   # a plan session at the review gate

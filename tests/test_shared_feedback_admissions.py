@@ -1,20 +1,17 @@
 """Ticket 02 of the shared admission loop: feedback rounds are admitted
 through the same box-wide loop as wakes. Driven through
-`_spawn_feedback(cfg, deps, admit, order)`, and `run_pass` for the box-wide
+`_drive_wakes(cfg, deps, admit, order)`, and `run_pass` for the box-wide
 marking case."""
-import inspect
-import re
 from dataclasses import replace as dc_replace
 from datetime import datetime
 
-import pytest
 
 import dispatcher.main as main
-from dispatcher import execution_overrides
+from dispatcher import drive, execution_overrides, executor, state
 from dispatcher.state import NO_SLOT, Stage, load
-from dispatcher.status import Kind
-from tests.test_main import (ADMIT_ALL, DENY_ALL, FakeSessions, cfg, deps,
-                             patch_usage, patch_workspace)
+from dispatcher.status import HumanReason, Kind
+from tests.dispatchfakes import (ADMIT_ALL, DENY_ALL, FakeSessions, cfg, deps,
+                                 patch_usage, patch_workspace)
 from tests.test_multi_project_capacity import (mk_task, two_repository_cfg,
                                                wake_blocked_events)
 from tests.statuses import PR, waking
@@ -43,7 +40,7 @@ def test_equal_updated_at_breaks_ties_in_repository_order(tmp_path):
     pending(c, "portfolio_eval", 7, updated_at="2026-07-21T10:00:00+00:00")
     d = deps()
 
-    main._spawn_feedback(c, d, admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
 
     assert spawned(d) == [("portfolio_eval", 7)]
     assert load(c.state_dir, "portfolio_eval", 7).stage is Stage.ADDRESS_REVIEW
@@ -78,7 +75,7 @@ def test_a_recorded_slot_another_task_holds_is_replaced(tmp_path):
     pending(c, "factorial", 5, slot=0)
     d = deps()
 
-    main._spawn_feedback(c, d, admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
 
     assert spawned(d) == [("factorial", 5)]
     assert load(c.state_dir, "factorial", 5).slot == 1
@@ -88,20 +85,14 @@ def test_a_stranded_launch_parks_the_feedback_and_spawns_nothing(tmp_path, monke
     c = cfg(tmp_path)
     pending(c, "portfolio_eval", 5)
     why = "no configured model can run this stage"
-    monkeypatch.setattr(main, "_choose_launch", lambda *a, **kw: (None, False, why))
-    parked = []
-    real_park = main._park_stranded
-
-    def spy(cfg_, deps_, repository, task, why_):
-        parked.append((repository.name, task.issue, why_))
-        return real_park(cfg_, deps_, repository, task, why_)
-
-    monkeypatch.setattr(main, "_park_stranded", spy)
+    monkeypatch.setattr(drive, "_choose_launch", lambda *a, **kw: (None, False, why))
     d = deps()
 
-    main._spawn_feedback(c, d, admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
 
-    assert parked == [("portfolio_eval", 5, why)]
+    t = load(c.state_dir, "portfolio_eval", 5)
+    assert (t.status.kind, t.status.reason) == (Kind.PARKED_HUMAN, HumanReason.CONFIG)
+    assert why in t.status.note
     assert spawned(d) == []
     assert details(c, "portfolio_eval", 5) == []
 
@@ -111,7 +102,7 @@ def test_a_denied_launch_waits_without_a_mark(tmp_path):
     pending(c, "portfolio_eval", 5)
     d = deps()
 
-    main._spawn_feedback(c, d, admit=DENY_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=DENY_ALL, order=tuple)
 
     assert spawned(d) == []
     assert load(c.state_dir, "portfolio_eval", 5).status == FEEDBACK
@@ -121,10 +112,10 @@ def test_a_denied_launch_waits_without_a_mark(tmp_path):
 def test_a_failed_task_token_skips_without_a_mark(tmp_path, monkeypatch):
     c = cfg(tmp_path)
     pending(c, "portfolio_eval", 5)
-    monkeypatch.setattr(main, "_task_token", lambda *a, **kw: None)
+    monkeypatch.setattr(executor, "_task_token", lambda *a, **kw: None)
     d = deps()
 
-    main._spawn_feedback(c, d, admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
 
     assert spawned(d) == []
     assert load(c.state_dir, "portfolio_eval", 5).status == FEEDBACK
@@ -142,14 +133,14 @@ class LoggingSessions(FakeSessions):
 def test_a_feedback_spawn_starts_a_fresh_round(tmp_path):
     c = cfg(tmp_path)
     pending(c, "portfolio_eval", 5)
-    main._wake_blocked_path(c, "portfolio_eval", 5).touch()
+    state._wake_blocked_path(c.state_dir, "portfolio_eval", 5).touch()
     execution_overrides.save(
         c.state_dir, "portfolio_eval", 5,
         execution_overrides.ExecutionOverride(model="claude-sonnet-4-6",
                                               bypass_usage=True))
     d = deps(sess=LoggingSessions())
 
-    main._spawn_feedback(c, d, admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
 
     log = [(kind, repo, issue) for kind, repo, issue in d.sessions.call_log
            if kind in ("end", "spawn")]
@@ -158,28 +149,18 @@ def test_a_feedback_spawn_starts_a_fresh_round(tmp_path):
     assert t.stage is Stage.ADDRESS_REVIEW
     assert t.status.kind is Kind.RUNNING
     assert datetime.fromisoformat(t.feedback_cursor).microsecond == 0
-    assert not main._wake_blocked_path(c, "portfolio_eval", 5).exists()
+    assert not state._wake_blocked_path(c.state_dir, "portfolio_eval", 5).exists()
     assert execution_overrides.load(c.state_dir, "portfolio_eval", 5) is None
 
 
-def test_a_spawn_crash_leaves_the_call_and_spawns_no_later_task(tmp_path):
+def test_a_spawn_crash_fails_that_task_and_the_next_one_still_launches(tmp_path):
     c = cfg(tmp_path)   # capacity 3
     pending(c, "portfolio_eval", 5, updated_at="2026-07-21T10:00:00+00:00")
     pending(c, "portfolio_eval", 6, updated_at="2026-07-21T10:05:00+00:00")
     d = deps(sess=FakeSessions(spawn_raises={5}))
 
-    with pytest.raises(FileNotFoundError):
-        main._spawn_feedback(c, d, admit=ADMIT_ALL, order=tuple)
+    main._drive_wakes(c, d, admit=ADMIT_ALL, order=tuple)
 
-    assert spawned(d) == []
-    assert load(c.state_dir, "portfolio_eval", 5).status.kind is not Kind.FAILED
-    assert load(c.state_dir, "portfolio_eval", 6).status == FEEDBACK
-
-
-def test_spawn_feedback_leaves_admission_to_the_shared_loop():
-    src = inspect.getsource(main._spawn_feedback)
-    called = {name for name in ("sorted", "_oldest_first", "_box_free",
-                                "allocate_slot", "_mark_wake_blocked",
-                                "_park_stranded", "_task_token")
-              if re.search(rf"\b{name}\(", src)}
-    assert called == set(), f"_spawn_feedback still calls {sorted(called)}"
+    assert spawned(d) == [("portfolio_eval", 6)]
+    assert load(c.state_dir, "portfolio_eval", 5).status.kind is Kind.FAILED
+    assert load(c.state_dir, "portfolio_eval", 6).stage is Stage.ADDRESS_REVIEW
