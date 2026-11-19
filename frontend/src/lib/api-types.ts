@@ -72,6 +72,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/exam/host": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Host */
+        get: operations["host_api_exam_host_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/exam/{owner}/{name}/{pr}": {
         parameters: {
             query?: never;
@@ -83,6 +100,23 @@ export interface paths {
         get: operations["read_exam_api_exam__owner___name___pr__get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/exam/{owner}/{name}/{pr}/answers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Answer */
+        post: operations["answer_api_exam__owner___name___pr__answers_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -623,6 +657,17 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** Answers */
+        Answers: {
+            /** Answers */
+            answers: {
+                [key: string]: number | string;
+            };
+            /** Attempt */
+            attempt: number;
+            /** Head Sha */
+            head_sha: string;
+        };
         /** AnswersReq */
         AnswersReq: {
             /** Answers */
@@ -1746,6 +1791,26 @@ export interface operations {
             };
         };
     };
+    host_api_exam_host_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
     read_exam_api_exam__owner___name___pr__get: {
         parameters: {
             query?: never;
@@ -1766,6 +1831,43 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ExamView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    answer_api_exam__owner___name___pr__answers_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                name: string;
+                pr: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Answers"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
