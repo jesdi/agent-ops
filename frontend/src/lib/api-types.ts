@@ -55,6 +55,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/exam": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Request Exam */
+        post: operations["request_exam_api_exam_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/exam/{owner}/{name}/{pr}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Exam */
+        get: operations["read_exam_api_exam__owner___name___pr__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/failures": {
         parameters: {
             query?: never;
@@ -727,6 +761,57 @@ export interface components {
             stage: string;
             /** Ts */
             ts: string;
+        };
+        /** ExamAccepted */
+        ExamAccepted: {
+            /** Debt */
+            debt: boolean;
+            /** Detail */
+            detail: string;
+            /** Head Sha */
+            head_sha: string | null;
+            /** Pending */
+            pending: boolean;
+            /** Pr */
+            pr: number;
+            /** Repo */
+            repo: string;
+            /** State */
+            state: string;
+            /** Url */
+            url: string;
+        };
+        /** ExamRequest */
+        ExamRequest: {
+            /** Pr */
+            pr: number;
+            /** Repo */
+            repo: string;
+        };
+        /** ExamView */
+        ExamView: {
+            /** Attempt */
+            attempt: number;
+            /** Debt */
+            debt: boolean;
+            /** Detail */
+            detail: string;
+            /** Exam */
+            exam: {
+                [key: string]: unknown;
+            } | null;
+            /** Head Sha */
+            head_sha: string | null;
+            /** Pr */
+            pr: number;
+            /** Repo */
+            repo: string;
+            /** Results */
+            results: {
+                [key: string]: unknown;
+            }[];
+            /** State */
+            state: string;
         };
         /** FailuresView */
         FailuresView: {
@@ -1624,6 +1709,72 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    request_exam_api_exam_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExamRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExamAccepted"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    read_exam_api_exam__owner___name___pr__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                name: string;
+                pr: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExamView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

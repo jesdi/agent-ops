@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Collection, Literal
 
-from dispatcher import (claims, eventlog, execution_overrides, failures,
+from dispatcher import (claims, exams, eventlog, execution_overrides, failures,
                         messages as msgq,
                         onboard, onboarding_sessions, priority, queue_ops, state, task_artifacts, triage)
 from dispatcher.usage import ProviderUsage
@@ -148,6 +148,14 @@ class Sources:
         except (OSError, subprocess.SubprocessError) as exc:
             print(f"onboarding kick failed (timer will retry): {exc}")
         return path.name
+
+    def request_exam(self, repo: str, pr: int) -> dict:
+        doc = exams.request(self.state_dir, repo, pr)
+        self._kick_dispatcher()
+        return doc
+
+    def exam_state(self, repo: str, pr: int) -> dict | None:
+        return exams.read(self.state_dir, repo, pr)
 
     def tasks(self) -> list[TaskState]:
         return state.load_all(self._state_dir)

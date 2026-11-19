@@ -36,6 +36,7 @@ from dispatcher.status import Kind, crashed, ended
 from web import model_settings_view as msv
 from web import read_model
 from web.artifacts import router as artifacts_router
+from web.exams import router as exams_router
 from web.onboarding import router as onboarding_router
 from web.auth import (Operator, TailscaleAuthMiddleware,
                       current_operator)
@@ -396,6 +397,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
             wake_blocked=sources.wake_blocked_issues())
     app.include_router(artifacts_router(sources, _find_task))
     app.include_router(onboarding_router(sources))
+    app.include_router(exams_router(sources, _cfg))
 
     def _usage_view(reading: RequestReading) -> read_model.UsageView:
         assert reading.usages is not None
