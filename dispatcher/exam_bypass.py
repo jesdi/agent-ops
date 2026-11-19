@@ -30,22 +30,21 @@ def _applied_by(events: list[dict], label: str) -> str | None:
     return actors[-1] if actors else None
 
 
-def decide(cfg, repo: str, n: int, io) -> tuple[str, str, str]:
-    """(mode, detail, head): mode is "error", "disabled", "skip", "defer" or "none"."""
-    pr = io.github.pr(repo, n)
-    head = pr["head_sha"]
+def decide(cfg, repo: str, n: int, pr: dict, io) -> tuple[str, str]:
+    """(mode, detail) for the PR as `pr` read it: mode is "error", "disabled", "skip",
+    "defer" or "none"."""
     conf = _config(io, repo, pr["base_ref"])
     if conf["errors"]:
-        return "error", "; ".join(conf["errors"]), head
+        return "error", "; ".join(conf["errors"])
     if not conf["enabled"]:
-        return "disabled", "", head
+        return "disabled", ""
     marked = [label for label in pr.get("labels", []) if label in conf["labels"]]
     if not marked:
-        return "none", "", head
+        return "none", ""
     if not cfg.operator_login:
-        return "error", "operator_login is not set in targets.yaml, so no bypass label can be honoured", head
+        return "error", "operator_login is not set in targets.yaml, so no bypass label can be honoured"
     events = io.github.label_events(repo, n)
     modes = {conf["labels"][label] for label in marked
              if _applied_by(events, label) == cfg.operator_login}
     # ponytail: skip outranks defer when the owner added both labels
-    return next((m for m in ("skip", "defer") if m in modes), "none"), "", head
+    return next((m for m in ("skip", "defer") if m in modes), "none"), ""

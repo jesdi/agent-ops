@@ -582,20 +582,20 @@ def _moved_head(cur: dict, d: Path) -> None:
         _drop_attempts(cur, d)
 
 
-def _bypass(cfg, doc, io) -> tuple[bool, str]:
+def _bypass(cfg, doc, pr: dict, io) -> bool:
     """Settle a request by the owner's bypass labels and the repo's config; True when it
-    did, with the head it read. A skip drops the exam and queues "bypassed"; a defer marks the exam as debt and
+    did, by `pr`, read after `doc`. A skip drops the exam and queues "bypassed"; a defer marks the exam as debt and
     keeps an open one, queuing "deferred" on the head; an error or a disabled repo posts
     nothing. Otherwise the request goes on as it would without a label."""
-    mode, detail, head = exam_bypass.decide(cfg, doc["repo"], doc["pr"], io)
-    title = io.github.pr(doc["repo"], doc["pr"])["title"] if mode == "defer" else None   # the debt list shows it
+    mode, detail = exam_bypass.decide(cfg, doc["repo"], doc["pr"], pr, io)
+    head = pr["head_sha"]
     with state_lock(cfg.state_dir, LOCK):
         cur = read(cfg.state_dir, doc["repo"], doc["pr"])
         if cur["job"] or cur["grading"]:
-            return False, head
+            return False
         cur["debt"] = mode == "defer" or cur["merged"]   # a merge without a pass stays debt
-        if title is not None:
-            cur["title"] = title
+        if mode == "defer":
+            cur["title"] = pr["title"]   # the debt list shows it
         settled = mode in ("error", "disabled", "skip") or (mode == "defer" and cur["state"] == "open")
         if settled:
             cur["reconciled"] = max(cur["reconciled"], doc["requested"])
@@ -609,14 +609,13 @@ def _bypass(cfg, doc, io) -> tuple[bool, str]:
         elif mode == "error":
             cur.update(state="error", detail=detail)
         _write(cfg.state_dir, cur)
-        return settled, head
+        return settled
 
 
-def _lifecycle(cfg, doc, github) -> bool:
+def _lifecycle(cfg, doc, pr: dict) -> bool:
     """Keep the exam in step with its PR; True when the exam was deleted. A PR closed
     unmerged loses its exam. A merged PR loses a passed, bypassed or never-started exam
     (the records in exam-records stay); any other exam of a merged PR is debt until passed."""
-    pr = github.pr(doc["repo"], doc["pr"])
     with state_lock(cfg.state_dir, LOCK):
         cur = read(cfg.state_dir, doc["repo"], doc["pr"])
         if cur is None:
@@ -641,17 +640,18 @@ def debts(state_dir: str | Path) -> list[dict]:
             for d in docs if d["state"] == "open" and d["debt"]]
 
 
-def _step(cfg, doc: dict, io) -> bool:
-    """Do this exam's next piece of work; True when another may follow at once."""
+def _step(cfg, doc: dict, io, pr: dict | None = None) -> bool:
+    """Do this exam's next piece of work; True when another may follow at once. `pr`, when
+    given, was read after `doc`: a request made since stays wanted."""
     if _due(doc):
         _post_due(cfg, doc, io.github)
         return True
     if _wanted(doc) and not doc["job"] and not doc["grading"]:
-        settled, head = _bypass(cfg, doc, io)
-        if settled:
+        pr = pr or io.github.pr(doc["repo"], doc["pr"])
+        if _bypass(cfg, doc, pr, io):
             return True
         if doc["state"] in ("open", "passed"):
-            return _reconcile(cfg, doc, head)
+            return _reconcile(cfg, doc, pr["head_sha"])
     if _kind(doc):
         return _run_job(cfg, doc, io)
     return False
@@ -665,12 +665,15 @@ def work(cfg, *, github, run, pr_exam, notify, now, usages, sweep: bool = False)
     for path in sorted(Path(cfg.state_dir, "exams").glob("*/*/*/state.json")):
         doc = json.loads(path.read_text())
         try:   # one exam's GitHub or script failure never stops another's work
-            if (sweep or _wanted(doc)) and _lifecycle(cfg, doc, github):
+            # one read of the PR serves the lifecycle and the request; `doc` stays as read
+            # before it, so a request made during the read is reconciled on the next pass
+            pr = github.pr(doc["repo"], doc["pr"]) if sweep or _wanted(doc) else None
+            if pr and _lifecycle(cfg, doc, pr):
                 continue
-            doc = read(cfg.state_dir, doc["repo"], doc["pr"])
             for _ in range(10):   # a pass is at most grade, status, reconcile, delta, status
-                if not _step(cfg, doc, io):
+                if not _step(cfg, doc, io, pr):
                     break
+                pr = None
                 doc = read(cfg.state_dir, doc["repo"], doc["pr"])
         except Exception as exc:  # noqa: BLE001 — the job was released; the next work retries
             print(f"exam work for {doc['repo']}#{doc['pr']} failed: {exc}", file=sys.stderr)
