@@ -81,3 +81,22 @@ def test_a_retry_that_raises_keeps_the_failure_told_once(tmp_path, monkeypatch):
     assert box.read().json()["state"] == "error" and len(box.session.calls) == 3
     assert len(box.notes) == 1
 
+
+def test_a_failed_config_lookup_after_a_pass_still_gets_its_success_posted(tmp_path, monkeypatch):
+    box = RecordsBox(tmp_path, monkeypatch, grades=PASS_ALL)
+    body = box.open(REPO, 240)
+    file, failed = box.github.file, []
+
+    def flaky(repo, ref, path):
+        if box.session.graded() and not failed:
+            failed.append(1)
+            raise subprocess.CalledProcessError(1, "gh")
+        return file(repo, ref, path)
+    box.github.file = flaky
+    box.grade(REPO, 240, body)
+    box.work()
+    assert failed and box.read().json()["state"] == "passed"
+    assert not any(s[3] == "success" for s in box.posted())
+    box.work()
+    assert (REPO, HEAD, "exam", "success") in box.posted()
+    assert len(box.records(REPO)) == 5

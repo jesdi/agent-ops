@@ -55,13 +55,15 @@ def _write(state_dir, doc: dict) -> None:
 
 def request(state_dir: str | Path, repo: str, pr: int) -> dict:
     """Record that this PR's exam is wanted; a repeat finds the same state. Each request
-    raises `requested`; work reconciles with GitHub until `reconciled` catches up."""
+    raises `requested`; work reconciles with GitHub until `reconciled` catches up. `stale`
+    asks for the same from a job's claim on: a reconcile that fails after the job's result
+    was applied is made again by the next work."""
     with state_lock(state_dir, LOCK):
         doc = read(state_dir, repo, pr)
         if doc is None:
             doc = {"repo": repo, "pr": pr, "title": "", "state": ExamState.NEW, "head_sha": None,
                    "debt": False, "detail": "", "attempt": 0, "requested": 0, "reconciled": 0,
-                   "job": None, "status": None, "due": None, "merged": False,
+                   "stale": False, "job": None, "status": None, "due": None, "merged": False,
                    "passed_concepts": [], "grading": None, "followup": None, "delta": False,
                    "results": []}
         elif doc["state"] == ExamState.ERROR and not doc["grading"]:
@@ -114,7 +116,8 @@ def _update(state_dir, repo: str, pr: int, **fields) -> dict:
 
 
 def _wanted(doc: dict) -> bool:
-    return doc["requested"] > doc["reconciled"]
+    """A request, or a job's result, still waits for a reconcile with GitHub."""
+    return doc["requested"] > doc["reconciled"] or doc["stale"]
 
 
 def _due(doc: dict) -> dict | None:
@@ -150,7 +153,7 @@ def _claim(cfg, doc: dict, job: dict, now) -> bool:
         cur = read(cfg.state_dir, doc["repo"], doc["pr"])
         if cur is None or not _claimable(cur, job, now):
             return False
-        cur.update(job=job, detail="",
+        cur.update(job=job, detail="", stale=True,
                    state=ExamState.GRADING if job["kind"] == "grade" else ExamState.GENERATING)
         _write(cfg.state_dir, cur)
         return True
@@ -539,7 +542,7 @@ def _reconcile(cfg, doc: dict, pr: dict, io) -> None:
             shutil.rmtree(d, ignore_errors=True)
             return
         if not exam_lifecycle.busy(cur):
-            cur["reconciled"] = max(cur["reconciled"], doc["requested"])
+            cur.update(reconciled=max(cur["reconciled"], doc["requested"]), stale=False)
         _write(cfg.state_dir, cur)
     if cur["state"] == ExamState.ERROR:   # a config or a label that cannot be honoured fails like a job
         _tell_failure(cfg, cur, io.notify)
