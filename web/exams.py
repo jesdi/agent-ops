@@ -117,17 +117,22 @@ def router(sources, cfg: Callable[[], Config]) -> APIRouter:
             raise HTTPException(503, "the exam App is not known yet")
         return found
 
+    def view(repo: str, pr: int) -> ExamView:
+        """The exam as its page reads it; the questions only while they wait for answers."""
+        doc = sources.exam_state(repo, pr)
+        if doc is None:
+            raise HTTPException(404, "exam not found")
+        waiting = doc["state"] == ExamState.OPEN
+        return ExamView(**doc, exam=state.public(cfg().state_dir, repo, pr) if waiting else None)
+
     @routes.get("/api/exam/{owner}/{name}/{pr}", response_model=ExamView, response_model_exclude_unset=True)
     def read_exam(owner: Annotated[str, Path(pattern=rf"^{Slug}$")],
                   name: Annotated[str, Path(pattern=rf"^{Slug}$")],
                   pr: Annotated[int, Path(ge=1)], op: Operator = Depends(current_operator)):
-        doc = sources.exam_state(f"{owner}/{name}", pr)
-        if doc is None:
-            raise HTTPException(404, "exam not found")
-        questions = state.public(cfg().state_dir, doc["repo"], doc["pr"]) if doc["state"] == ExamState.OPEN else None
-        return ExamView(**doc, exam=questions)
+        return view(f"{owner}/{name}", pr)
 
-    @routes.post("/api/exam/{owner}/{name}/{pr}/answers")
+    @routes.post("/api/exam/{owner}/{name}/{pr}/answers", status_code=202, response_model=ExamView,
+                 response_model_exclude_unset=True)
     def answer(body: Answers, owner: Annotated[str, Path(pattern=rf"^{Slug}$")],
                name: Annotated[str, Path(pattern=rf"^{Slug}$")],
                pr: Annotated[int, Path(ge=1)], op: Operator = Depends(current_operator)):
@@ -136,6 +141,6 @@ def router(sources, cfg: Callable[[], Config]) -> APIRouter:
             raise HTTPException(409, "this attempt is not open for answers")
         if outcome == "incomplete":
             raise HTTPException(422, "every question needs an answer")
-        return {"state": "grading"}
+        return view(f"{owner}/{name}", pr)
 
     return routes

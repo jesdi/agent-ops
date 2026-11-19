@@ -76,12 +76,7 @@ function AttemptForm({ data, onSubmit, pending }: { data: ExamView; onSubmit: (a
 
 type Answering = { changed: boolean; error: string | null; pending: boolean; submit: (a: Answers) => void }
 
-/** The page's copy after answers are accepted: grading, with the questions gone. */
-function graded(prev: ExamView | undefined, r: Partial<ExamView>) {
-  return prev && { ...prev, state: r.state ?? 'grading', exam: null }
-}
-
-/** Submits the open attempt; a 409 means the exam changed, so it is reloaded. */
+/** Submits the open attempt: the answer is the exam as it now reads, grading. A 409 means the exam changed, so it is reloaded. */
 function useAnswerExam(owner: string, name: string, pr: string, data: ExamView | undefined): Answering {
   const queryClient = useQueryClient()
   const [changed, setChanged] = useState(false)
@@ -89,7 +84,7 @@ function useAnswerExam(owner: string, name: string, pr: string, data: ExamView |
   const submit = useMutation({
     mutationFn: (answers: Answers) => api.answerExam(owner, name, pr, { attempt: data!.attempt, head_sha: data!.head_sha!, answers }),
     onMutate: () => setChanged(false),
-    onSuccess: (r) => queryClient.setQueryData<ExamView>(key, (prev) => graded(prev, r)),
+    onSuccess: (r) => queryClient.setQueryData<ExamView>(key, r),
     onError: (e) => {
       if (isStatus(e, 409)) {
         setChanged(true)

@@ -80,7 +80,7 @@ class Box(Exam):
         r = self.client.post(self.api(repo, pr) + "/answers", headers=HEADERS, json={
             "attempt": body["attempt"], "head_sha": body["head_sha"],
             "answers": answers_for(body, **kw)})
-        assert r.status_code == 200
+        assert r.status_code == 202
 
     def records(self, repo):
         d = Path(self.cfg.state_dir) / "exam-records" / repo

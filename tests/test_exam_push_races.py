@@ -39,7 +39,7 @@ def test_a_push_during_the_follow_up_session_replaces_the_failed_attempts(tmp_pa
             box.github.head = NEW
             box.request()
     box.session = moving
-    assert submit(box, first, answers=answers_for(first, wrong=("q0",))).status_code == 200
+    assert submit(box, first, answers=answers_for(first, wrong=("q0",))).status_code == 202
     settle(box)
     body = box.read().json()
     assert (body["state"], body["head_sha"], body["attempt"]) == ("open", NEW, 1)

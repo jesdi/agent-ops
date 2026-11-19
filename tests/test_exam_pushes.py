@@ -84,7 +84,7 @@ def test_a_push_while_the_exam_is_open_replaces_it_with_one_on_the_new_head(tmp_
     box = box_for(tmp_path, monkeypatch, grades={"t0": "pass", "t1": "partial"})
     body = opened(box)
     failed = answers_for(body, wrong=("q0", "q1"))
-    assert submit(box, body, failed).status_code == 200
+    assert submit(box, body, failed).status_code == 202
     box.work()
     assert box.read().json()["results"]
     push(box)
@@ -173,7 +173,7 @@ def test_a_push_during_grading_replaces_the_exam_and_drops_every_old_attempt(tmp
         box.github.head = NEW
         box.request()
     box.session.during = moved
-    assert submit(box, body).status_code == 200
+    assert submit(box, body).status_code == 202
     settle(box)
     body = box.read().json()
     assert body["state"] == "open"
@@ -195,7 +195,7 @@ def test_a_push_between_the_pass_and_its_status_is_judged_on_the_new_head(tmp_pa
             box.github.head = NEW
             box.request()
     box.github.post_status = moving
-    assert submit(box, first).status_code == 200
+    assert submit(box, first).status_code == 202
     settle(box)
     assert (REPO, HEAD, "exam", "success") in box.posted()
     assert len(box.session.deltas()) == 1

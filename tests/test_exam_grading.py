@@ -149,7 +149,7 @@ def submit(box, body, answers=None, **override):
 
 
 def graded_once(box, body, **kw):
-    assert submit(box, body, **kw).status_code == 200
+    assert submit(box, body, **kw).status_code == 202
     box.work()
     return box.read().json()
 
@@ -254,7 +254,7 @@ def test_a_multiple_choice_only_exam_is_graded_with_no_session(tmp_path, monkeyp
 def test_a_second_submission_of_the_same_attempt_is_409_and_grades_once(tmp_path, monkeypatch):
     box = box_for(tmp_path, monkeypatch)
     body = opened(box)
-    assert submit(box, body).status_code == 200
+    assert submit(box, body).status_code == 202
     assert submit(box, body).status_code == 409
     box.work()
     box.work()
@@ -294,7 +294,7 @@ def test_a_submission_with_a_missing_answer_is_422_and_changes_nothing(tmp_path,
     box.work()
     assert len(box.session.calls) == calls
     assert box.read().json()["state"] == "open"
-    assert submit(box, body).status_code == 200
+    assert submit(box, body).status_code == 202
 
 
 def test_a_result_for_a_head_that_moved_during_grading_is_dropped(tmp_path, monkeypatch):
@@ -302,7 +302,7 @@ def test_a_result_for_a_head_that_moved_during_grading_is_dropped(tmp_path, monk
     body = opened(box)
     box.session.during = lambda: setattr(box.github, "head", "def456")
     before = list(box.github.statuses)
-    assert submit(box, body).status_code == 200
+    assert submit(box, body).status_code == 202
     box.work()
     new = box.github.statuses[len(before):]
     assert not any(s[3] != "pending" for s in new)
@@ -319,7 +319,7 @@ def test_a_failed_grading_session_sets_error_keeps_the_answers_and_the_next_work
     box = box_for(tmp_path, monkeypatch)
     body = opened(box)
     box.session.grade_error = failure
-    assert submit(box, body).status_code == 200
+    assert submit(box, body).status_code == 202
     box.work()
     errored = box.read().json()
     assert errored["state"] == "error" and errored["detail"]
@@ -332,3 +332,12 @@ def test_a_failed_grading_session_sets_error_keeps_the_answers_and_the_next_work
     final = box.read().json()
     assert final["state"] == "passed"
     assert (REPO, HEAD, "exam", "success") in box.posted()
+
+
+def test_accepted_answers_are_answered_202_with_the_exam_as_the_get_reads_it(tmp_path, monkeypatch):
+    box = box_for(tmp_path, monkeypatch)
+    body = opened(box)
+    response = submit(box, body)
+    assert response.status_code == 202
+    assert response.json() == box.read().json()
+    assert response.json() == {**body, "state": "grading", "exam": None}

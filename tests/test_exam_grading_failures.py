@@ -20,7 +20,7 @@ def test_a_failed_lookup_after_the_follow_up_never_grades_old_answers_against_it
             raise subprocess.CalledProcessError(1, "gh")
         return pr(repo, n)
     box.github.pr = flaky
-    assert submit(box, first, answers=answers_for(first, wrong=("q0",))).status_code == 200
+    assert submit(box, first, answers=answers_for(first, wrong=("q0",))).status_code == 202
     box.work()
     assert failed
     body = box.read().json()
@@ -80,3 +80,4 @@ def test_a_retry_that_raises_keeps_the_failure_told_once(tmp_path, monkeypatch):
     box.work()
     assert box.read().json()["state"] == "error" and len(box.session.calls) == 3
     assert len(box.notes) == 1
+

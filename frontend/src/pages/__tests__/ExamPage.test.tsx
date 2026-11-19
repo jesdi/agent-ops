@@ -48,7 +48,7 @@ describe('exam page', () => {
     const bodies: unknown[] = []
     server.use(http.post(`${URL_PATH}/answers`, async ({ request }) => {
       bodies.push(await request.json())
-      return HttpResponse.json({ ...open, state: 'grading' }, { status: 202 })
+      return HttpResponse.json({ ...open, state: 'grading', exam: null }, { status: 202 })
     }))
     renderExam()
     await screen.findByText(q1.prompt)
@@ -210,7 +210,7 @@ describe('exam page', () => {
   it('is usable by keyboard alone at phone width', async () => {
     onPhone()
     serve(open)
-    server.use(http.post(`${URL_PATH}/answers`, () => HttpResponse.json({ ...open, state: 'grading' }, { status: 202 })))
+    server.use(http.post(`${URL_PATH}/answers`, () => HttpResponse.json({ ...open, state: 'grading', exam: null }, { status: 202 })))
     renderExam()
     const group = await screen.findByRole('radiogroup', { name: q1.prompt })
     expect(within(group).getAllByRole('radio')).toHaveLength(3)
