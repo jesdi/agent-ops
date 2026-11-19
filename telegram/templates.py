@@ -32,6 +32,7 @@ def _triage_report(lines: list[str], where: str) -> str:
 _RELOGIN = ("ssh -t agent@{host} 'CLAUDE_CONFIG_DIR=$HOME/agent-ops-state/"
             "claude-home $HOME/.local/bin/claude' then /login")
 
+
 def _listing(head: str, ctx: dict) -> str:
     return head + "\n" + "\n".join(ctx["lines"])
 

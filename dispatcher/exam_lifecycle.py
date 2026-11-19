@@ -74,8 +74,12 @@ def _by_labels(cfg, labels: dict, repo: str, n: int, pr: dict, io) -> Bypass:
     if not cfg.operator_login:
         return Bypass(ExamState.ERROR,
                       "operator_login is not set in targets.yaml, so no bypass label can be honoured")
-    events = io.github.label_events(repo, n)
-    modes = {labels[label] for label in marked if _applied_by(events, label) == cfg.operator_login}
+    return _by_owner(labels, marked, io.github.label_events(repo, n), cfg.operator_login)
+
+
+def _by_owner(labels: dict, marked: list[str], events: list[dict], login: str) -> Bypass:
+    """The bypass of the `marked` labels that `login` added last."""
+    modes = {labels[label] for label in marked if _applied_by(events, label) == login}
     # ponytail: skip outranks defer when the owner added both labels
     return Bypass(ExamState.SKIPPED) if "skip" in modes else Bypass(deferred="defer" in modes)
 
