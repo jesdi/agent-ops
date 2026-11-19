@@ -133,12 +133,12 @@ const EXAM_POLL_MS = 3000
 /** The states the host leaves by itself. */
 const EXAM_WORKING: ExamState[] = ['generating', 'grading']
 
-/** The exam is not announced by live events: poll while the host works on it. */
+/** The exam is not announced by live events: poll while the host works on it, until it is gone. */
 export function useExam(owner: string, name: string, pr: string) {
   return useQuery({
     queryKey: queryKeys.exam(owner, name, pr),
     queryFn: () => api.exam(owner, name, pr),
     retry: false,
-    refetchInterval: ({ state }) => (state.data && EXAM_WORKING.includes(state.data.state) ? EXAM_POLL_MS : false),
+    refetchInterval: ({ state }) => (state.data && !state.error && EXAM_WORKING.includes(state.data.state) ? EXAM_POLL_MS : false),
   })
 }

@@ -93,6 +93,35 @@ describe('exam page', () => {
     expect(screen.getByText(/exam.*(posted|success)/i)).toBeInTheDocument()
   })
 
+  it('after a pass of a debt exam does not say a status is posted', async () => {
+    serve({
+      ...open, debt: true, state: 'passed', exam: null,
+      results: [{ attempt: 1, passed: true, score: 9, max: 10, questions: [] }],
+    })
+    renderExam()
+    expect(await screen.findByText(/\b9\b.*\b10\b/)).toBeInTheDocument()
+    expect(screen.getByText(/passed/i)).toBeInTheDocument()
+    expect(screen.queryByText(/posted|success/i)).not.toBeInTheDocument()
+  })
+
+  it('says the debt is cleared, not that there is no exam, once a graded debt exam is gone', async () => {
+    let calls = 0
+    server.use(http.get(URL_PATH, () => {
+      calls += 1
+      return calls < 2
+        ? HttpResponse.json({ ...open, debt: true, state: 'grading', exam: null })
+        : HttpResponse.json({ detail: 'exam not found' }, { status: 404 })
+    }))
+    renderExam()
+    expect(await screen.findByText(/grading/i)).toBeInTheDocument()
+    expect(await screen.findByText(/debt.*cleared/i, {}, { timeout: 9000 })).toBeInTheDocument()
+    expect(screen.queryByText(/no exam for/i)).not.toBeInTheDocument()
+    expect(screen.queryByText(/posted|success/i)).not.toBeInTheDocument()
+    const seen = calls
+    await new Promise((r) => setTimeout(r, 3500))
+    expect(calls).toBe(seen)   // a gone exam is not polled again
+  }, 16000)
+
   it('after a fail shows each miss with its explanation and hunk, then the follow-up questions', async () => {
     const hunk1 = '@@ -10,3 +10,4 @@ lease\n+assert owner == me'
     const hunk2 = '@@ -40,2 +40,3 @@ base\n+recheck_base(sha)'

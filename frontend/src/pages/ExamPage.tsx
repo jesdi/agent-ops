@@ -126,7 +126,7 @@ function PassedView({ data }: ViewProps) {
     <section className="space-y-1">
       <h2 className="font-medium">Passed</h2>
       <p>Score {last.score} / {last.max}</p>
-      <p>The exam status is posted as success.</p>
+      {!data.debt && <p>The exam status is posted as success.</p>}
     </section>
   ) : null
 }
@@ -168,12 +168,11 @@ function ExamBody({ data, answer }: ViewProps) {
   )
 }
 
-function ExamError({ error, exam }: { error: Error; exam: string }) {
-  return (
-    <p className="p-4 text-failed-fg">
-      {isStatus(error, 404) ? `There is no exam for ${exam}.` : `exam unavailable: ${error.message}`}
-    </p>
-  )
+/** `last` is the exam as the page last read it: a debt exam is deleted once it is passed. */
+function ExamError({ error, exam, last }: { error: Error; exam: string; last: ExamView | undefined }) {
+  if (!isStatus(error, 404)) return <p className="p-4 text-failed-fg">exam unavailable: {error.message}</p>
+  if (last?.debt) return <p className="p-4">The exam debt for {exam} is cleared. Its learning records are kept.</p>
+  return <p className="p-4 text-failed-fg">There is no exam for {exam}.</p>
 }
 
 export function ExamPage() {
@@ -181,6 +180,6 @@ export function ExamPage() {
   const exam = useExam(owner, name, pr)
   const answer = useAnswerExam(owner, name, pr, exam.data)
   if (exam.isPending) return <p className="p-4 text-ink-muted">loading exam…</p>
-  if (exam.isError) return <ExamError error={exam.error} exam={`${owner}/${name}#${pr}`} />
+  if (exam.isError) return <ExamError error={exam.error} exam={`${owner}/${name}#${pr}`} last={exam.data} />
   return <ExamBody data={exam.data} answer={answer} />
 }
