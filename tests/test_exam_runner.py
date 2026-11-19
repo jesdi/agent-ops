@@ -113,3 +113,26 @@ def test_grades_must_be_a_regular_file_with_a_grade_for_every_text_question(tmp_
         assert exams._grades(out, texts) == (None, "the grading session's grades are malformed")
     out.write_text('{"q1": {"grade": "partial"}}')
     assert exams._grades(out, texts) == ({"q1": {"grade": "partial"}}, "")
+
+
+def test_label_events_reads_every_page_and_keeps_only_label_changes():
+    calls = []
+    pages = [[{"event": "labeled", "label": {"name": "exam:skip"}, "actor": {"login": "jesdi"}},
+              {"event": "commented", "actor": {"login": "bot"}}],
+             [{"event": "unlabeled", "label": {"name": "exam:skip"}, "actor": None}]]
+    def run(argv, **kw):
+        calls.append(argv)
+        return SimpleNamespace(stdout=json.dumps(pages))
+    events = _github(run).label_events("o/r", 7)
+    assert events == [{"event": "labeled", "label": "exam:skip", "actor": "jesdi"},
+                      {"event": "unlabeled", "label": "exam:skip", "actor": ""}]
+    assert "--paginate" in calls[0] and "--slurp" in calls[0]
+    assert calls[0][-1] == "repos/o/r/issues/7/events?per_page=100"
+
+
+def test_pr_reads_the_fields_exam_work_needs():
+    doc = {"head": {"sha": "abc"}, "base": {"ref": "main"}, "title": "T", "body": None,
+           "state": "closed", "merged": True, "labels": [{"name": "exam:defer"}]}
+    pr = _github(lambda argv, **kw: SimpleNamespace(stdout=json.dumps(doc))).pr("o/r", 7)
+    assert pr == {"head_sha": "abc", "base_ref": "main", "title": "T", "body": None,
+                  "state": "closed", "merged": True, "labels": ["exam:defer"]}
