@@ -154,6 +154,12 @@ class Sources:
         self._kick_dispatcher()
         return doc
 
+    def submit_exam(self, repo: str, pr: int, attempt: int, head_sha: str, answers: dict) -> str:
+        outcome = exams.submit(self.state_dir, repo, pr, attempt, head_sha, answers)
+        if outcome == "ok":
+            self._kick_dispatcher()
+        return outcome
+
     def exam_state(self, repo: str, pr: int) -> dict | None:
         return exams.read(self.state_dir, repo, pr)
 

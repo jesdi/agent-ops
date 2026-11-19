@@ -36,13 +36,13 @@ def request(state_dir: str | Path, repo: str, pr: int) -> dict:
     with state_lock(state_dir, LOCK):
         existing = read(state_dir, repo, pr)
         if existing is not None:
-            if existing["state"] == "error":   # a request after a failure retries
+            if existing["state"] == "error" and not existing.get("grading"):   # a request after a failure retries
                 existing.update(state="new", wanted=True)
                 write_json_atomic(_path(state_dir, repo, pr), existing, indent=2)
             return existing
         doc = {"repo": repo, "pr": pr, "state": "new", "head_sha": None, "debt": False,
                "detail": "", "attempt": 0, "wanted": True, "job": None, "status": None,
-               "merged": False, "passed_concepts": []}
+               "merged": False, "passed_concepts": [], "grading": None, "results": []}
         write_json_atomic(_path(state_dir, repo, pr), doc, indent=2)
         return doc
 
@@ -88,8 +88,10 @@ def _claim(cfg, doc: dict, model: str, now) -> bool:
         return True
 
 
-def _generate(cfg, doc, pr, model, *, github, run, pr_exam, now) -> tuple[str, str]:
-    """Run one session; (state, detail)."""
+def _generate(cfg, doc, pr, model, *, github, run, pr_exam, now,
+              only=None, prior=None) -> tuple[str, str]:
+    """Run one session; (state, detail). `only` makes it a follow-up on those concepts,
+    `prior` is the exam it follows."""
     repo, n = doc["repo"], doc["pr"]
     job = _dir(cfg.state_dir, repo, n) / "job"
     shutil.rmtree(job, ignore_errors=True)
@@ -103,11 +105,13 @@ def _generate(cfg, doc, pr, model, *, github, run, pr_exam, now) -> tuple[str, s
         (job / "GLOSSARY.md").write_text(glossary)
     out, request = job / "exam.json", job / "request.json"
     spec = {
-        "mode": "first", "repo": repo, "pr": n, "head_sha": pr["head_sha"],
+        "mode": "followup" if only else "first", "repo": repo, "pr": n, "head_sha": pr["head_sha"],
         "diff": str(job / "diff.patch"), "body": str(job / "body.md"),
         "glossary": None if glossary is None else str(job / "GLOSSARY.md"),
         "records": str(records), "today": now().astimezone(timezone.utc).date().isoformat(),
-        "only_concepts": None, "prior_concepts": [], "prior_prompts": [], "out": str(out)}
+        "only_concepts": only, "out": str(out),
+        "prior_concepts": [c["id"] for c in (prior or {}).get("concepts", [])],
+        "prior_prompts": [q["prompt"] for q in (prior or {}).get("questions", [])]}
     request.write_text(json.dumps(spec))
     try:
         run(request, model=model, timeout=TIMEOUT)
@@ -124,7 +128,107 @@ def _generate(cfg, doc, pr, model, *, github, run, pr_exam, now) -> tuple[str, s
     if errors := pr_exam.validate(out, request):
         return "error", "; ".join(errors)
     write_json_atomic(_dir(cfg.state_dir, repo, n) / "public.json", pr_exam.public(out))
+    shutil.copyfile(out, _dir(cfg.state_dir, repo, n) / "exam.json")   # the key, out of the session's reach
     return "open", ""
+
+
+def _entry(cfg, usages, when):
+    return triage_entry(
+        cfg.models, lambda m: admits(usages, m, when, cfg.pace).admitted,
+        priority.order(priority.load(cfg.state_dir, routed_providers(cfg)),
+                       usages, when, cfg.pace))
+
+
+def submit(state_dir, repo: str, pr: int, attempt: int, head_sha: str, answers: dict) -> str:
+    """Accept the answers of the open attempt: "ok", "conflict" (repeated, earlier or
+    another head) or "incomplete". Changes nothing unless "ok"."""
+    with state_lock(state_dir, LOCK):
+        doc = read(state_dir, repo, pr)
+        if (doc is None or doc["state"] != "open" or doc["attempt"] != attempt
+                or doc["head_sha"] != head_sha):
+            return "conflict"
+        questions = public(state_dir, repo, pr)["questions"]
+        for q in questions:
+            a = answers.get(q["id"])
+            if isinstance(a, bool) or isinstance(a, int) != (q["type"] == "choice") \
+                    or not isinstance(a, (int, str)):
+                return "incomplete"
+        write_json_atomic(_dir(state_dir, repo, pr) / "answers.json", {q["id"]: answers[q["id"]] for q in questions})
+        doc.update(state="grading", grading={"attempt": attempt})
+        write_json_atomic(_path(state_dir, repo, pr), doc, indent=2)
+        return "ok"
+
+
+def _grade(cfg, doc, sha, model, *, github, run) -> tuple[dict | None, str]:
+    """Grades of the free-text answers by a fresh session; (grades, error)."""
+    d = _dir(cfg.state_dir, doc["repo"], doc["pr"])
+    key = json.loads((d / "exam.json").read_text())
+    answers = json.loads((d / "answers.json").read_text())
+    texts = [q for q in key["questions"] if q["type"] == "text"]
+    if not texts:
+        return {}, ""
+    job = d / "job"
+    shutil.rmtree(job, ignore_errors=True)
+    job.mkdir(parents=True)
+    (job / "diff.patch").write_text(github.diff(doc["repo"], doc["pr"]))
+    (job / "questions.json").write_text(json.dumps([
+        {"id": q["id"], "prompt": q["prompt"], "rubric": key["key"][q["id"]]["rubric"]} for q in texts]))
+    (job / "answers.json").write_text(json.dumps({q["id"]: answers[q["id"]] for q in texts}))
+    out, request = job / "grades.json", job / "request.json"
+    request.write_text(json.dumps({
+        "mode": "grade", "repo": doc["repo"], "pr": doc["pr"], "head_sha": sha,
+        "diff": str(job / "diff.patch"), "questions": str(job / "questions.json"),
+        "answers": str(job / "answers.json"), "out": str(out)}))
+    try:
+        run(request, model=model, timeout=TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return None, f"the grading session ran past {TIMEOUT // 60} minutes"
+    except (subprocess.SubprocessError, OSError) as exc:
+        return None, f"the grading session failed: {exc}"
+    if out.is_symlink() or not out.is_file():
+        return None, "the grading session wrote no regular grades file"
+    try:
+        grades = json.loads(out.read_text())
+        assert all(grades[q["id"]]["grade"] in ("pass", "partial", "fail") for q in texts)
+    except (ValueError, KeyError, TypeError, AssertionError):
+        return None, "the grading session's grades are malformed"
+    return grades, ""
+
+
+def _finish(cfg, doc, pr, sha, model, *, github, run, pr_exam, now) -> bool:
+    """Grade the submitted attempt and settle it; False when the head moved and the result was dropped."""
+    repo, n = doc["repo"], doc["pr"]
+    d = _dir(cfg.state_dir, repo, n)
+    _update(cfg.state_dir, repo, n, state="grading", detail="")
+    grades, error = _grade(cfg, doc, sha, model, github=github, run=run)
+    if github.pr(repo, n)["head_sha"] != sha:
+        return False
+    if grades is None:
+        _update(cfg.state_dir, repo, n, state="error", detail=error)
+        return True
+    (d / "grades.json").write_text(json.dumps(grades))
+    try:
+        scored = pr_exam.score(d / "exam.json", d / "answers.json", d / "grades.json")
+    except (ValueError, KeyError, subprocess.SubprocessError, OSError) as exc:
+        _update(cfg.state_dir, repo, n, state="error", detail=f"scoring failed: {exc}")
+        return True
+    result = {"attempt": doc["attempt"], "passed": scored["passed"], "score": scored["score"],
+              "max": scored["max"], "questions": [
+                  {k: v for k, v in q.items() if k in ("id", "concept", "points")
+                   or (q["points"] < 1 and k in ("explanation", "hunk"))} for q in scored["questions"]]}
+    fields = {"grading": None, "results": [*doc.get("results", []), result]}
+    if scored["passed"]:
+        github.post_status(repo, sha, "exam", "success", "Exam passed")
+        _update(cfg.state_dir, repo, n, state="passed", status={"sha": sha, "state": "success"}, **fields)
+        return True
+    prior = json.loads((d / "exam.json").read_text())
+    state, detail = _generate(cfg, doc, github.pr(repo, n), model, github=github, run=run,
+                              pr_exam=pr_exam, now=now, only=list(dict.fromkeys(scored["missed"])),
+                              prior=prior)
+    if github.pr(repo, n)["head_sha"] != sha:
+        return False
+    _update(cfg.state_dir, repo, n, state=state, detail=detail, attempt=doc["attempt"] + 1, **fields)
+    return True
 
 
 def work(cfg, *, github, run, pr_exam, notify, now, usages) -> None:
@@ -132,16 +236,23 @@ def work(cfg, *, github, run, pr_exam, notify, now, usages) -> None:
     runs, the questions are published. Runs outside task capacity."""
     for path in sorted(Path(cfg.state_dir, "exams").glob("*/*/*/state.json")):
         doc = json.loads(path.read_text())
+        if doc.get("grading"):
+            entry = _entry(cfg, usages, now())
+            if entry is None:
+                continue
+            sha = doc["head_sha"]
+            if github.pr(doc["repo"], doc["pr"])["head_sha"] != sha or not _finish(
+                    cfg, doc, github.pr(doc["repo"], doc["pr"]), sha, entry.model_id,
+                    github=github, run=run, pr_exam=pr_exam, now=now):
+                _update(cfg.state_dir, doc["repo"], doc["pr"], job=None, wanted=True,
+                        state="generating", grading=None)
+            continue
         if doc["state"] == "error" or not (doc["wanted"] or doc["job"]):
             continue
         repo, n = doc["repo"], doc["pr"]
         if doc["state"] == "new":
             doc = _update(cfg.state_dir, repo, n, state="generating")
-        when = now()
-        entry = triage_entry(
-            cfg.models, lambda m: admits(usages, m, when, cfg.pace).admitted,
-            priority.order(priority.load(cfg.state_dir, routed_providers(cfg)),
-                           usages, when, cfg.pace))
+        entry = _entry(cfg, usages, now())
         if entry is None or not _claim(cfg, doc, entry.model_id, now):
             continue
         pr = github.pr(repo, n)

@@ -19,6 +19,13 @@ class ExamRequest(BaseModel):
     pr: int = Field(strict=True, ge=1)
 
 
+class Answers(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    attempt: int = Field(strict=True)
+    head_sha: str
+    answers: dict[str, Annotated[int, Field(strict=True)] | str]
+
+
 class ExamAccepted(BaseModel):
     repo: str
     pr: int
@@ -70,6 +77,17 @@ def router(sources, cfg: Callable[[], Config]) -> APIRouter:
             raise HTTPException(404, "exam not found")
         return ExamView(**{k: doc[k] for k in ("repo", "pr", "state", "head_sha", "debt", "detail", "attempt")},
                         exam=state.public(cfg().state_dir, doc["repo"], doc["pr"]) if doc["state"] == "open" else None,
-                        results=[])
+                        results=doc.get("results", []))
+
+    @routes.post("/{owner}/{name}/{pr}/answers")
+    def answer(body: Answers, owner: Annotated[str, Path(pattern=rf"^{Slug}$")],
+               name: Annotated[str, Path(pattern=rf"^{Slug}$")],
+               pr: Annotated[int, Path(ge=1)], op: Operator = Depends(current_operator)):
+        outcome = sources.submit_exam(f"{owner}/{name}", pr, body.attempt, body.head_sha, body.answers)
+        if outcome == "conflict":
+            raise HTTPException(409, "this attempt is not open for answers")
+        if outcome == "incomplete":
+            raise HTTPException(422, "every question needs an answer")
+        return {"state": "grading"}
 
     return routes

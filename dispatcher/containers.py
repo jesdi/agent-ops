@@ -213,7 +213,7 @@ def exam_cmd(name: str, job: str, records: str, skill: str, memory: str, cpus: s
         "--memory", memory, "--cpus", cpus,
         *_runtime_args(runtime),
         "-v", f"{job}:{job}", "-w", job,
-        "-v", f"{records}:{records}:ro",
+        *(["-v", f"{records}:{records}:ro"] if records else []),
         "-v", f"{skill}:/skill:ro",
         image(), "bash", "-c", line,
     ]

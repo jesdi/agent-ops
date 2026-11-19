@@ -18,6 +18,9 @@ PROMPT = ("Follow the pr-exam skill at {skill}/SKILL.md. Read the generation req
           "{request}; write the exam it asks for to the `out` path it names, then run "
           "`python3 {skill}/pr_exam.py validate --request {request} <out>` and fix every "
           "error it names.")
+GRADE_PROMPT = ("Follow the pr-exam skill at {skill}/SKILL.md. Read the grading request at "
+                "{request}; grade each answer against its rubric and write the grades it asks "
+                "for to the `out` path it names.")
 
 
 def token(access: github_app.Access, repo: str) -> str:
@@ -83,6 +86,12 @@ class PrExam:
             raise ValueError(proc.stderr.strip() or "public failed")
         return json.loads(proc.stdout)
 
+    def score(self, exam: Path, answers: Path, grades: Path) -> dict:
+        proc = self._call("score", "--exam", exam, "--answers", answers, "--grades", grades)
+        if proc.returncode:
+            raise ValueError(proc.stderr.strip() or "score failed")
+        return json.loads(proc.stdout)
+
 
 def session(cfg, *, run=subprocess.run):
     """`run(request, model=, timeout=)` of `exams.work`: one headless container whose
@@ -91,12 +100,13 @@ def session(cfg, *, run=subprocess.run):
         job = request.parent
         spec = json.loads(request.read_text())
         prompt = job / "prompt.md"
-        prompt.write_text(PROMPT.format(skill="/skill", request=request))
+        text = GRADE_PROMPT if spec.get("mode") == "grade" else PROMPT
+        prompt.write_text(text.format(skill="/skill", request=request))
         name = f"exam-{job.parent.parent.name}-{job.parent.name}"
-        cmd = containers.exam_cmd(name, str(job), spec["records"], str(SCRIPT.parent),
+        cmd = containers.exam_cmd(name, str(job), spec.get("records"), str(SCRIPT.parent),
                                   cfg.session_memory, cfg.session_cpus, model, str(prompt))
         try:
-            run(cmd, capture_output=True, text=True, timeout=timeout)
+            run(cmd, capture_output=True, text=True, timeout=timeout, check=True)
         except subprocess.TimeoutExpired:
             try:
                 run(["podman", "kill", name], capture_output=True, text=True, timeout=60)
