@@ -38,13 +38,21 @@ def decide(cfg, repo: str, n: int, pr: dict, io) -> tuple[str, str]:
         return "error", "; ".join(conf["errors"])
     if not conf["enabled"]:
         return "disabled", ""
-    marked = [label for label in pr.get("labels", []) if label in conf["labels"]]
+    return _by_labels(cfg, conf["labels"], repo, n, pr, io)
+
+
+def _by_labels(cfg, labels: dict, repo: str, n: int, pr: dict, io) -> tuple[str, str]:
+    """(mode, detail) by the PR's bypass labels, `labels` mapping each to its mode."""
+    marked = [label for label in pr.get("labels", []) if label in labels]
     if not marked:
         return "none", ""
     if not cfg.operator_login:
         return "error", "operator_login is not set in targets.yaml, so no bypass label can be honoured"
-    events = io.github.label_events(repo, n)
-    modes = {conf["labels"][label] for label in marked
-             if _applied_by(events, label) == cfg.operator_login}
+    return _owner_mode(labels, marked, io.github.label_events(repo, n), cfg.operator_login), ""
+
+
+def _owner_mode(labels: dict, marked: list[str], events: list[dict], login: str) -> str:
+    """The mode of the `marked` labels that `login` added last."""
+    modes = {labels[label] for label in marked if _applied_by(events, label) == login}
     # ponytail: skip outranks defer when the owner added both labels
-    return next((m for m in ("skip", "defer") if m in modes), "none"), ""
+    return next((m for m in ("skip", "defer") if m in modes), "none")
