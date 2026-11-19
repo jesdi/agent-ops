@@ -43,7 +43,7 @@ function Misses({ result }: { result: ExamResult }) {
         <article key={m.id} className="space-y-1">
           <h2 className="font-medium">{m.concept}</h2>
           <p>{m.explanation}</p>
-          <pre className="overflow-x-auto rounded bg-black/20 p-2 text-sm">{m.hunk}</pre>
+          <pre className="overflow-x-auto rounded border border-border bg-surface p-2 text-sm">{m.hunk}</pre>
         </article>
       ))}
     </section>
