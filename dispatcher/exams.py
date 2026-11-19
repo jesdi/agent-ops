@@ -544,7 +544,7 @@ def _post_due(cfg, doc, github) -> None:
 def _reconcile(cfg, doc: dict, pr: dict, io) -> None:
     """Bring the exam in line with its PR as `pr`, read after `doc`, shows it. Only the
     requests `doc` counts are answered, and only once nothing holds the exam: a request
-    made since, or during a job, stays wanted."""
+    made since, or during a job, stays wanted. The operator hears of a bypass that failed."""
     bypass = exam_lifecycle.bypass(cfg, doc["repo"], doc["pr"], pr, io)
     with state_lock(cfg.state_dir, LOCK):
         cur = read(cfg.state_dir, doc["repo"], doc["pr"])
@@ -557,6 +557,8 @@ def _reconcile(cfg, doc: dict, pr: dict, io) -> None:
         if not exam_lifecycle.busy(cur):
             cur["reconciled"] = max(cur["reconciled"], doc["requested"])
         _write(cfg.state_dir, cur)
+    if cur["state"] == State.ERROR:   # a config or a label that cannot be honoured fails like a job
+        _tell_failure(cfg, cur, io.notify)
 
 
 def _step(cfg, doc: dict, io) -> bool:

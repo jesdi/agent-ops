@@ -113,6 +113,27 @@ def test_a_failed_job_sends_one_message_with_the_reason_and_its_retries_send_no_
     assert len(box.notes) == 1
 
 
+def told_once(box, reason):
+    box.request()
+    box.work()
+    [text] = box.notes
+    assert REF in text and reason in text
+    box.request()
+    box.work()
+    assert box.read().json()["state"] == "error"
+    assert len(box.notes) == 1
+
+
+def test_an_unset_operator_login_sends_one_failed_message_and_its_retries_send_no_more(tmp_path, monkeypatch):
+    told_once(bypass_box(tmp_path, monkeypatch, SKIP, operator=""), "operator_login")
+
+
+def test_a_refused_config_sends_one_failed_message_and_its_retries_send_no_more(tmp_path, monkeypatch):
+    box = bypass_box(tmp_path, monkeypatch, SKIP)
+    box.github.configs = {"main": '{"bogus": 1}'}
+    told_once(box, "unknown key: bogus")
+
+
 def test_repeating_a_request_or_the_work_sends_nothing(tmp_path, monkeypatch):
     box = graded_box(tmp_path, monkeypatch)
     opened(box)
