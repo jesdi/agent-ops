@@ -190,60 +190,72 @@ def _entry(cfg, usages, when):
                        usages, when, cfg.pace))
 
 
+def _is_open(doc: dict | None, attempt: int, head_sha: str) -> bool:
+    return (doc is not None and doc["state"] == "open" and doc["attempt"] == attempt
+            and doc["head_sha"] == head_sha)
+
+
+def _answers(q: dict, a) -> bool:
+    """A choice is answered by an int, a text question by a string."""
+    return not isinstance(a, bool) and isinstance(a, (int, str)) and isinstance(a, int) == (q["type"] == "choice")
+
+
 def submit(state_dir, repo: str, pr: int, attempt: int, head_sha: str, answers: dict) -> str:
     """Accept the answers of the open attempt: "ok", "conflict" (repeated, earlier or
     another head) or "incomplete". Changes nothing unless "ok"."""
     with state_lock(state_dir, LOCK):
         doc = read(state_dir, repo, pr)
-        if (doc is None or doc["state"] != "open" or doc["attempt"] != attempt
-                or doc["head_sha"] != head_sha):
+        if not _is_open(doc, attempt, head_sha):
             return "conflict"
         questions = public(state_dir, repo, pr)["questions"]
-        for q in questions:
-            a = answers.get(q["id"])
-            if isinstance(a, bool) or isinstance(a, int) != (q["type"] == "choice") \
-                    or not isinstance(a, (int, str)):
-                return "incomplete"
+        if not all(_answers(q, answers.get(q["id"])) for q in questions):
+            return "incomplete"
         write_json_atomic(_dir(state_dir, repo, pr) / "answers.json", {q["id"]: answers[q["id"]] for q in questions})
         doc.update(state="grading", grading={"attempt": attempt})
         write_json_atomic(_path(state_dir, repo, pr), doc, indent=2)
         return "ok"
 
 
-def _grade(cfg, doc, sha, model, *, github, run) -> tuple[dict | None, str]:
-    """Grades of the free-text answers by a fresh session; (grades, error)."""
-    d = _dir(cfg.state_dir, doc["repo"], doc["pr"])
-    key = json.loads((d / "exam.json").read_text())
-    answers = json.loads((d / "answers.json").read_text())
-    texts = [q for q in key["questions"] if q["type"] == "text"]
-    if not texts:
-        return {}, ""
-    job = d / "job"
-    shutil.rmtree(job, ignore_errors=True)
-    job.mkdir(parents=True)
-    (job / "diff.patch").write_text(github.diff(doc["repo"], doc["pr"]))
+def _grading_request(job: Path, doc, sha: str, diff: str, key: dict, answers: dict, texts: list) -> Path:
+    """Write the grading session's inputs; the request's path."""
+    (job / "diff.patch").write_text(diff)
     (job / "questions.json").write_text(json.dumps([
         {"id": q["id"], "prompt": q["prompt"], "rubric": key["key"][q["id"]]["rubric"]} for q in texts]))
     (job / "answers.json").write_text(json.dumps({q["id"]: answers[q["id"]] for q in texts}))
-    out, request = job / "grades.json", job / "request.json"
+    request = job / "request.json"
     request.write_text(json.dumps({
         "mode": "grade", "repo": doc["repo"], "pr": doc["pr"], "head_sha": sha,
         "diff": str(job / "diff.patch"), "questions": str(job / "questions.json"),
-        "answers": str(job / "answers.json"), "out": str(out)}))
-    try:
-        run(request, model=model, timeout=TIMEOUT)
-    except subprocess.TimeoutExpired:
-        return None, f"the grading session ran past {TIMEOUT // 60} minutes"
-    except (subprocess.SubprocessError, OSError) as exc:
-        return None, f"the grading session failed: {exc}"
+        "answers": str(job / "answers.json"), "out": str(job / "grades.json")}))
+    return request
+
+
+def _grades(out: Path, texts: list) -> tuple[dict | None, str]:
+    """The grading session's grades of `texts`; (None, error) unless every one is well formed."""
     if out.is_symlink() or not out.is_file():
         return None, "the grading session wrote no regular grades file"
     try:
         grades = json.loads(out.read_text())
-        assert all(grades[q["id"]]["grade"] in ("pass", "partial", "fail") for q in texts)
-    except (ValueError, KeyError, TypeError, AssertionError):
-        return None, "the grading session's grades are malformed"
-    return grades, ""
+        if all(grades[q["id"]]["grade"] in ("pass", "partial", "fail") for q in texts):
+            return grades, ""
+    except (ValueError, KeyError, TypeError):
+        pass
+    return None, "the grading session's grades are malformed"
+
+
+def _grade(cfg, doc, sha, model, io) -> tuple[dict | None, str]:
+    """Grades of the free-text answers by a fresh session; (grades, error)."""
+    d = _dir(cfg.state_dir, doc["repo"], doc["pr"])
+    key = json.loads((d / "exam.json").read_text())
+    texts = [q for q in key["questions"] if q["type"] == "text"]
+    if not texts:
+        return {}, ""
+    answers = json.loads((d / "answers.json").read_text())
+    job = _job(d)
+    request = _grading_request(job, doc, sha, io.github.diff(doc["repo"], doc["pr"]), key, answers, texts)
+    if error := _run(io, request, model, "the grading session"):
+        return None, error
+    return _grades(job / "grades.json", texts)
 
 
 def _record(cfg, d, repo, n, *, pr_exam, now) -> bool:
@@ -259,50 +271,79 @@ def _record(cfg, d, repo, n, *, pr_exam, now) -> bool:
     return True
 
 
-def _finish(cfg, doc, pr, sha, model, *, github, run, pr_exam, now) -> bool:
-    """Grade the submitted attempt and settle it; False when the head moved, so the caller replaces the exam."""
+def _score(cfg, doc, grades: dict | None, error: str, pr_exam) -> dict | None:
+    """Score the graded attempt into result.json; None (state=error) when it failed."""
     repo, n = doc["repo"], doc["pr"]
     d = _dir(cfg.state_dir, repo, n)
-    _update(cfg.state_dir, repo, n, state="grading", detail="")
-    grades, error = _grade(cfg, doc, sha, model, github=github, run=run)
-    diff = github.diff(repo, n)   # taken before the head check: it is the diff of `sha` when the check holds
-    if github.pr(repo, n)["head_sha"] != sha:
-        return False
     if grades is None:
         _update(cfg.state_dir, repo, n, state="error", detail=error)
-        return True
+        return None
     (d / "grades.json").write_text(json.dumps(grades))
     try:
         scored = pr_exam.score(d / "exam.json", d / "answers.json", d / "grades.json")
     except (ValueError, KeyError, subprocess.SubprocessError, OSError) as exc:
         _update(cfg.state_dir, repo, n, state="error", detail=f"scoring failed: {exc}")
-        return True
+        return None
     (d / "result.json").write_text(json.dumps(scored))
-    result = {"attempt": doc["attempt"], "passed": scored["passed"], "score": scored["score"],
-              "max": scored["max"], "questions": [
-                  {k: v for k, v in q.items() if k in ("id", "concept", "points")
-                   or (q["points"] < 1 and k in ("explanation", "hunk"))} for q in scored["questions"]]}
-    exam = json.loads((d / "exam.json").read_text())
+    return scored
+
+
+def _result(doc, scored: dict) -> dict:
+    """The attempt as the page shows it: explanations only where points were lost."""
+    return {"attempt": doc["attempt"], "passed": scored["passed"], "score": scored["score"],
+            "max": scored["max"], "questions": [
+                {k: v for k, v in q.items() if k in ("id", "concept", "points")
+                 or (q["points"] < 1 and k in ("explanation", "hunk"))} for q in scored["questions"]]}
+
+
+def _graded_fields(doc, scored: dict, exam: dict) -> dict:
     missed = set() if scored["passed"] else set(scored["missed"])   # missed concepts return in the follow-up
-    fields = {"grading": None, "results": [*doc.get("results", []), result],
-              "passed_concepts": list(dict.fromkeys(
-                  [*doc["passed_concepts"], *(c["id"] for c in exam["concepts"] if c["id"] not in missed)]))}
-    if scored["passed"]:
-        if not _record(cfg, d, repo, n, pr_exam=pr_exam, now=now):
-            return True
-        (d / "passed.diff").write_text(diff)
-        github.post_status(repo, sha, "exam", "success", "Exam passed")
-        _update(cfg.state_dir, repo, n, state="passed", status={"sha": sha, "state": "success"}, **fields)
+    return {"grading": None, "results": [*doc.get("results", []), _result(doc, scored)],
+            "passed_concepts": list(dict.fromkeys(
+                [*doc["passed_concepts"], *(c["id"] for c in exam["concepts"] if c["id"] not in missed)]))}
+
+
+def _pass(cfg, doc, sha: str, diff: str, fields: dict, io) -> bool:
+    repo, n = doc["repo"], doc["pr"]
+    d = _dir(cfg.state_dir, repo, n)
+    if not _record(cfg, d, repo, n, pr_exam=io.pr_exam, now=io.now):
         return True
-    if not _record(cfg, d, repo, n, pr_exam=pr_exam, now=now):
+    (d / "passed.diff").write_text(diff)
+    io.github.post_status(repo, sha, "exam", "success", "Exam passed")
+    _update(cfg.state_dir, repo, n, state="passed", status={"sha": sha, "state": "success"}, **fields)
+    return True
+
+
+def _follow_up(cfg, doc, sha: str, model: str, scored: dict, exam: dict, fields: dict, io) -> bool:
+    """Record the failed attempt and generate the follow-up on its missed concepts;
+    False when the head moved meanwhile."""
+    repo, n = doc["repo"], doc["pr"]
+    if not _record(cfg, _dir(cfg.state_dir, repo, n), repo, n, pr_exam=io.pr_exam, now=io.now):
         return True   # before the follow-up, which reads these records and replaces exam.json
-    state, detail = _generate(cfg, doc, github.pr(repo, n), model,
-                              SimpleNamespace(github=github, run=run, pr_exam=pr_exam, now=now),
+    state, detail = _generate(cfg, doc, io.github.pr(repo, n), model, io,
                               only=list(dict.fromkeys(scored["missed"])), prior=exam)
-    if github.pr(repo, n)["head_sha"] != sha:   # the exam on the old head is replaced, attempts and all
+    if io.github.pr(repo, n)["head_sha"] != sha:   # the exam on the old head is replaced, attempts and all
         return False
     _update(cfg.state_dir, repo, n, state=state, detail=detail, attempt=doc["attempt"] + 1, **fields)
     return True
+
+
+def _finish(cfg, doc, sha, model, io) -> bool:
+    """Grade the submitted attempt and settle it; False when the head moved, so the caller replaces the exam."""
+    repo, n = doc["repo"], doc["pr"]
+    _update(cfg.state_dir, repo, n, state="grading", detail="")
+    grades, error = _grade(cfg, doc, sha, model, io)
+    diff = io.github.diff(repo, n)   # taken before the head check: it is the diff of `sha` when the check holds
+    if io.github.pr(repo, n)["head_sha"] != sha:
+        return False
+    scored = _score(cfg, doc, grades, error, io.pr_exam)
+    if scored is None:
+        return True
+    exam = json.loads((_dir(cfg.state_dir, repo, n) / "exam.json").read_text())
+    fields = _graded_fields(doc, scored, exam)
+    if scored["passed"]:
+        return _pass(cfg, doc, sha, diff, fields, io)
+    return _follow_up(cfg, doc, sha, model, scored, exam, fields, io)
 
 
 def _reconcile(cfg, doc, github) -> dict | None:
@@ -343,8 +384,7 @@ def _work_grading(cfg, doc, io) -> None:
     entry = _entry(cfg, io.usages, io.now())
     if entry is None:
         return
-    if not _finish(cfg, doc, io.github.pr(doc["repo"], doc["pr"]), doc["head_sha"], entry.model_id,
-                   github=io.github, run=io.run, pr_exam=io.pr_exam, now=io.now):
+    if not _finish(cfg, doc, doc["head_sha"], entry.model_id, io):
         _replace(cfg, doc["repo"], doc["pr"])
 
 

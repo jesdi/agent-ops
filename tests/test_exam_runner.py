@@ -97,3 +97,27 @@ def test_public_parses_the_projection_and_raises_on_failure():
     assert _script(0, stdout='{"questions": []}')[0].public(Path("e")) == {"questions": []}
     _raises(lambda: _script(1, stderr=" bad \n")[0].public(Path("e")), "bad")
     _raises(lambda: _script(1)[0].public(Path("e")), "public failed")
+
+
+def test_score_and_record_raise_on_a_script_failure():
+    assert _script(0, stdout='{"passed": true}')[0].score(Path("e"), Path("a"), Path("g")) == {"passed": True}
+    _raises(lambda: _script(1)[0].score(Path("e"), Path("a"), Path("g")), "score failed")
+    ok, calls = _script(0)
+    ok.record(Path("rec"), Path("e"), Path("r"), "2026-11-19")
+    assert calls == [["record", "--records", "rec", "--exam", "e", "--result", "r", "--today", "2026-11-19"]]
+    _raises(lambda: _script(1, stderr="no\n")[0].record(Path("rec"), Path("e"), Path("r"), "d"), "no")
+
+
+def test_grades_must_be_a_regular_file_with_a_grade_for_every_text_question(tmp_path):
+    texts = [{"id": "q1"}]
+    out = tmp_path / "grades.json"
+    assert exams._grades(out, texts) == (None, "the grading session wrote no regular grades file")
+    (tmp_path / "elsewhere.json").write_text('{"q1": {"grade": "pass"}}')
+    out.symlink_to(tmp_path / "elsewhere.json")
+    assert exams._grades(out, texts)[0] is None
+    out.unlink()
+    for bad in ('not json', '[]', '{"q2": {"grade": "pass"}}', '{"q1": {"grade": "great"}}'):
+        out.write_text(bad)
+        assert exams._grades(out, texts) == (None, "the grading session's grades are malformed")
+    out.write_text('{"q1": {"grade": "partial"}}')
+    assert exams._grades(out, texts) == ({"q1": {"grade": "partial"}}, "")
