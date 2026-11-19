@@ -41,6 +41,9 @@ _TEMPLATES = {
     # session to attach to, so unlike every per-task template above these
     # carry no session/attach line at all. They stay on a bare "#{issue}"
     # regardless of multi_repository: there is no single project to name.
+    "exam_ready": "📝 Exam ready{debt}: {repo}#{pr}, {questions} {noun}.\n{url}",
+    "exam_result": "{icon} Exam {verdict}: {repo}#{pr}, {score}/{max}.\n{url}",
+    "exam_failed": "❌ Exam work failed: {repo}#{pr}: {reason}",
     "budget_stall": "⏳ #{issue} {title} — usage gate closed; resumes when headroom returns. {note}\n{url}",
     "budget_resume": "▶️ #{issue} {title} — usage gate open again; resuming. {note}\n{url}",
     "implement_started": "🛠 {ref} {title} — implement started, one session for {note}\n{url}\nsession task-{repository}-{issue}\n" + _ATTACH,
@@ -97,6 +100,13 @@ def render(template: str, multi_repository: bool = False, **ctx) -> str:
     if template == "triage_report":
         return _triage_report(list(ctx["lines"]),
                               ctx.get("triage_dir") or "<state_dir>/triage/")
+    if template == "exam_ready":
+        n = ctx["questions"]
+        ctx = {**ctx, "noun": "question" if n == 1 else "questions",
+               "debt": " (debt)" if ctx.get("debt") else ""}
+    elif template == "exam_result":
+        ctx = {**ctx, "verdict": "pass" if ctx["passed"] else "fail",
+               "icon": "✅" if ctx["passed"] else "🔴"}
     if "issue" in ctx:
         ctx = {**ctx, "ref": task_ref(ctx.get("repository", ""), ctx["issue"],
                                       multi_repository)}

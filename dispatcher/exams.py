@@ -20,6 +20,7 @@ from dispatcher.config import routed_providers
 from dispatcher.models import triage_entry
 from dispatcher.state import state_lock, write_json_atomic
 from dispatcher.usage import admits
+from telegram.templates import render
 
 LOCK = "exams.lock"
 TIMEOUT = 1200   # a session runs 20 minutes at most
@@ -150,6 +151,8 @@ def _apply(cfg, doc: dict, job: dict, change) -> bool:
             return False
         cur["job"] = None
         change(cur, _dir(cfg.state_dir, doc["repo"], doc["pr"]))
+        if cur["state"] != "error" and change not in (_keep, _moved):
+            cur.pop("notified_error", None)   # only a result resolves a failure; a release or a drop does not
         _write(cfg.state_dir, cur)
         return True
 
@@ -469,9 +472,13 @@ def _mark_pending(cfg, doc, github, sha: str) -> None:
         _update(cfg.state_dir, doc["repo"], doc["pr"], status=status)
 
 
+def _keep(cur: dict, d: Path) -> None:
+    pass
+
+
 def _release(cfg, doc, job: dict) -> None:
     """Give up a job that raised: the next work claims it again."""
-    _apply(cfg, doc, job, lambda cur, d: None)
+    _apply(cfg, doc, job, _keep)
 
 
 def _job(doc: dict, pr: dict, now) -> dict:
@@ -480,20 +487,46 @@ def _job(doc: dict, pr: dict, now) -> dict:
             "attempt": doc["attempt"], "started": now().isoformat()}
 
 
+def _url(cfg, doc: dict) -> str:
+    return f"{cfg.console_url}/exam/{doc['repo']}/{doc['pr']}"
+
+
 def _settle(cfg, doc, job: dict, change, io) -> bool:
-    """Apply the job's change; True when it left a result rather than an error or a drop."""
+    """Apply the job's change; True when it left a result rather than an error or a drop.
+    The operator hears of a ready exam, a graded attempt and a new failure."""
     applied = _apply(cfg, doc, job, change)
     after = read(cfg.state_dir, doc["repo"], doc["pr"])
-    if not applied or after is None or change is _moved or after["state"] == "error":
+    if not applied or after is None or change is _moved:
         return False
-    if job["kind"] != "grade" and after["state"] == "open":
+    if after["state"] == "error":
+        _notify_failed(cfg, after, io.notify)
+        return False
+    if job["kind"] == "grade":
+        _notify_result(cfg, after, io.notify)
+    if after["state"] == "open":
         _notify_ready(cfg, after, io.notify)
     return True
 
 
 def _notify_ready(cfg, doc: dict, notify) -> None:
     if cfg.console_url:
-        notify(f"Exam ready: {cfg.console_url}/exam/{doc['repo']}/{doc['pr']}")
+        notify(render("exam_ready", repo=doc["repo"], pr=doc["pr"], url=_url(cfg, doc), debt=doc["debt"],
+                      questions=len(public(cfg.state_dir, doc["repo"], doc["pr"])["questions"])))
+
+
+def _notify_result(cfg, doc: dict, notify) -> None:
+    if cfg.console_url:
+        r = doc["results"][-1]
+        notify(render("exam_result", repo=doc["repo"], pr=doc["pr"], passed=r["passed"],
+                      score=r["score"], max=r["max"], url=_url(cfg, doc)))
+
+
+def _notify_failed(cfg, doc: dict, notify) -> None:
+    """One message per reason: a retry that fails the same way stays quiet."""
+    if doc["detail"] == doc.get("notified_error"):
+        return
+    _update(cfg.state_dir, doc["repo"], doc["pr"], notified_error=doc["detail"])
+    notify(render("exam_failed", repo=doc["repo"], pr=doc["pr"], reason=doc["detail"]))
 
 
 def _run_job(cfg, doc, io) -> bool:

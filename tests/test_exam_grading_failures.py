@@ -55,3 +55,28 @@ def test_a_failed_status_post_is_retried_without_writing_the_records_again(tmp_p
     assert len(box.records(REPO)) == 5
     box.work()
     assert [s for s in box.posted() if s[3] == "success"] == [(REPO, HEAD, "exam", "success")]
+
+
+def test_a_retry_that_raises_keeps_the_failure_told_once(tmp_path, monkeypatch):
+    from tests.test_exam_generation import Box, Session
+    box = Box(tmp_path, monkeypatch, session=Session("invalid"))
+    box.request()
+    box.work()
+    pr, raised = box.github.pr, []
+
+    def flaky(repo, n):
+        if len(box.session.calls) == 2 and not raised:
+            raised.append(1)
+            raise subprocess.CalledProcessError(1, "gh")
+        return pr(repo, n)
+    box.github.pr = flaky
+    box.request()
+    try:
+        box.work()
+    except subprocess.CalledProcessError:
+        pass
+    assert raised
+    box.request()
+    box.work()
+    assert box.read().json()["state"] == "error" and len(box.session.calls) == 3
+    assert len(box.notes) == 1
