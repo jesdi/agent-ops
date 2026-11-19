@@ -90,28 +90,52 @@ def task_ref(repository: str, issue: int, multi_repository: bool) -> str:
     return f"{repository}#{issue}" if multi_repository and repository else f"#{issue}"
 
 
+def _listing(head: str):
+    def text(ctx: dict) -> str:
+        return head + "\n" + "\n".join(ctx["lines"])
+    return text
+
+
+def _triage(ctx: dict) -> str:
+    return _triage_report(list(ctx["lines"]), ctx.get("triage_dir") or "<state_dir>/triage/")
+
+
+# templates that are their whole text, built from the context alone
+_WHOLE = {
+    "daily_digest": _listing("📋 agent-ops daily digest"),
+    "status": _listing("📟 agent-ops status"),
+    "queue": _listing("📊 agent-ops queue"),
+    "triage_report": _triage,
+}
+
+
+def _exam_ready(ctx: dict) -> dict:
+    return {**ctx, "noun": "question" if ctx["questions"] == 1 else "questions",
+            "debt": " (debt)" if ctx.get("debt") else ""}
+
+
+def _exam_result(ctx: dict) -> dict:
+    return {**ctx, "verdict": "pass" if ctx["passed"] else "fail",
+            "icon": "✅" if ctx["passed"] else "🔴"}
+
+
+# the fields a template derives from its context
+_DERIVED = {"exam_ready": _exam_ready, "exam_result": _exam_result}
+
+_APPROVE_LINK = ("awaiting_plan_review", "plan_parked", "parked_question")
+
+
+def _approve_line(template: str, ctx: dict) -> str:
+    if template in _APPROVE_LINK and ctx.get("console"):
+        return f"\nread & approve: {ctx['console']}/task/{ctx['repository']}/{ctx['issue']}"
+    return ""
+
+
 def render(template: str, multi_repository: bool = False, **ctx) -> str:
-    if template == "daily_digest":
-        return "📋 agent-ops daily digest\n" + "\n".join(ctx["lines"])
-    if template == "status":
-        return "📟 agent-ops status\n" + "\n".join(ctx["lines"])
-    if template == "queue":
-        return "📊 agent-ops queue\n" + "\n".join(ctx["lines"])
-    if template == "triage_report":
-        return _triage_report(list(ctx["lines"]),
-                              ctx.get("triage_dir") or "<state_dir>/triage/")
-    if template == "exam_ready":
-        n = ctx["questions"]
-        ctx = {**ctx, "noun": "question" if n == 1 else "questions",
-               "debt": " (debt)" if ctx.get("debt") else ""}
-    elif template == "exam_result":
-        ctx = {**ctx, "verdict": "pass" if ctx["passed"] else "fail",
-               "icon": "✅" if ctx["passed"] else "🔴"}
+    if template in _WHOLE:
+        return _WHOLE[template](ctx)
+    ctx = _DERIVED.get(template, dict)(ctx)
     if "issue" in ctx:
         ctx = {**ctx, "ref": task_ref(ctx.get("repository", ""), ctx["issue"],
                                       multi_repository)}
-    text = _TEMPLATES[template].format(**ctx)
-    if template in ("awaiting_plan_review", "plan_parked", "parked_question") and ctx.get("console"):
-        text += (f"\nread & approve: {ctx['console']}/task/"
-                 f"{ctx['repository']}/{ctx['issue']}")
-    return text
+    return _TEMPLATES[template].format(**ctx) + _approve_line(template, ctx)
