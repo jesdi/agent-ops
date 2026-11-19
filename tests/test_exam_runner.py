@@ -44,3 +44,56 @@ def test_only_the_exam_token_holds_statuses_write(tmp_path):
     exam_runner.Github(access, None, run=run).post_status("O/r", "abc", "exam", "pending", "x")
     assert asked == [exam_runner.PERMISSIONS] and calls == ["T"]
     assert exam_runner.PERMISSIONS["statuses"] == "write"
+
+
+def _github(run):
+    access = SimpleNamespace(grants=lambda repos, perms: {repos[0].lower(): SimpleNamespace(token="T")})
+    return exam_runner.Github(access, None, run=run)
+
+
+def _gh_fails(stderr):
+    def run(argv, **kw):
+        raise subprocess.CalledProcessError(1, argv, stderr=stderr)
+    return run
+
+
+def test_a_missing_glossary_reads_as_none_and_other_failures_raise():
+    assert _github(lambda argv, **kw: SimpleNamespace(stdout="terms")).file("o/r", "main", "GLOSSARY.md") == "terms"
+    assert _github(_gh_fails("HTTP 404: Not Found")).file("o/r", "main", "GLOSSARY.md") is None
+    try:
+        _github(_gh_fails("HTTP 500")).file("o/r", "main", "GLOSSARY.md")
+    except subprocess.CalledProcessError:
+        pass
+    else:
+        raise AssertionError("a 500 must not read as a missing glossary")
+
+
+def _script(returncode, stdout="", stderr=""):
+    calls = []
+    def run(argv, **kw):
+        calls.append(argv[3:])
+        return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+    return exam_runner.PrExam(Path("/s/pr_exam.py"), run=run), calls
+
+
+def _raises(fn, message):
+    try:
+        fn()
+    except ValueError as exc:
+        assert str(exc) == message
+    else:
+        raise AssertionError(f"expected ValueError({message!r})")
+
+
+def test_validate_returns_the_scripts_errors():
+    ok, calls = _script(0)
+    assert ok.validate(Path("e.json"), Path("r.json")) == []
+    assert calls == [["validate", "--request", "r.json", "e.json"]]
+    assert _script(1, stderr="a\nb")[0].validate(Path("e"), Path("r")) == ["a", "b"]
+    assert _script(1)[0].validate(Path("e"), Path("r")) == ["validate failed"]
+
+
+def test_public_parses_the_projection_and_raises_on_failure():
+    assert _script(0, stdout='{"questions": []}')[0].public(Path("e")) == {"questions": []}
+    _raises(lambda: _script(1, stderr=" bad \n")[0].public(Path("e")), "bad")
+    _raises(lambda: _script(1)[0].public(Path("e")), "public failed")
