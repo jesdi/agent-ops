@@ -71,7 +71,7 @@ class SPAStaticFiles(StaticFiles):
             resp.headers["Cache-Control"] = "no-cache"
         return resp
 
-SSE_KEYS = ("board", "queue", "usage", "failures", "history")
+SSE_KEYS = ("board", "queue", "usage", "failures", "history", "exams")
 HEARTBEAT_SECONDS = 15.0
 EVENTS_SCAN_LIMIT = 5000
 # How long a model-settings save waits for a dispatcher pass to finish.

@@ -17,6 +17,7 @@ const CHANGED_TO_KEYS: Record<string, readonly (readonly string[])[]> = {
   usage: [queryKeys.usage],
   failures: [queryKeys.failures],
   history: [queryKeys.history],
+  exams: [queryKeys.exams],
 }
 
 export function LiveUpdatesProvider({ children }: { children: ReactNode }) {

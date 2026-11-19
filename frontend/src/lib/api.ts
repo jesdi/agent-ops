@@ -120,10 +120,13 @@ export interface ExamState {
   results: ExamResult[]
 }
 
+export interface ExamDebt { repo: string; pr: number; title?: string; head_sha: string | null; state: string; debt: boolean }
+
 const examPath = (owner: string, name: string, pr: string) =>
   `/exam/${[owner, name, pr].map(encodeURIComponent).join('/')}`
 
 export const api = {
+  exams: () => request<ExamDebt[]>('/exams'),
   exam: (owner: string, name: string, pr: string) => request<ExamState>(examPath(owner, name, pr)),
   answerExam: (owner: string, name: string, pr: string, body: { attempt: number; head_sha: string; answers: Record<string, number | string> }) =>
     post<Partial<ExamState>>(`${examPath(owner, name, pr)}/answers`, body),

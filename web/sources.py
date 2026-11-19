@@ -513,6 +513,7 @@ class Sources:
              if (root / "failures").exists() else [])
             + (list((root / "quarantine").iterdir())
                if (root / "quarantine").exists() else []))
+        exams = digest((root / "exams").glob("*/*/*/state.json"))
         events = root / "events.jsonl"
         history = str(events.stat().st_size) if events.exists() else "0"
         # Note: "board" and "queue" share the same digest (an intentional
@@ -522,7 +523,7 @@ class Sources:
         # but it was not deliberate coupling; recorded here for future readers.
         return json.dumps({"board": board, "queue": board,
                            "usage": usage, "failures": failures,
-                           "history": history}, sort_keys=True)
+                           "history": history, "exams": exams}, sort_keys=True)
 
     def messages(self, repository: str, issue: int) -> list:
         return msgq.all_messages(self._state_dir, repository, issue)

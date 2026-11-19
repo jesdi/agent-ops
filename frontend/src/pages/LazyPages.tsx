@@ -5,6 +5,7 @@ export const FailuresPage = lazy(() => import('./FailuresPage').then((m) => ({ d
 export const HistoryPage = lazy(() => import('./HistoryPage').then((m) => ({ default: m.HistoryPage })))
 export const TaskPage = lazy(() => import('./TaskPage').then((m) => ({ default: m.TaskPage })))
 export const ReviewPage = lazy(() => import('./ReviewPage').then((m) => ({ default: m.ReviewPage })))
+export const ExamDebtPage = lazy(() => import('./ExamDebtPage').then((m) => ({ default: m.ExamDebtPage })))
 export const ExamPage = lazy(() => import('./ExamPage').then((m) => ({ default: m.ExamPage })))
 export const SettingsPage = lazy(() => import('./SettingsPage').then((m) => ({ default: m.SettingsPage })))
 

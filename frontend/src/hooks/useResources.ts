@@ -118,6 +118,17 @@ export function useTaskArtifacts(repository: string, issue: number) {
   })
 }
 
+/** Only the debt exams: the nav count and the debt page share this entry. */
+export function useExamDebts() {
+  const refetchInterval = useFallbackInterval()
+  return useQuery({
+    queryKey: queryKeys.exams,
+    queryFn: api.exams,
+    select: (list) => list.filter((e) => e.debt),
+    refetchInterval,
+  })
+}
+
 const EXAM_POLL_MS = 3000
 
 /** The exam is not announced by live events: poll while the host works on it. */

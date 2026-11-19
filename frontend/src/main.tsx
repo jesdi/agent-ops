@@ -7,7 +7,7 @@ import { AppShell } from './components/AppShell'
 import { PageErrorBoundary } from './components/PageErrorBoundary'
 import { LiveUpdatesProvider } from './hooks/useLiveUpdates'
 import { BoardPage } from './pages/BoardPage'
-import { ExamPage, FailuresPage, HistoryPage, ReviewPage, SettingsPage, TaskPage, NewOnboardingPage, OnboardingsPage, OnboardingPage } from './pages/LazyPages'
+import { ExamDebtPage, ExamPage, FailuresPage, HistoryPage, ReviewPage, SettingsPage, TaskPage, NewOnboardingPage, OnboardingsPage, OnboardingPage } from './pages/LazyPages'
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { staleTime: 1000, retry: 1 } },
@@ -29,6 +29,7 @@ createRoot(document.getElementById('root')!).render(
               <Route path="/onboarding" element={<OnboardingsPage />} />
               <Route path="/onboarding/new" element={<NewOnboardingPage />} />
               <Route path="/onboarding/projects/:project" element={<OnboardingPage />} />
+              <Route path="/exam-debt" element={<ExamDebtPage />} />
               <Route path="/exam/:owner/:name/:pr" element={<ExamPage />} />
               <Route path="/settings" element={<SettingsPage />} />
             </Route>

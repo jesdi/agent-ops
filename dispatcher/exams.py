@@ -555,11 +555,14 @@ def _bypass(cfg, doc, io) -> tuple[bool, str]:
     keeps an open one, queuing "deferred" on the head; an error or a disabled repo posts
     nothing. Otherwise the request goes on as it would without a label."""
     mode, detail, head = exam_bypass.decide(cfg, doc["repo"], doc["pr"], io)
+    title = io.github.pr(doc["repo"], doc["pr"])["title"] if mode == "defer" else None   # the debt list shows it
     with state_lock(cfg.state_dir, LOCK):
         cur = read(cfg.state_dir, doc["repo"], doc["pr"])
         if cur["job"] or cur["grading"]:
             return False, head
         cur["debt"] = mode == "defer" or cur["merged"]   # a merge without a pass stays debt
+        if title is not None:
+            cur["title"] = title
         settled = mode in ("error", "disabled", "skip") or (mode == "defer" and cur["state"] == "open")
         if settled:
             cur["reconciled"] = max(cur["reconciled"], doc["requested"])
@@ -590,7 +593,7 @@ def _lifecycle(cfg, doc, github) -> bool:
         elif pr["merged"]:
             gone = cur["state"] in ("passed", "skipped", "disabled") or (cur["attempt"] == 0 and not cur["debt"] and cur["status"] is None and not cur["job"])
             if not gone and not (cur["merged"] and cur["debt"]):
-                _write(cfg.state_dir, {**cur, "merged": True, "debt": True})
+                _write(cfg.state_dir, {**cur, "merged": True, "debt": True, "title": pr["title"]})
         else:
             gone = False
         if gone:
@@ -601,7 +604,7 @@ def _lifecycle(cfg, doc, github) -> bool:
 def debts(state_dir: str | Path) -> list[dict]:
     """The exams that are open debt, as the console lists them."""
     docs = (json.loads(p.read_text()) for p in sorted(Path(state_dir, "exams").glob("*/*/*/state.json")))
-    return [{k: d[k] for k in ("repo", "pr", "head_sha", "state", "debt")}
+    return [{k: d.get(k) for k in ("repo", "pr", "head_sha", "state", "debt", "title")}
             for d in docs if d["state"] == "open" and d["debt"]]
 
 
