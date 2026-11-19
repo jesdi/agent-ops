@@ -257,6 +257,7 @@ def main() -> None:
     ap.add_argument("--triage", action="store_true")
     ap.add_argument("--triage-run", action="store_true")
     ap.add_argument("--exam-run", action="store_true")
+    ap.add_argument("--exam-sweep", action="store_true")
     ap.add_argument("--migrate-tmux", action="store_true")
     args = ap.parse_args()
     boot, cfg = _load(args.config)
@@ -265,6 +266,9 @@ def main() -> None:
     migrate.refuse_legacy_task_files(cfg.state_dir, args)
     if args.exam_run:
         exam_runner.run(cfg, deps)
+        return
+    if args.exam_sweep:
+        exam_runner.sweep(cfg, deps)
         return
     _run_mode(args, boot, cfg, deps)
 

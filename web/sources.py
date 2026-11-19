@@ -160,6 +160,9 @@ class Sources:
             self._kick_dispatcher()
         return outcome
 
+    def exam_debts(self) -> list[dict]:
+        return exams.debts(self.state_dir)
+
     def exam_state(self, repo: str, pr: int) -> dict | None:
         return exams.read(self.state_dir, repo, pr)
 

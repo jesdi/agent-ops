@@ -140,13 +140,13 @@ def session(cfg, *, run=subprocess.run):
     return go
 
 
-def tick(cfg, deps, usages) -> None:
+def tick(cfg, deps, usages, sweep: bool = False) -> None:
     """One pass's exam work, outside task capacity. No App registered: nothing runs."""
     if not deps.app.registered():
         return
     exams.work(cfg, github=Github(deps.access, deps.app), run=session(cfg), pr_exam=PrExam(),
                notify=lambda text: deps.notifier.send("status", lines=[text]),
-               now=deps.clock, usages=usages)
+               now=deps.clock, usages=usages, sweep=sweep)
 
 
 def _running() -> bool:
@@ -165,10 +165,15 @@ def launch(cfg, config_path: str) -> None:
         print("exam runner launch failed: herdr tab could not run it", file=sys.stderr)
 
 
-def run(cfg, deps) -> None:
+def run(cfg, deps, sweep: bool = False) -> None:
     """The runner's one round of exam work. Runners never overlap: a second exits at once."""
     try:
         with state_lock(cfg.state_dir, RUN_LOCK, timeout=0):
-            tick(cfg, deps, fetch_all(cfg))
+            tick(cfg, deps, fetch_all(cfg), sweep)
     except TimeoutError:
         print("exam runner already running", file=sys.stderr)
+
+
+def sweep(cfg, deps) -> None:
+    """The daily sweep: settle every exam's PR, then the usual work."""
+    run(cfg, deps, sweep=True)

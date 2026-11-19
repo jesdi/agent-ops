@@ -50,9 +50,9 @@ class ExamView(BaseModel):
 
 
 def router(sources, cfg: Callable[[], Config]) -> APIRouter:
-    routes = APIRouter(prefix="/api/exam")
+    routes = APIRouter()
 
-    @routes.post("", response_model=ExamAccepted)
+    @routes.post("/api/exam", response_model=ExamAccepted)
     def request_exam(body: ExamRequest, op: Operator = Depends(current_operator)):
         console = cfg().console_url
         if not console:
@@ -61,14 +61,18 @@ def router(sources, cfg: Callable[[], Config]) -> APIRouter:
         return ExamAccepted(**{k: doc[k] for k in ("repo", "pr", "state", "head_sha", "debt", "detail")},
                             url=f"{console}/exam/{body.repo}/{body.pr}", pending=True)
 
-    @routes.get("/host")
+    @routes.get("/api/exams")
+    def listing(op: Operator = Depends(current_operator)):
+        return sources.exam_debts()
+
+    @routes.get("/api/exam/host")
     def host(op: Operator = Depends(current_operator)):
         found = state.app(cfg().state_dir)
         if found is None:
             raise HTTPException(503, "the exam App is not known yet")
         return found
 
-    @routes.get("/{owner}/{name}/{pr}", response_model=ExamView)
+    @routes.get("/api/exam/{owner}/{name}/{pr}", response_model=ExamView)
     def read_exam(owner: Annotated[str, Path(pattern=rf"^{Slug}$")],
                   name: Annotated[str, Path(pattern=rf"^{Slug}$")],
                   pr: Annotated[int, Path(ge=1)], op: Operator = Depends(current_operator)):
@@ -79,7 +83,7 @@ def router(sources, cfg: Callable[[], Config]) -> APIRouter:
                         exam=state.public(cfg().state_dir, doc["repo"], doc["pr"]) if doc["state"] == "open" else None,
                         results=doc.get("results", []))
 
-    @routes.post("/{owner}/{name}/{pr}/answers")
+    @routes.post("/api/exam/{owner}/{name}/{pr}/answers")
     def answer(body: Answers, owner: Annotated[str, Path(pattern=rf"^{Slug}$")],
                name: Annotated[str, Path(pattern=rf"^{Slug}$")],
                pr: Annotated[int, Path(ge=1)], op: Operator = Depends(current_operator)):

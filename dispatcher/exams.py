@@ -133,7 +133,7 @@ def _claim(cfg, doc: dict, job: dict, now) -> bool:
     """Record `job` unless the exam moved on since `doc` was read or a live job is recorded."""
     with state_lock(cfg.state_dir, LOCK):
         cur = read(cfg.state_dir, doc["repo"], doc["pr"])
-        if not _claimable(cur, job, now):
+        if cur is None or not _claimable(cur, job, now):
             return False
         if job["kind"] not in FIXED:   # the head was read after these requests
             cur["reconciled"] = max(cur["reconciled"], doc["requested"])
@@ -368,7 +368,12 @@ def _status(sha: str, state: str, description: str) -> dict:
     return {"sha": sha, "state": state, "description": description}
 
 
-def _graded(cfg, job: dict, scored: dict, diff: str, io):
+def _due_status(cur: dict, sha: str, description: str, merged: bool = False) -> dict | None:
+    """The success status to queue; a merged PR gets none, its exam is only debt."""
+    return None if cur["merged"] or merged else _status(sha, "success", description)
+
+
+def _graded(cfg, job: dict, scored: dict, diff: str, io, merged: bool = False):
     """The change a scored attempt makes: records written once, in the same locked step
     that leaves grading, so a later status failure never writes them again. A pass
     queues its status; a fail queues the follow-up on the missed concepts."""
@@ -380,7 +385,7 @@ def _graded(cfg, job: dict, scored: dict, diff: str, io):
         cur.update(_graded_fields(cur, scored, exam))
         if scored["passed"]:
             (d / "passed.diff").write_text(diff)
-            cur.update(state="passed", due=_status(job["head_sha"], "success", "Exam passed"))
+            cur.update(state="passed", due=_due_status(cur, job["head_sha"], "Exam passed", merged))
         else:
             cur.update(state="generating", followup={"only": list(dict.fromkeys(scored["missed"]))})
     return change
@@ -409,7 +414,7 @@ def _generated(job: dict, outcome: str, diff: str):
         if outcome == "passed":
             (d / "passed.diff").write_text(diff)
             cur.update(state="passed", head_sha=sha, delta=False,
-                       due=_status(sha, "success", "Exam passed"))
+                       due=_due_status(cur, sha, "Exam passed"))
             return
         (d / STAGED[0]).replace(d / "exam.json")
         (d / STAGED[1]).replace(d / "public.json")
@@ -417,7 +422,7 @@ def _generated(job: dict, outcome: str, diff: str):
             cur["results"] = []
         cur.update(state="open", head_sha=sha, attempt=cur["attempt"] + 1, delta=False, followup=None)
         if cur["debt"]:
-            cur["due"] = _status(sha, "success", "deferred")
+            cur["due"] = _due_status(cur, sha, "deferred")
     return change
 
 
@@ -428,12 +433,13 @@ def _head_moved(io, doc, job: dict) -> bool:
 def _execute_grade(cfg, doc, job: dict, model: str, io):
     diff = io.github.diff(doc["repo"], doc["pr"])
     grades, error = _grade(cfg, doc, job["head_sha"], diff, model, io)
-    if _head_moved(io, doc, job):
+    pr = io.github.pr(doc["repo"], doc["pr"])   # read after the session: a merge during grading queues no status
+    if pr["head_sha"] != job["head_sha"]:
         return _moved
     if grades is None:
         return _failed(error)
     scored, error = _score(_dir(cfg.state_dir, doc["repo"], doc["pr"]), grades, io.pr_exam)
-    return _failed(error) if scored is None else _graded(cfg, job, scored, diff, io)
+    return _failed(error) if scored is None else _graded(cfg, job, scored, diff, io, pr["merged"])
 
 
 def _execute(cfg, doc, job: dict, pr, model: str, io):
@@ -478,7 +484,7 @@ def _settle(cfg, doc, job: dict, change, io) -> bool:
     """Apply the job's change; True when it left a result rather than an error or a drop."""
     applied = _apply(cfg, doc, job, change)
     after = read(cfg.state_dir, doc["repo"], doc["pr"])
-    if not applied or change is _moved or after["state"] == "error":
+    if not applied or after is None or change is _moved or after["state"] == "error":
         return False
     if job["kind"] != "grade" and after["state"] == "open":
         _notify_ready(cfg, after, io.notify)
@@ -553,7 +559,7 @@ def _bypass(cfg, doc, io) -> tuple[bool, str]:
         cur = read(cfg.state_dir, doc["repo"], doc["pr"])
         if cur["job"] or cur["grading"]:
             return False, head
-        cur["debt"] = mode == "defer"
+        cur["debt"] = mode == "defer" or cur["merged"]   # a merge without a pass stays debt
         settled = mode in ("error", "disabled", "skip") or (mode == "defer" and cur["state"] == "open")
         if settled:
             cur["reconciled"] = max(cur["reconciled"], doc["requested"])
@@ -568,6 +574,35 @@ def _bypass(cfg, doc, io) -> tuple[bool, str]:
             cur.update(state="error", detail=detail)
         _write(cfg.state_dir, cur)
         return settled, head
+
+
+def _lifecycle(cfg, doc, github) -> bool:
+    """Keep the exam in step with its PR; True when the exam was deleted. A PR closed
+    unmerged loses its exam. A merged PR loses a passed, bypassed or never-started exam
+    (the records in exam-records stay); any other exam of a merged PR is debt until passed."""
+    pr = github.pr(doc["repo"], doc["pr"])
+    with state_lock(cfg.state_dir, LOCK):
+        cur = read(cfg.state_dir, doc["repo"], doc["pr"])
+        if cur is None:
+            return True
+        if pr["state"] == "closed" and not pr["merged"]:
+            gone = True
+        elif pr["merged"]:
+            gone = cur["state"] in ("passed", "skipped", "disabled") or (cur["attempt"] == 0 and not cur["debt"] and cur["status"] is None and not cur["job"])
+            if not gone and not (cur["merged"] and cur["debt"]):
+                _write(cfg.state_dir, {**cur, "merged": True, "debt": True})
+        else:
+            gone = False
+        if gone:
+            shutil.rmtree(_dir(cfg.state_dir, doc["repo"], doc["pr"]), ignore_errors=True)
+        return gone
+
+
+def debts(state_dir: str | Path) -> list[dict]:
+    """The exams that are open debt, as the console lists them."""
+    docs = (json.loads(p.read_text()) for p in sorted(Path(state_dir, "exams").glob("*/*/*/state.json")))
+    return [{k: d[k] for k in ("repo", "pr", "head_sha", "state", "debt")}
+            for d in docs if d["state"] == "open" and d["debt"]]
 
 
 def _step(cfg, doc: dict, io) -> bool:
@@ -586,13 +621,17 @@ def _step(cfg, doc: dict, io) -> bool:
     return False
 
 
-def work(cfg, *, github, run, pr_exam, notify, now, usages) -> None:
-    """Do the pending work of every exam: post queued statuses, reconcile requests with
+def work(cfg, *, github, run, pr_exam, notify, now, usages, sweep: bool = False) -> None:
+    """Do the pending work of every exam: settle its PR's merge or close (when requested,
+    or for every exam in a sweep), post queued statuses, reconcile requests with
     the PR's head, and run each exam's jobs. Runs outside task capacity."""
     io = SimpleNamespace(github=github, run=run, pr_exam=pr_exam, notify=notify, now=now, usages=usages)
     for path in sorted(Path(cfg.state_dir, "exams").glob("*/*/*/state.json")):
         doc = json.loads(path.read_text())
         try:   # one exam's GitHub or script failure never stops another's work
+            if (sweep or _wanted(doc)) and _lifecycle(cfg, doc, github):
+                continue
+            doc = read(cfg.state_dir, doc["repo"], doc["pr"])
             for _ in range(10):   # a pass is at most grade, status, reconcile, delta, status
                 if not _step(cfg, doc, io):
                     break
