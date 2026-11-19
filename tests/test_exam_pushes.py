@@ -62,15 +62,7 @@ class Verdicts(Scoring):
 def box_for(tmp_path, monkeypatch, *, delta=None, spec=SPEC, grades=None):
     box = Exam(tmp_path, monkeypatch,
                session=DeltaSession(spec, grades or ALL_PASS, delta=delta))
-
-    def work():
-        from dispatcher import exams
-        exams.work(box.cfg, github=box.github, run=box.session, pr_exam=Verdicts(),
-                   notify=box.notes.append, now=lambda: box.now, usages=box.usages)
-
-    from tests.test_exam_generation import NOW
-    box.now = NOW
-    box.work = work
+    box.pr_exam = Verdicts()
     box.github.diff = lambda repo, n: NEW_DIFF if box.github.head == NEW else OLD_DIFF
     return box
 

@@ -15,7 +15,7 @@ Interface under test (defined here, built by the ticket), on top of test_exam_ge
 import dataclasses
 import json
 
-from tests.test_exam_generation import HEAD, HEADERS, NOW, REPO, Github
+from tests.test_exam_generation import HEAD, HEADERS, REPO, Github
 from tests.test_exam_grading import Exam, Scoring, Session as GradingSession, graded_once, opened
 
 NEW = "def456"
@@ -189,7 +189,6 @@ def test_a_config_the_skill_refuses_is_an_error_with_its_errors_and_no_success(t
 def test_a_config_command_exiting_nonzero_is_an_error_with_its_output_and_no_success(tmp_path, monkeypatch):
     """The production adapter raises when `pr_exam.py config` exits nonzero."""
     import subprocess
-    from dispatcher import exams
     from dispatcher.exam_runner import PrExam
 
     class Refusing(Scoring):
@@ -198,9 +197,9 @@ def test_a_config_command_exiting_nonzero_is_an_error_with_its_output_and_no_suc
             return PrExam(run=fake).config(path)
 
     box = box_for(tmp_path, monkeypatch, SKIP)
+    box.pr_exam = Refusing()
     box.request()
-    exams.work(box.cfg, github=box.github, run=box.session, pr_exam=Refusing(),
-               notify=box.notes.append, now=lambda: NOW, usages=box.usages)
+    box.work()
     body = box.read().json()
     assert body["state"] == "error"
     assert "unknown key: bogus" in body["detail"]

@@ -27,7 +27,6 @@ from dispatcher.exam_lifecycle import ExamState
 from dispatcher.models import triage_entry
 from dispatcher.state import state_lock, write_json_atomic
 from dispatcher.usage import admits
-from telegram.templates import render
 
 LOCK = "exams.lock"
 TIMEOUT = 1200   # a session runs 20 minutes at most
@@ -458,10 +457,6 @@ def _job(doc: dict, pr: dict, now) -> dict:
             "attempt": doc["attempt"], "started": now().isoformat()}
 
 
-def _url(cfg, doc: dict) -> str:
-    return f"{cfg.console_url}/exam/{doc['repo']}/{doc['pr']}"
-
-
 def _settle(cfg, doc, job: dict, change, pr: dict, io) -> bool:
     """End the job by `pr`, read after its session: its result is applied unless the head
     moved under it, and the exam is brought in line with that PR. True when it left a
@@ -478,24 +473,14 @@ def _announce(cfg, kind: str, after: dict, io) -> bool:
     _tell_failure(cfg, after, io.notify)
     if after["state"] == ExamState.ERROR:
         return False
+    ref = {"repo": after["repo"], "pr": after["pr"]}
     if kind == "grade":
-        _notify_result(cfg, after, io.notify)
+        last = after["results"][-1]
+        io.notify("exam_result", **ref, passed=last["passed"], score=last["score"], max=last["max"])
     if after["state"] == ExamState.OPEN:
-        _notify_ready(cfg, after, io.notify)
+        questions = public(cfg.state_dir, after["repo"], after["pr"])["questions"]
+        io.notify("exam_ready", **ref, questions=len(questions), debt=after["debt"])
     return True
-
-
-def _notify_ready(cfg, doc: dict, notify) -> None:
-    if cfg.console_url:
-        notify(render("exam_ready", repo=doc["repo"], pr=doc["pr"], url=_url(cfg, doc), debt=doc["debt"],
-                      questions=len(public(cfg.state_dir, doc["repo"], doc["pr"])["questions"])))
-
-
-def _notify_result(cfg, doc: dict, notify) -> None:
-    if cfg.console_url:
-        r = doc["results"][-1]
-        notify(render("exam_result", repo=doc["repo"], pr=doc["pr"], passed=r["passed"],
-                      score=r["score"], max=r["max"], url=_url(cfg, doc)))
 
 
 def _tell_failure(cfg, doc: dict, notify) -> None:
@@ -506,7 +491,7 @@ def _tell_failure(cfg, doc: dict, notify) -> None:
         return
     _update(cfg.state_dir, doc["repo"], doc["pr"], notified_error=reason)
     if reason:
-        notify(render("exam_failed", repo=doc["repo"], pr=doc["pr"], reason=reason))
+        notify("exam_failed", repo=doc["repo"], pr=doc["pr"], reason=reason)
 
 
 def _run_job(cfg, doc, io) -> bool:

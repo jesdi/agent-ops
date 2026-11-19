@@ -12,7 +12,7 @@ import json
 import re
 from pathlib import Path
 
-from tests.test_exam_generation import HEAD, HEADERS, NOW, REPO
+from tests.test_exam_generation import HEAD, HEADERS, REPO
 from tests.test_exam_grading import (FAIL_SPEC, FIVE, LEASE, SHA, Exam, Scoring, Session,
                                      answers_for, make_exam, opened)
 
@@ -60,14 +60,10 @@ class RecSession(Session):
 
 
 class Box(Exam):
+    PR_EXAM = Recording
+
     def __init__(self, tmp_path, monkeypatch, spec=FIVE, **kw):
         super().__init__(tmp_path, monkeypatch, session=RecSession(spec, **kw))
-        self.pr_exam = Recording()
-
-    def work(self):
-        from dispatcher import exams
-        exams.work(self.cfg, github=self.github, run=self.session, pr_exam=self.pr_exam,
-                   notify=self.notes.append, now=lambda: NOW, usages=self.usages)
 
     def api(self, repo, pr):
         return f"/api/exam/{repo}/{pr}"

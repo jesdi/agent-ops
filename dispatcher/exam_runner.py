@@ -146,8 +146,7 @@ def tick(cfg, deps, usages, work) -> None:
     if not deps.app.registered():
         return
     work(cfg, github=Github(deps.access, deps.app), run=session(cfg), pr_exam=PrExam(),
-         notify=lambda text: deps.notifier.send("status", lines=[text]),
-         now=deps.clock, usages=usages)
+         notify=deps.notifier.send, now=deps.clock, usages=usages)
 
 
 def _running() -> bool:

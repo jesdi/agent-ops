@@ -2,6 +2,8 @@
 name, and an attach hint."""
 from __future__ import annotations
 
+from functools import partial
+
 _ATTACH = "attach: `mosh agent-vps -- tmux attach -t task-{repository}-{issue}`"
 
 # Telegram's sendMessage hard limit is 4096 characters; over it the API
@@ -30,8 +32,34 @@ def _triage_report(lines: list[str], where: str) -> str:
 _RELOGIN = ("ssh -t agent@{host} 'CLAUDE_CONFIG_DIR=$HOME/agent-ops-state/"
             "claude-home $HOME/.local/bin/claude' then /login")
 
+def _listing(head: str, ctx: dict) -> str:
+    return head + "\n" + "\n".join(ctx["lines"])
+
+
+def _triage(ctx: dict) -> str:
+    return _triage_report(list(ctx["lines"]), ctx.get("triage_dir") or "<state_dir>/triage/")
+
+
+def _exam_link(ctx: dict) -> str:
+    """The exam page on the console, when the box has one."""
+    return f"\n{ctx['console']}/exam/{ctx['repo']}/{ctx['pr']}" if ctx.get("console") else ""
+
+
+def _exam_ready(ctx: dict) -> str:
+    n, debt = ctx["questions"], " (debt)" if ctx.get("debt") else ""
+    return (f"📝 Exam ready{debt}: {ctx['repo']}#{ctx['pr']}, {n} question{'' if n == 1 else 's'}."
+            + _exam_link(ctx))
+
+
+def _exam_result(ctx: dict) -> str:
+    icon, verdict = ("✅", "pass") if ctx["passed"] else ("🔴", "fail")
+    return (f"{icon} Exam {verdict}: {ctx['repo']}#{ctx['pr']}, {ctx['score']}/{ctx['max']}."
+            + _exam_link(ctx))
+
+
+# name -> the text to format with the context, or a function of the context that builds it
 _TEMPLATES = {
-    "awaiting_plan_review": "📝 {ref} {title} — spec and plan ready for review.\n{url}\nsession task-{repository}-{issue} · {note}\n" + _ATTACH,
+    "awaiting_plan_review": "📝 {ref} {title} — spec and plan ready for review.\n{url}\nsession task-{repository}-{issue} · {note}\n" + _ATTACH + "{approve}",
     "stage_blocked": "🚧 {ref} {title} — stage blocked: {note}\n{url}\nsession task-{repository}-{issue}\n" + _ATTACH,
     "pr_opened": "✅ {ref} {title} — PR opened: {note}\n{url}\nsession task-{repository}-{issue}\n" + _ATTACH,
     "artifact_failed": "❌ {ref} {title} — artifact sanity check failed: {note}\n{url}\nsession task-{repository}-{issue}\n" + _ATTACH,
@@ -41,17 +69,17 @@ _TEMPLATES = {
     # session to attach to, so unlike every per-task template above these
     # carry no session/attach line at all. They stay on a bare "#{issue}"
     # regardless of multi_repository: there is no single project to name.
-    "exam_ready": "📝 Exam ready{debt}: {repo}#{pr}, {questions} {noun}.\n{url}",
-    "exam_result": "{icon} Exam {verdict}: {repo}#{pr}, {score}/{max}.\n{url}",
+    "exam_ready": _exam_ready,
+    "exam_result": _exam_result,
     "exam_failed": "❌ Exam work failed: {repo}#{pr}: {reason}",
     "budget_stall": "⏳ #{issue} {title} — usage gate closed; resumes when headroom returns. {note}\n{url}",
     "budget_resume": "▶️ #{issue} {title} — usage gate open again; resuming. {note}\n{url}",
     "implement_started": "🛠 {ref} {title} — implement started, one session for {note}\n{url}\nsession task-{repository}-{issue}\n" + _ATTACH,
-    "parked_question": "❓ {ref} {title} — needs your input (parked, slot freed):\n{note}\n{url}\nReply to THIS message to answer, or /attach {issue} to take the keyboard.",
+    "parked_question": "❓ {ref} {title} — needs your input (parked, slot freed):\n{note}\n{url}\nReply to THIS message to answer, or /attach {issue} to take the keyboard.{approve}",
     "plan_parked": ("🌙 {ref} {title} — spec and plan ready and parked for review. "
                     "Session ended; capacity and slot released.\n{note}\n{url}\n"
                     "Reply to THIS message with review feedback (or `approved` to "
-                    "start implement), or /attach {issue}.\n" + _ATTACH),
+                    "start implement), or /attach {issue}.\n" + _ATTACH + "{approve}"),
     "plan_session_stopped": ("🌙 {ref} {title} — the plan session stopped at the review gate "
                              "and was not started again: {rounds} unattended restarts or "
                              "review rounds are used up. Session ended; capacity and slot "
@@ -81,6 +109,10 @@ _TEMPLATES = {
     "auth_dark": ("🕳 usage unknowable for {minutes}m — dispatcher is "
                   "failing safe and spawning NOTHING. Claude auth on the "
                   "box is likely dead. Fix:\n" + _RELOGIN),
+    "daily_digest": partial(_listing, "📋 agent-ops daily digest"),
+    "status": partial(_listing, "📟 agent-ops status"),
+    "queue": partial(_listing, "📊 agent-ops queue"),
+    "triage_report": _triage,
 }
 
 
@@ -90,52 +122,18 @@ def task_ref(repository: str, issue: int, multi_repository: bool) -> str:
     return f"{repository}#{issue}" if multi_repository and repository else f"#{issue}"
 
 
-def _listing(head: str):
-    def text(ctx: dict) -> str:
-        return head + "\n" + "\n".join(ctx["lines"])
-    return text
-
-
-def _triage(ctx: dict) -> str:
-    return _triage_report(list(ctx["lines"]), ctx.get("triage_dir") or "<state_dir>/triage/")
-
-
-# templates that are their whole text, built from the context alone
-_WHOLE = {
-    "daily_digest": _listing("📋 agent-ops daily digest"),
-    "status": _listing("📟 agent-ops status"),
-    "queue": _listing("📊 agent-ops queue"),
-    "triage_report": _triage,
-}
-
-
-def _exam_ready(ctx: dict) -> dict:
-    return {**ctx, "noun": "question" if ctx["questions"] == 1 else "questions",
-            "debt": " (debt)" if ctx.get("debt") else ""}
-
-
-def _exam_result(ctx: dict) -> dict:
-    return {**ctx, "verdict": "pass" if ctx["passed"] else "fail",
-            "icon": "✅" if ctx["passed"] else "🔴"}
-
-
-# the fields a template derives from its context
-_DERIVED = {"exam_ready": _exam_ready, "exam_result": _exam_result}
-
-_APPROVE_LINK = ("awaiting_plan_review", "plan_parked", "parked_question")
-
-
-def _approve_line(template: str, ctx: dict) -> str:
-    if template in _APPROVE_LINK and ctx.get("console"):
-        return f"\nread & approve: {ctx['console']}/task/{ctx['repository']}/{ctx['issue']}"
-    return ""
+def _task_fields(ctx: dict, multi_repository: bool) -> dict:
+    """What a task message derives from its context: how it names the task, and the
+    console's approve line for the templates that carry `{approve}`."""
+    if "issue" not in ctx:
+        return ctx
+    repository, console = ctx.get("repository", ""), ctx.get("console")
+    approve = f"\nread & approve: {console}/task/{repository}/{ctx['issue']}" if console else ""
+    return {**ctx, "ref": task_ref(repository, ctx["issue"], multi_repository), "approve": approve}
 
 
 def render(template: str, multi_repository: bool = False, **ctx) -> str:
-    if template in _WHOLE:
-        return _WHOLE[template](ctx)
-    ctx = _DERIVED.get(template, dict)(ctx)
-    if "issue" in ctx:
-        ctx = {**ctx, "ref": task_ref(ctx.get("repository", ""), ctx["issue"],
-                                      multi_repository)}
-    return _TEMPLATES[template].format(**ctx) + _approve_line(template, ctx)
+    entry = _TEMPLATES[template]
+    if callable(entry):
+        return entry(ctx)
+    return entry.format(**_task_fields(ctx, multi_repository))

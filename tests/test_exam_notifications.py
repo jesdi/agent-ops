@@ -1,13 +1,14 @@
 """Telegram messages for exams, through `exams.work` with a fake notifier, and the templates.
 
 Interface under test (defined here, built by the ticket), on top of test_exam_generation.py:
-    notify(text: str) stays the notifier `exams.work` is given: one call = one Telegram message.
-    The exam URL is f"{cfg.console_url}/exam/{repo}/{pr}".
+    notify(template, **ctx) is the notifier's `send`: one call = one Telegram message, which
+    the notifier renders with its `console` (the box's console_url).
+    The exam URL is f"{console}/exam/{repo}/{pr}", built by the template.
     telegram.templates.render(template, **ctx) -> str, with the templates
-        "exam_ready"  (repo, pr, questions: int, url, debt: bool = False)
+        "exam_ready"  (repo, pr, questions: int, console, debt: bool = False)
             says the exam is ready, names `repo#pr`, "<n> question(s)" and the url;
             when debt is true it also says "debt".
-        "exam_result" (repo, pr, passed: bool, score, max, url)
+        "exam_result" (repo, pr, passed: bool, score, max, console)
             says "pass" or "fail", names `repo#pr`, the score and max, and the url.
         "exam_failed" (repo, pr, reason: str)
             says the exam work failed, names `repo#pr` and the reason.
@@ -16,7 +17,10 @@ Interface under test (defined here, built by the ticket), on top of test_exam_ge
     one more message; a failed job sends one failed message with the reason, once per reason.
 """
 import re
+from types import SimpleNamespace
 
+from dispatcher import exam_runner, exams
+from telegram.notify import Notifier
 from telegram.templates import render
 from tests.test_exam_bypass import DEFER, SKIP, box_for as bypass_box
 from tests.test_exam_generation import CONSOLE, REPO, Box, Session
@@ -150,13 +154,31 @@ def test_repeating_a_request_or_the_work_sends_nothing(tmp_path, monkeypatch):
     assert len(passed.notes) == sent and sent == 2
 
 
+def test_the_runner_sends_each_message_once_under_its_own_template(tmp_path, monkeypatch, capsys):
+    box = graded_box(tmp_path, monkeypatch)
+    box.request()
+    deps = SimpleNamespace(app=SimpleNamespace(registered=lambda: True), access=None,
+                           clock=lambda: box.now, notifier=Notifier(dry_run=True, console_url=CONSOLE))
+    monkeypatch.setattr(exam_runner, "Github", lambda *a, **k: box.github)
+    monkeypatch.setattr(exam_runner, "PrExam", lambda *a, **k: box.pr_exam)
+    monkeypatch.setattr(exam_runner, "session", lambda cfg, **k: box.session)
+    exam_runner.tick(box.cfg, deps, box.usages, exams.work)
+    [line, link] = capsys.readouterr().out.splitlines()
+    assert line.startswith("[dry-run] telegram exam_ready: ") and REF in line and link == URL
+
+
+def test_an_exam_message_has_no_link_on_a_box_without_a_console():
+    text = render("exam_ready", repo=REPO, pr=240, questions=1, console="")
+    assert REF in text and "1 question." in text and "/exam/" not in text
+
+
 def test_the_exam_templates_render_what_the_operator_needs():
-    text = render("exam_ready", repo=REPO, pr=240, questions=5, url=URL)
+    text = render("exam_ready", repo=REPO, pr=240, questions=5, console=CONSOLE)
     assert "ready" in text.lower() and REF in text and "5 questions" in text and URL in text
     assert "debt" not in text.lower()
-    assert "debt" in render("exam_ready", repo=REPO, pr=240, questions=5, url=URL, debt=True).lower()
-    won = render("exam_result", repo=REPO, pr=240, passed=True, score=4.5, max=5, url=URL)
-    lost = render("exam_result", repo=REPO, pr=240, passed=False, score=3.5, max=5, url=URL)
+    assert "debt" in render("exam_ready", repo=REPO, pr=240, questions=5, console=CONSOLE, debt=True).lower()
+    won = render("exam_result", repo=REPO, pr=240, passed=True, score=4.5, max=5, console=CONSOLE)
+    lost = render("exam_result", repo=REPO, pr=240, passed=False, score=3.5, max=5, console=CONSOLE)
     assert "pass" in won.lower() and "fail" not in won.lower() and "4.5" in won and URL in won
     assert "fail" in lost.lower() and "3.5" in lost and REF in lost and URL in lost
     broke = render("exam_failed", repo=REPO, pr=240, reason="the session timed out")

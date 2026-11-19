@@ -12,7 +12,8 @@ Interface under test (defined here, built by the ticket):
     pr_exam.validate(exam: Path, request: Path) -> list[str]   (errors, empty = valid)
     pr_exam.public(exam: Path) -> dict                         (the served projection)
     pr_exam.config(path: Path) -> {"errors", "enabled", "labels"}   (of the repo's .pr-exam.json)
-    notify(text: str); now() -> aware datetime; usages: provider -> ProviderUsage
+    notify(template: str, **ctx)   (the notifier's `send`: one call = one Telegram message)
+    now() -> aware datetime; usages: provider -> ProviderUsage
     exam_runner.PERMISSIONS: the only token scope that holds `statuses: write`.
 """
 import dataclasses
@@ -26,6 +27,7 @@ from fastapi.testclient import TestClient
 
 from dispatcher import exams, host_auth, priority, task_tokens
 from dispatcher.models import parse_policy
+from telegram.templates import render
 from tests.usagefakes import session_usage
 from tests.webfakes import HEADERS, make_config
 from web.app import create_app
@@ -132,6 +134,10 @@ class PrExam:
 
 
 class Box:
+    """A box with fakes at every edge of `exams.work`. A subclass or a test swaps `pr_exam`,
+    `github`, `session` or `now`; `notes` holds the text of every message sent."""
+    PR_EXAM = PrExam
+
     def __init__(self, tmp_path, monkeypatch, triage=("anthropic/claude-opus-5", "openai/gpt-5"),
                  usages=None, session=None):
         monkeypatch.setattr("web.sources.subprocess.run",
@@ -144,6 +150,7 @@ class Box:
         self.client = TestClient(create_app(self.cfg, Sources(self.cfg.state_dir, None, None,
                                                               clock=lambda: 1000.0)))
         self.github, self.session, self.notes = Github(), session or Session(), []
+        self.pr_exam, self.now = self.PR_EXAM(), NOW
         self.usages = usages if usages is not None else {
             p: session_usage(provider=p, now=NOW) for p in ("anthropic", "openai")}
 
@@ -152,9 +159,12 @@ class Box:
         assert response.status_code == 200
         return response.json()
 
+    def notify(self, template, **ctx):
+        self.notes.append(render(template, console=self.cfg.console_url, **ctx))
+
     def work(self):
-        exams.work(self.cfg, github=self.github, run=self.session, pr_exam=PrExam(),
-                   notify=self.notes.append, now=lambda: NOW, usages=self.usages)
+        exams.work(self.cfg, github=self.github, run=self.session, pr_exam=self.pr_exam,
+                   notify=self.notify, now=lambda: self.now, usages=self.usages)
 
     def read(self):
         return self.client.get(GET, headers=HEADERS)

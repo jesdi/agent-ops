@@ -25,7 +25,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.test_exam_generation import DIFF, GET, HEAD, HEADERS, NOW, REPO, Box, PrExam
+from tests.test_exam_generation import DIFF, GET, HEAD, HEADERS, REPO, Box, PrExam
 
 ANSWERS = f"{GET}/answers"
 LEASE, RETRY, SHA, WHY, RUBRIC = ("lease-ownership", "retry-budget", "base-sha-recheck",
@@ -117,10 +117,7 @@ class Scoring(PrExam):
 
 
 class Exam(Box):
-    def work(self):
-        from dispatcher import exams
-        exams.work(self.cfg, github=self.github, run=self.session, pr_exam=Scoring(),
-                   notify=self.notes.append, now=lambda: NOW, usages=self.usages)
+    PR_EXAM = Scoring
 
 
 def box_for(tmp_path, monkeypatch, spec=FIVE, **kw):
