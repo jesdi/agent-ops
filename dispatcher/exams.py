@@ -498,13 +498,18 @@ def _settle(cfg, doc, job: dict, change, io) -> bool:
     after = read(cfg.state_dir, doc["repo"], doc["pr"])
     if not applied or after is None or change is _moved:
         return False
+    return _announce(cfg, job["kind"], after, io.notify)
+
+
+def _announce(cfg, kind: str, after: dict, notify) -> bool:
+    """Tell the operator what an applied job left; True when it left a result."""
     if after["state"] == "error":
-        _notify_failed(cfg, after, io.notify)
+        _notify_failed(cfg, after, notify)
         return False
-    if job["kind"] == "grade":
-        _notify_result(cfg, after, io.notify)
+    if kind == "grade":
+        _notify_result(cfg, after, notify)
     if after["state"] == "open":
-        _notify_ready(cfg, after, io.notify)
+        _notify_ready(cfg, after, notify)
     return True
 
 
@@ -582,32 +587,60 @@ def _moved_head(cur: dict, d: Path) -> None:
         _drop_attempts(cur, d)
 
 
+def _busy(doc: dict) -> bool:
+    """A job or a grading holds the exam."""
+    return bool(doc["job"] or doc["grading"])
+
+
+def _bypass_skip(cur: dict, d: Path, pr: dict, detail: str) -> bool:
+    _drop_attempts(cur, d)
+    cur.update(state="skipped", head_sha=pr["head_sha"],
+               due=_status(pr["head_sha"], "success", "bypassed"))
+    return True
+
+
+def _bypass_disabled(cur: dict, d: Path, pr: dict, detail: str) -> bool:
+    _drop_attempts(cur, d)
+    cur.update(state="disabled", head_sha=pr["head_sha"], due=None)
+    return True
+
+
+def _bypass_defer(cur: dict, d: Path, pr: dict, detail: str) -> bool:
+    cur["title"] = pr["title"]   # the debt list shows it
+    if cur["state"] != "open":
+        return False
+    cur["due"] = _status(pr["head_sha"], "success", "deferred")
+    return True
+
+
+def _bypass_error(cur: dict, d: Path, pr: dict, detail: str) -> bool:
+    cur.update(state="error", detail=detail)
+    return True
+
+
+def _bypass_none(cur: dict, d: Path, pr: dict, detail: str) -> bool:
+    return False
+
+
+# what each mode of exam_bypass.decide does to the exam; True when it settled the request
+_BYPASSES = {"skip": _bypass_skip, "disabled": _bypass_disabled, "defer": _bypass_defer,
+             "error": _bypass_error, "none": _bypass_none}
+
+
 def _bypass(cfg, doc, pr: dict, io) -> bool:
     """Settle a request by the owner's bypass labels and the repo's config; True when it
     did, by `pr`, read after `doc`. A skip drops the exam and queues "bypassed"; a defer marks the exam as debt and
     keeps an open one, queuing "deferred" on the head; an error or a disabled repo posts
     nothing. Otherwise the request goes on as it would without a label."""
     mode, detail = exam_bypass.decide(cfg, doc["repo"], doc["pr"], pr, io)
-    head = pr["head_sha"]
     with state_lock(cfg.state_dir, LOCK):
         cur = read(cfg.state_dir, doc["repo"], doc["pr"])
-        if cur["job"] or cur["grading"]:
+        if _busy(cur):
             return False
         cur["debt"] = mode == "defer" or cur["merged"]   # a merge without a pass stays debt
-        if mode == "defer":
-            cur["title"] = pr["title"]   # the debt list shows it
-        settled = mode in ("error", "disabled", "skip") or (mode == "defer" and cur["state"] == "open")
+        settled = _BYPASSES[mode](cur, _dir(cfg.state_dir, doc["repo"], doc["pr"]), pr, detail)
         if settled:
             cur["reconciled"] = max(cur["reconciled"], doc["requested"])
-        if mode in ("disabled", "skip"):
-            _drop_attempts(cur, _dir(cfg.state_dir, doc["repo"], doc["pr"]))
-            cur.update(state="disabled" if mode == "disabled" else "skipped", head_sha=head, due=None)
-        if mode == "skip":
-            cur["due"] = _status(head, "success", "bypassed")
-        elif mode == "defer" and settled:
-            cur["due"] = _status(head, "success", "deferred")
-        elif mode == "error":
-            cur.update(state="error", detail=detail)
         _write(cfg.state_dir, cur)
         return settled
 
@@ -620,17 +653,29 @@ def _lifecycle(cfg, doc, pr: dict) -> bool:
         cur = read(cfg.state_dir, doc["repo"], doc["pr"])
         if cur is None:
             return True
-        if pr["state"] == "closed" and not pr["merged"]:
-            gone = True
-        elif pr["merged"]:
-            gone = cur["state"] in ("passed", "skipped", "disabled") or (cur["attempt"] == 0 and not cur["debt"] and cur["status"] is None and not cur["job"])
-            if not gone and not (cur["merged"] and cur["debt"]):
-                _write(cfg.state_dir, {**cur, "merged": True, "debt": True, "title": pr["title"]})
-        else:
-            gone = False
-        if gone:
+        if _ended(cur, pr):
             shutil.rmtree(_dir(cfg.state_dir, doc["repo"], doc["pr"]), ignore_errors=True)
-        return gone
+            return True
+        if pr["merged"]:
+            _mark_debt(cfg, cur, pr)
+        return False
+
+
+def _ended(cur: dict, pr: dict) -> bool:
+    """Whether the PR's state ends the exam."""
+    if pr["merged"]:
+        return cur["state"] in ("passed", "skipped", "disabled") or _untouched(cur)
+    return pr["state"] == "closed"
+
+
+def _untouched(cur: dict) -> bool:
+    """Never started: no attempt, no debt, no status and no job."""
+    return cur["attempt"] == 0 and not cur["debt"] and cur["status"] is None and not cur["job"]
+
+
+def _mark_debt(cfg, cur: dict, pr: dict) -> None:
+    if not (cur["merged"] and cur["debt"]):
+        _write(cfg.state_dir, {**cur, "merged": True, "debt": True, "title": pr["title"]})
 
 
 def debts(state_dir: str | Path) -> list[dict]:
@@ -646,15 +691,25 @@ def _step(cfg, doc: dict, io, pr: dict | None = None) -> bool:
     if _due(doc):
         _post_due(cfg, doc, io.github)
         return True
-    if _wanted(doc) and not doc["job"] and not doc["grading"]:
-        pr = pr or io.github.pr(doc["repo"], doc["pr"])
-        if _bypass(cfg, doc, pr, io):
-            return True
-        if doc["state"] in ("open", "passed"):
-            return _reconcile(cfg, doc, pr["head_sha"])
+    if _answerable(doc) and _take_request(cfg, doc, io, pr):
+        return True
     if _kind(doc):
         return _run_job(cfg, doc, io)
     return False
+
+
+def _answerable(doc: dict) -> bool:
+    """A request waits and no job or grading holds the exam."""
+    return _wanted(doc) and not _busy(doc)
+
+
+def _take_request(cfg, doc: dict, io, pr: dict | None) -> bool:
+    """Answer a request with the PR as read now; True when a bypass settled it or an open
+    or passed exam's head moved. Otherwise the exam's job, if any, runs as usual."""
+    pr = pr or io.github.pr(doc["repo"], doc["pr"])
+    if _bypass(cfg, doc, pr, io):
+        return True
+    return doc["state"] in ("open", "passed") and _reconcile(cfg, doc, pr["head_sha"])
 
 
 def work(cfg, *, github, run, pr_exam, notify, now, usages, sweep: bool = False) -> None:
@@ -665,15 +720,23 @@ def work(cfg, *, github, run, pr_exam, notify, now, usages, sweep: bool = False)
     for path in sorted(Path(cfg.state_dir, "exams").glob("*/*/*/state.json")):
         doc = json.loads(path.read_text())
         try:   # one exam's GitHub or script failure never stops another's work
-            # one read of the PR serves the lifecycle and the request; `doc` stays as read
-            # before it, so a request made during the read is reconciled on the next pass
-            pr = github.pr(doc["repo"], doc["pr"]) if sweep or _wanted(doc) else None
-            if pr and _lifecycle(cfg, doc, pr):
-                continue
-            for _ in range(10):   # a pass is at most grade, status, reconcile, delta, status
-                if not _step(cfg, doc, io, pr):
-                    break
-                pr = None
-                doc = read(cfg.state_dir, doc["repo"], doc["pr"])
+            _work_exam(cfg, doc, io, sweep)
         except Exception as exc:  # noqa: BLE001 — the job was released; the next work retries
             print(f"exam work for {doc['repo']}#{doc['pr']} failed: {exc}", file=sys.stderr)
+
+
+def _work_exam(cfg, doc: dict, io, sweep: bool) -> None:
+    # one read of the PR serves the lifecycle and the request; `doc` stays as read
+    # before it, so a request made during the read is reconciled on the next pass
+    pr = io.github.pr(doc["repo"], doc["pr"]) if sweep or _wanted(doc) else None
+    if pr and _lifecycle(cfg, doc, pr):
+        return
+    _steps(cfg, doc, io, pr)
+
+
+def _steps(cfg, doc: dict, io, pr: dict | None) -> None:
+    for _ in range(10):   # a pass is at most grade, status, reconcile, delta, status
+        if not _step(cfg, doc, io, pr):
+            return
+        pr = None
+        doc = read(cfg.state_dir, doc["repo"], doc["pr"])
