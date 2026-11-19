@@ -112,6 +112,9 @@ class Scoring(PrExam):
         return {"passed": total / len(out) >= 0.8 and why_ok, "score": total, "max": len(out),
                 "questions": out, "missed": missed}
 
+    def record(self, records, exam, result, today):
+        """Learning records are ticket 04's concern; grading tests ignore them."""
+
 
 class Exam(Box):
     def work(self):

@@ -195,6 +195,19 @@ def _grade(cfg, doc, sha, model, *, github, run) -> tuple[dict | None, str]:
     return grades, ""
 
 
+def _record(cfg, d, repo, n, *, pr_exam, now) -> bool:
+    """Write the graded attempt's learning records; False (state=error) when recording failed."""
+    records = Path(cfg.state_dir) / "exam-records" / repo
+    try:
+        with state_lock(cfg.state_dir, "exam-records.lock"):   # numbering is read-then-write
+            pr_exam.record(records, d / "exam.json", d / "result.json",
+                           now().astimezone(timezone.utc).date().isoformat())
+    except (ValueError, KeyError, subprocess.SubprocessError, OSError) as exc:
+        _update(cfg.state_dir, repo, n, state="error", detail=f"recording failed: {exc}")
+        return False
+    return True
+
+
 def _finish(cfg, doc, pr, sha, model, *, github, run, pr_exam, now) -> bool:
     """Grade the submitted attempt and settle it; False when the head moved and the result was dropped."""
     repo, n = doc["repo"], doc["pr"]
@@ -212,21 +225,27 @@ def _finish(cfg, doc, pr, sha, model, *, github, run, pr_exam, now) -> bool:
     except (ValueError, KeyError, subprocess.SubprocessError, OSError) as exc:
         _update(cfg.state_dir, repo, n, state="error", detail=f"scoring failed: {exc}")
         return True
+    (d / "result.json").write_text(json.dumps(scored))
     result = {"attempt": doc["attempt"], "passed": scored["passed"], "score": scored["score"],
               "max": scored["max"], "questions": [
                   {k: v for k, v in q.items() if k in ("id", "concept", "points")
                    or (q["points"] < 1 and k in ("explanation", "hunk"))} for q in scored["questions"]]}
     fields = {"grading": None, "results": [*doc.get("results", []), result]}
     if scored["passed"]:
+        if not _record(cfg, d, repo, n, pr_exam=pr_exam, now=now):
+            return True
         github.post_status(repo, sha, "exam", "success", "Exam passed")
         _update(cfg.state_dir, repo, n, state="passed", status={"sha": sha, "state": "success"}, **fields)
         return True
+    if not _record(cfg, d, repo, n, pr_exam=pr_exam, now=now):
+        return True   # before the follow-up, which reads these records and replaces exam.json
     prior = json.loads((d / "exam.json").read_text())
     state, detail = _generate(cfg, doc, github.pr(repo, n), model, github=github, run=run,
                               pr_exam=pr_exam, now=now, only=list(dict.fromkeys(scored["missed"])),
                               prior=prior)
-    if github.pr(repo, n)["head_sha"] != sha:
-        return False
+    if github.pr(repo, n)["head_sha"] != sha:   # the graded result stands; only the follow-up is dropped
+        _update(cfg.state_dir, repo, n, job=None, wanted=True, state="generating", **fields)
+        return True
     _update(cfg.state_dir, repo, n, state=state, detail=detail, attempt=doc["attempt"] + 1, **fields)
     return True
 
@@ -241,7 +260,7 @@ def work(cfg, *, github, run, pr_exam, notify, now, usages) -> None:
             if entry is None:
                 continue
             sha = doc["head_sha"]
-            if github.pr(doc["repo"], doc["pr"])["head_sha"] != sha or not _finish(
+            if not _finish(
                     cfg, doc, github.pr(doc["repo"], doc["pr"]), sha, entry.model_id,
                     github=github, run=run, pr_exam=pr_exam, now=now):
                 _update(cfg.state_dir, doc["repo"], doc["pr"], job=None, wanted=True,

@@ -92,6 +92,12 @@ class PrExam:
             raise ValueError(proc.stderr.strip() or "score failed")
         return json.loads(proc.stdout)
 
+    def record(self, records: Path, exam: Path, result: Path, today: str) -> None:
+        proc = self._call("record", "--records", records, "--exam", exam, "--result", result,
+                          "--today", today)
+        if proc.returncode:
+            raise ValueError(proc.stderr.strip() or "record failed")
+
 
 def session(cfg, *, run=subprocess.run):
     """`run(request, model=, timeout=)` of `exams.work`: one headless container whose
