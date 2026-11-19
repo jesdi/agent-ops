@@ -175,6 +175,15 @@ def mint(installation: Installation, repos: list[str], permissions: dict, *,
     return token
 
 
+def info(*, http=_http, now=_now, secret=_secret) -> dict:
+    """The App's own slug and id (GET /app)."""
+    found = _call(http, "GET", API + "/app", _jwt(now, secret),
+                  lambda p: {"slug": _slug(p), "id": int(p["id"])})
+    if found is None:
+        raise AppError("GET /app answered 404")
+    return found
+
+
 def install_link(owner: str, *, http=_http, now=_now, secret=_secret) -> str:
     found = (_lookup(f"/users/{owner}/installation", http, now, secret)
              or _lookup(f"/orgs/{owner}/installation", http, now, secret))
@@ -218,6 +227,9 @@ class Client:
 
     def install_link(self, owner):
         return install_link(owner, **self.kw)
+
+    def info(self):
+        return info(**self.kw)
 
     def mint(self, inst, repos, permissions):
         return mint(inst, repos, permissions, **self.kw)

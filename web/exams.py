@@ -6,6 +6,7 @@ from typing import Annotated, Callable
 from fastapi import APIRouter, Depends, HTTPException, Path
 from pydantic import BaseModel, ConfigDict, Field
 
+from dispatcher import exams as state
 from dispatcher.config import Config
 from web.auth import Operator, current_operator
 
@@ -53,6 +54,13 @@ def router(sources, cfg: Callable[[], Config]) -> APIRouter:
         return ExamAccepted(**{k: doc[k] for k in ("repo", "pr", "state", "head_sha", "debt", "detail")},
                             url=f"{console}/exam/{body.repo}/{body.pr}", pending=True)
 
+    @routes.get("/host")
+    def host(op: Operator = Depends(current_operator)):
+        found = state.app(cfg().state_dir)
+        if found is None:
+            raise HTTPException(503, "the exam App is not known yet")
+        return found
+
     @routes.get("/{owner}/{name}/{pr}", response_model=ExamView)
     def read_exam(owner: Annotated[str, Path(pattern=rf"^{Slug}$")],
                   name: Annotated[str, Path(pattern=rf"^{Slug}$")],
@@ -61,6 +69,7 @@ def router(sources, cfg: Callable[[], Config]) -> APIRouter:
         if doc is None:
             raise HTTPException(404, "exam not found")
         return ExamView(**{k: doc[k] for k in ("repo", "pr", "state", "head_sha", "debt", "detail", "attempt")},
-                        exam=None, results=[])
+                        exam=state.public(cfg().state_dir, doc["repo"], doc["pr"]) if doc["state"] == "open" else None,
+                        results=[])
 
     return routes

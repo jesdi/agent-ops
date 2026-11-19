@@ -21,7 +21,7 @@ from dispatcher.config import (Config, Repository, apply_stored_models,
                                routed_providers)
 from dispatcher.usage import admits
 from dispatcher.usage_providers import ADAPTERS, fetch_all
-from dispatcher import (failures, github_app, host_auth, priority,
+from dispatcher import (exam_runner, failures, github_app, host_auth, priority,
                         tmux_migration, triage, onboarding_sessions)
 from dispatcher.deps import Admit, Deps, _access, _now
 from dispatcher.github import GitHubClient
@@ -131,6 +131,11 @@ def _run_pass(cfg: Config, deps: Deps, dry_run: bool = False,
     # Phase 2: new claims, with whatever capacity phase 1 and inspection left.
     if not claims_paused:
         _claim_new(eff, deps, eff.repositories, admit, order, dry_run, pass_started)
+    if not dry_run:
+        try:   # outside task capacity, under usage admission; never aborts the pass
+            exam_runner.tick(cfg, deps, usages)
+        except Exception as exc:  # noqa: BLE001
+            print(f"exam work failed: {exc}", file=sys.stderr)
     _sync_artifacts(cfg, dry_run=dry_run, auth=deps.github.auth)
     _flush_finished(cfg, deps, dry_run)
     _write_heartbeat(cfg, pass_started)
