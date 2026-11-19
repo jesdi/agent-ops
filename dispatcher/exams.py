@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-from dispatcher import priority
+from dispatcher import exam_bypass, priority
 from dispatcher.config import routed_providers
 from dispatcher.models import triage_entry
 from dispatcher.state import state_lock, write_json_atomic
@@ -58,7 +58,8 @@ def request(state_dir: str | Path, repo: str, pr: int) -> dict:
                    "detail": "", "attempt": 0, "requested": 0, "reconciled": 0, "job": None,
                    "status": None, "due": None, "merged": False, "passed_concepts": [],
                    "grading": None, "followup": None, "delta": False, "results": []}
-        elif doc["state"] == "error" and not doc["grading"]:   # a request after a failure retries
+        elif doc["state"] in ("skipped", "disabled") or (doc["state"] == "error" and not doc["grading"]):
+            # a request after a failure retries; a bypass or a disabled repo is decided again
             doc["state"] = "new"
         doc["requested"] += 1
         _write(state_dir, doc)
@@ -415,6 +416,8 @@ def _generated(job: dict, outcome: str, diff: str):
         if cur["delta"]:   # a delta exam starts over on the new head
             cur["results"] = []
         cur.update(state="open", head_sha=sha, attempt=cur["attempt"] + 1, delta=False, followup=None)
+        if cur["debt"]:
+            cur["due"] = _status(sha, "success", "deferred")
     return change
 
 
@@ -517,11 +520,10 @@ def _post_due(cfg, doc, github) -> None:
             _write(cfg.state_dir, cur)
 
 
-def _reconcile(cfg, doc, github) -> bool:
+def _reconcile(cfg, doc, head: str) -> bool:
     """Bring an open or passed exam in line with the PR's head after a request; True when
     the head moved (an open exam is replaced, a passed one gets a delta judgment). Only
     the requests made before GitHub was read are marked reconciled."""
-    head = github.pr(doc["repo"], doc["pr"])["head_sha"]
     with state_lock(cfg.state_dir, LOCK):
         cur = read(cfg.state_dir, doc["repo"], doc["pr"])
         if cur["state"] not in ("open", "passed") or cur["job"]:
@@ -541,13 +543,44 @@ def _moved_head(cur: dict, d: Path) -> None:
         _drop_attempts(cur, d)
 
 
+def _bypass(cfg, doc, io) -> tuple[bool, str]:
+    """Settle a request by the owner's bypass labels and the repo's config; True when it
+    did, with the head it read. A skip drops the exam and queues "bypassed"; a defer marks the exam as debt and
+    keeps an open one, queuing "deferred" on the head; an error or a disabled repo posts
+    nothing. Otherwise the request goes on as it would without a label."""
+    mode, detail, head = exam_bypass.decide(cfg, doc["repo"], doc["pr"], io)
+    with state_lock(cfg.state_dir, LOCK):
+        cur = read(cfg.state_dir, doc["repo"], doc["pr"])
+        if cur["job"] or cur["grading"]:
+            return False, head
+        cur["debt"] = mode == "defer"
+        settled = mode in ("error", "disabled", "skip") or (mode == "defer" and cur["state"] == "open")
+        if settled:
+            cur["reconciled"] = max(cur["reconciled"], doc["requested"])
+        if mode in ("disabled", "skip"):
+            _drop_attempts(cur, _dir(cfg.state_dir, doc["repo"], doc["pr"]))
+            cur.update(state="disabled" if mode == "disabled" else "skipped", head_sha=head, due=None)
+        if mode == "skip":
+            cur["due"] = _status(head, "success", "bypassed")
+        elif mode == "defer" and settled:
+            cur["due"] = _status(head, "success", "deferred")
+        elif mode == "error":
+            cur.update(state="error", detail=detail)
+        _write(cfg.state_dir, cur)
+        return settled, head
+
+
 def _step(cfg, doc: dict, io) -> bool:
     """Do this exam's next piece of work; True when another may follow at once."""
     if _due(doc):
         _post_due(cfg, doc, io.github)
         return True
-    if doc["state"] in ("open", "passed") and _wanted(doc):
-        return _reconcile(cfg, doc, io.github)
+    if _wanted(doc) and not doc["job"] and not doc["grading"]:
+        settled, head = _bypass(cfg, doc, io)
+        if settled:
+            return True
+        if doc["state"] in ("open", "passed"):
+            return _reconcile(cfg, doc, head)
     if _kind(doc):
         return _run_job(cfg, doc, io)
     return False

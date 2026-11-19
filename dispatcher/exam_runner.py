@@ -48,7 +48,14 @@ class Github:
         doc = json.loads(self._api(repo, f"repos/{repo}/pulls/{n}"))
         return {"head_sha": doc["head"]["sha"], "base_ref": doc["base"]["ref"],
                 "title": doc["title"], "body": doc["body"], "state": doc["state"],
-                "merged": bool(doc.get("merged"))}
+                "merged": bool(doc.get("merged")), "labels": [x["name"] for x in doc["labels"]]}
+
+    def label_events(self, repo: str, n: int) -> list[dict]:
+        """The PR's label events, oldest first, over every page."""
+        pages = json.loads(self._api(repo, "--paginate", "--slurp",
+                                     f"repos/{repo}/issues/{n}/events?per_page=100"))
+        return [{"event": e["event"], "label": e["label"]["name"], "actor": (e["actor"] or {}).get("login", "")}
+                for page in pages for e in page if e["event"] in ("labeled", "unlabeled")]
 
     def diff(self, repo: str, n: int) -> str:
         return self._api(repo, f"repos/{repo}/pulls/{n}", accept="application/vnd.github.diff")
@@ -89,6 +96,12 @@ class PrExam:
         proc = self._call("public", exam)
         if proc.returncode:
             raise ValueError(proc.stderr.strip() or "public failed")
+        return json.loads(proc.stdout)
+
+    def config(self, path: Path) -> dict:
+        proc = self._call("config", path)
+        if proc.returncode:
+            raise ValueError(proc.stderr.strip() or "config failed")
         return json.loads(proc.stdout)
 
     def score(self, exam: Path, answers: Path, grades: Path) -> dict:

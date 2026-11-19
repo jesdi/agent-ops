@@ -7,6 +7,9 @@ infra_repo: example/agent-ops
 # Optional: web console base URL (https://<box>.<tailnet>.ts.net). When set,
 # the plan-review Telegram ping carries a "read & approve" deep link.
 # console_url: https://box.tailnet.ts.net
+# Optional: the GitHub login whose exam:skip / exam:defer labels the box honours.
+# Unset -> a PR carrying a bypass label is an error naming this key.
+# operator_login: jesdi
 budget_threshold: 0.8
 racing_minutes: 30
 racing_threshold: 0.95

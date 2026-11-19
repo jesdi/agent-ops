@@ -57,6 +57,7 @@ class Config:
     repositories: list[Repository]
     infra_repo: str = ""  # repo for dispatcher-side failure issues; "" degrades to ping-only
     models: ModelPolicy = DEFAULT_POLICY
+    operator_login: str = ""  # GitHub login whose bypass labels (exam:skip, exam:defer) count
     console_url: str = ""  # web console base URL for Telegram deep links; "" = no link line
     stall_after_seconds: int = 600  # 0 disables stall detection entirely
     # Cap on a background wait: a session stopped on background work is
@@ -333,6 +334,7 @@ def parse_config(raw: dict) -> Config:
         repositories=_repositories(raw, capacity, state_dir),
         infra_repo=raw.get("infra_repo", ""),
         models=parse_policy(raw.get("models")),
+        operator_login=str(raw.get("operator_login") or ""),
         console_url=str(raw.get("console_url") or "").rstrip("/"),
         stall_after_seconds=int(raw.get("stall_after_seconds", 600)),
         background_wait_seconds=_background_wait_seconds(raw),
