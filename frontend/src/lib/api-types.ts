@@ -838,10 +838,81 @@ export interface components {
             pr: number;
             /** Repo */
             repo: string;
-            /** State */
-            state: string;
+            state: components["schemas"]["ExamState"];
             /** Url */
             url: string;
+        };
+        /** ExamAttempt */
+        ExamAttempt: {
+            /** Attempt */
+            attempt: number;
+            /** Max */
+            max: number;
+            /** Passed */
+            passed: boolean;
+            /** Questions */
+            questions: components["schemas"]["ExamQuestionResult"][];
+            /** Score */
+            score: number;
+        };
+        /** ExamEntry */
+        ExamEntry: {
+            /** Debt */
+            debt: boolean;
+            /** Head Sha */
+            head_sha: string | null;
+            /** Pr */
+            pr: number;
+            /** Repo */
+            repo: string;
+            state: components["schemas"]["ExamState"];
+            /** Title */
+            title: string;
+            /** Url */
+            url: string;
+        };
+        /** ExamQuestion */
+        ExamQuestion: {
+            /** Id */
+            id: string;
+            /** Options */
+            options?: string[] | null;
+            /** Prompt */
+            prompt: string;
+            /**
+             * Type
+             * @enum {string}
+             */
+            type: "choice" | "text";
+        };
+        /** ExamQuestionResult */
+        ExamQuestionResult: {
+            /** Concept */
+            concept: string;
+            /** Explanation */
+            explanation?: string | null;
+            /** Hunk */
+            hunk?: string | null;
+            /** Id */
+            id: string;
+            /** Points */
+            points: number;
+        };
+        /**
+         * ExamQuestions
+         * @description The served projection of an attempt: never a key entry or a rubric.
+         */
+        ExamQuestions: {
+            /** Head Sha */
+            head_sha: string;
+            /** Pr */
+            pr: number;
+            /** Questions */
+            questions: components["schemas"]["ExamQuestion"][];
+            /** Repo */
+            repo: string;
+            /** Version */
+            version: number;
         };
         /** ExamRequest */
         ExamRequest: {
@@ -850,6 +921,11 @@ export interface components {
             /** Repo */
             repo: string;
         };
+        /**
+         * ExamState
+         * @enum {string}
+         */
+        ExamState: "new" | "generating" | "open" | "grading" | "passed" | "skipped" | "disabled" | "error";
         /** ExamView */
         ExamView: {
             /** Attempt */
@@ -858,10 +934,7 @@ export interface components {
             debt: boolean;
             /** Detail */
             detail: string;
-            /** Exam */
-            exam: {
-                [key: string]: unknown;
-            } | null;
+            exam: components["schemas"]["ExamQuestions"] | null;
             /** Head Sha */
             head_sha: string | null;
             /** Pr */
@@ -869,11 +942,13 @@ export interface components {
             /** Repo */
             repo: string;
             /** Results */
-            results: {
-                [key: string]: unknown;
-            }[];
-            /** State */
-            state: string;
+            results: components["schemas"]["ExamAttempt"][];
+            state: components["schemas"]["ExamState"];
+        };
+        /** ExamsView */
+        ExamsView: {
+            /** Exams */
+            exams: components["schemas"]["ExamEntry"][];
         };
         /** FailuresView */
         FailuresView: {
@@ -1913,7 +1988,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["ExamsView"];
                 };
             };
         };

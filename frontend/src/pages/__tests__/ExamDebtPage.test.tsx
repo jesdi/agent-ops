@@ -7,11 +7,12 @@ import { server } from '../../test/msw-server'
 import { ExamDebtPage } from '../ExamDebtPage'
 
 const SHA = 'a'.repeat(40)
-const deferred = { repo: 'jesdi/general-skills', pr: 240, title: 'Lease the base SHA', head_sha: SHA, state: 'open', debt: true }
-const merged = { repo: 'jesdi/claude-config', pr: 12, title: 'Pin the hook order', head_sha: 'b'.repeat(40), state: 'open', debt: true }
-const notDebt = { repo: 'jesdi/other', pr: 7, title: 'Not owed anything', head_sha: 'c'.repeat(40), state: 'open', debt: false }
+const BOX = 'https://box.tailnet.ts.net'
+const deferred = { repo: 'jesdi/general-skills', pr: 240, title: 'Lease the base SHA', url: `${BOX}/exam/jesdi/general-skills/240`, head_sha: SHA, state: 'open', debt: true }
+const merged = { repo: 'jesdi/claude-config', pr: 12, title: 'Pin the hook order', url: `${BOX}/exam/jesdi/claude-config/12`, head_sha: 'b'.repeat(40), state: 'grading', debt: true }
+const notDebt = { repo: 'jesdi/other', pr: 7, title: 'Not owed anything', url: `${BOX}/exam/jesdi/other/7`, head_sha: 'c'.repeat(40), state: 'open', debt: false }
 
-const serve = (list: unknown[]) => server.use(http.get('/api/exams', () => HttpResponse.json(list)))
+const serve = (exams: unknown[]) => server.use(http.get('/api/exams', () => HttpResponse.json({ exams })))
 const hrefOf = (el: HTMLElement) => el.closest('a')?.getAttribute('href')
 
 describe('exam debt page', () => {
@@ -26,6 +27,7 @@ describe('exam debt page', () => {
     expect(within(first).getByText(/open/i)).toBeInTheDocument()
     expect(within(second).getByText(/jesdi\/claude-config/)).toBeInTheDocument()
     expect(within(second).getByText(/12/)).toBeInTheDocument()
+    expect(within(second).getByText(/grading/i)).toBeInTheDocument()
     expect(hrefOf(screen.getByText(deferred.title))).toBe('/exam/jesdi/general-skills/240')
     expect(hrefOf(screen.getByText(merged.title))).toBe('/exam/jesdi/claude-config/12')
   })
@@ -44,12 +46,12 @@ describe('exam debt page', () => {
   })
 
   it('drops a debt exam from the list, without a reload, once it is passed', async () => {
-    let list = [deferred, merged]
-    server.use(http.get('/api/exams', () => HttpResponse.json(list)))
+    let exams = [deferred, merged]
+    server.use(http.get('/api/exams', () => HttpResponse.json({ exams })))
     // No live connection: the page polls on its own.
     renderWithProviders(<ExamDebtPage />, { connected: false })
     expect(await screen.findByText(deferred.title)).toBeInTheDocument()
-    list = [merged]
+    exams = [merged]
     await waitFor(() => expect(screen.queryByText(deferred.title)).not.toBeInTheDocument(), { timeout: 9000 })
     expect(screen.getByText(merged.title)).toBeInTheDocument()
   }, 12000)
@@ -57,7 +59,7 @@ describe('exam debt page', () => {
 
 describe('nav', () => {
   it('shows the exam debt page with the number of debt exams', async () => {
-    serve([deferred, merged])
+    serve([deferred, merged, notDebt])
     renderWithProviders(<AppShell><p>body</p></AppShell>)
     const link = await screen.findByRole('link', { name: /exam debt/i })
     expect(link).toHaveAttribute('href', '/exam-debt')

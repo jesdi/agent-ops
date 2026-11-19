@@ -23,7 +23,7 @@ from typing import Iterator
 
 from dispatcher import exam_lifecycle, priority
 from dispatcher.config import routed_providers
-from dispatcher.exam_lifecycle import State
+from dispatcher.exam_lifecycle import ExamState
 from dispatcher.models import triage_entry
 from dispatcher.state import state_lock, write_json_atomic
 from dispatcher.usage import admits
@@ -60,13 +60,13 @@ def request(state_dir: str | Path, repo: str, pr: int) -> dict:
     with state_lock(state_dir, LOCK):
         doc = read(state_dir, repo, pr)
         if doc is None:
-            doc = {"repo": repo, "pr": pr, "title": "", "state": State.NEW, "head_sha": None,
+            doc = {"repo": repo, "pr": pr, "title": "", "state": ExamState.NEW, "head_sha": None,
                    "debt": False, "detail": "", "attempt": 0, "requested": 0, "reconciled": 0,
                    "job": None, "status": None, "due": None, "merged": False,
                    "passed_concepts": [], "grading": None, "followup": None, "delta": False,
                    "results": []}
-        elif doc["state"] == State.ERROR and not doc["grading"]:
-            doc["state"] = State.NEW   # a request after a failed job retries it
+        elif doc["state"] == ExamState.ERROR and not doc["grading"]:
+            doc["state"] = ExamState.NEW   # a request after a failed job retries it
         doc["requested"] += 1
         _write(state_dir, doc)
         return doc
@@ -101,10 +101,9 @@ def pending(state_dir: str | Path) -> bool:
     return any(_kind(doc) or _wanted(doc) or _due(doc) for doc in _exams(state_dir))
 
 
-def debts(state_dir: str | Path) -> list[dict]:
-    """The exams still owed, as the console lists them."""
-    return [{k: doc.get(k) for k in ("repo", "pr", "head_sha", "state", "debt", "title")}
-            for doc in _exams(state_dir) if doc["debt"]]
+def listing(state_dir: str | Path) -> list[dict]:
+    """Every exam on the box, as stored; the console's debt list is those with `debt`."""
+    return list(_exams(state_dir))
 
 
 def _update(state_dir, repo: str, pr: int, **fields) -> dict:
@@ -128,7 +127,7 @@ def _kind(doc: dict) -> str | None:
     """The job this exam's state asks for; None when it waits for the operator or a request."""
     if doc["grading"]:
         return "grade"
-    if doc["state"] not in (State.NEW, State.GENERATING):
+    if doc["state"] not in (ExamState.NEW, ExamState.GENERATING):
         return None
     return "delta" if doc["delta"] else "followup" if doc["followup"] else "generate"
 
@@ -153,7 +152,7 @@ def _claim(cfg, doc: dict, job: dict, now) -> bool:
         if cur is None or not _claimable(cur, job, now):
             return False
         cur.update(job=job, detail="",
-                   state=State.GRADING if job["kind"] == "grade" else State.GENERATING)
+                   state=ExamState.GRADING if job["kind"] == "grade" else ExamState.GENERATING)
         _write(cfg.state_dir, cur)
         return True
 
@@ -268,7 +267,7 @@ def _entry(cfg, usages, when):
 
 
 def _is_open(doc: dict | None, attempt: int, head_sha: str) -> bool:
-    return (doc is not None and doc["state"] == State.OPEN and doc["attempt"] == attempt
+    return (doc is not None and doc["state"] == ExamState.OPEN and doc["attempt"] == attempt
             and doc["head_sha"] == head_sha)
 
 
@@ -288,7 +287,7 @@ def submit(state_dir, repo: str, pr: int, attempt: int, head_sha: str, answers: 
         if not all(_answers(q, answers.get(q["id"])) for q in questions):
             return "incomplete"
         write_json_atomic(_dir(state_dir, repo, pr) / "answers.json", {q["id"]: answers[q["id"]] for q in questions})
-        doc.update(state=State.GRADING, grading={"attempt": attempt})
+        doc.update(state=ExamState.GRADING, grading={"attempt": attempt})
         _write(state_dir, doc)
         return "ok"
 
@@ -378,21 +377,21 @@ def _graded(cfg, scored: dict, diff: str, io):
     the follow-up on the missed concepts."""
     def change(cur: dict, d: Path) -> None:
         if error := _record(cfg, d, cur["repo"], io.pr_exam, io.now):
-            cur.update(state=State.ERROR, detail=error)
+            cur.update(state=ExamState.ERROR, detail=error)
             return
         exam = json.loads((d / "exam.json").read_text())
         cur.update(_graded_fields(cur, scored, exam))
         if scored["passed"]:
             (d / "passed.diff").write_text(diff)
-            cur["state"] = State.PASSED
+            cur["state"] = ExamState.PASSED
         else:
-            cur.update(state=State.GENERATING, followup={"only": list(dict.fromkeys(scored["missed"]))})
+            cur.update(state=ExamState.GENERATING, followup={"only": list(dict.fromkeys(scored["missed"]))})
     return change
 
 
 def _failed(detail: str):
     def change(cur: dict, d: Path) -> None:
-        cur.update(state=State.ERROR, detail=detail)
+        cur.update(state=ExamState.ERROR, detail=detail)
     return change
 
 
@@ -402,13 +401,13 @@ def _generated(job: dict, outcome: str, diff: str):
     def change(cur: dict, d: Path) -> None:
         if outcome == "passed":
             (d / "passed.diff").write_text(diff)
-            cur.update(state=State.PASSED, head_sha=job["head_sha"], delta=False)
+            cur.update(state=ExamState.PASSED, head_sha=job["head_sha"], delta=False)
             return
         (d / STAGED[0]).replace(d / "exam.json")
         (d / STAGED[1]).replace(d / "public.json")
         if cur["delta"]:   # a delta exam starts over on the new head
             cur["results"] = []
-        cur.update(state=State.OPEN, head_sha=job["head_sha"], attempt=cur["attempt"] + 1,
+        cur.update(state=ExamState.OPEN, head_sha=job["head_sha"], attempt=cur["attempt"] + 1,
                    delta=False, followup=None)
     return change
 
@@ -477,11 +476,11 @@ def _settle(cfg, doc, job: dict, change, pr: dict, io) -> bool:
 def _announce(cfg, kind: str, after: dict, io) -> bool:
     """Tell the operator what an applied job left; True when it left a result."""
     _tell_failure(cfg, after, io.notify)
-    if after["state"] == State.ERROR:
+    if after["state"] == ExamState.ERROR:
         return False
     if kind == "grade":
         _notify_result(cfg, after, io.notify)
-    if after["state"] == State.OPEN:
+    if after["state"] == ExamState.OPEN:
         _notify_ready(cfg, after, io.notify)
     return True
 
@@ -502,7 +501,7 @@ def _notify_result(cfg, doc: dict, notify) -> None:
 def _tell_failure(cfg, doc: dict, notify) -> None:
     """Say why the exam's work failed, once per reason: `notified_error` is the reason the
     operator was told, kept over the retries and forgotten when a job leaves a result."""
-    reason = doc["detail"] if doc["state"] == State.ERROR else None
+    reason = doc["detail"] if doc["state"] == ExamState.ERROR else None
     if reason == doc.get("notified_error"):
         return
     _update(cfg.state_dir, doc["repo"], doc["pr"], notified_error=reason)
@@ -512,8 +511,8 @@ def _tell_failure(cfg, doc: dict, notify) -> None:
 
 def _run_job(cfg, doc, io) -> bool:
     """Claim, run and end this exam's next job; True when it left a result."""
-    if doc["state"] == State.NEW:
-        doc = _update(cfg.state_dir, doc["repo"], doc["pr"], state=State.GENERATING)
+    if doc["state"] == ExamState.NEW:
+        doc = _update(cfg.state_dir, doc["repo"], doc["pr"], state=ExamState.GENERATING)
     entry = _entry(cfg, io.usages, io.now())
     if entry is None:
         return False
@@ -557,7 +556,7 @@ def _reconcile(cfg, doc: dict, pr: dict, io) -> None:
         if not exam_lifecycle.busy(cur):
             cur["reconciled"] = max(cur["reconciled"], doc["requested"])
         _write(cfg.state_dir, cur)
-    if cur["state"] == State.ERROR:   # a config or a label that cannot be honoured fails like a job
+    if cur["state"] == ExamState.ERROR:   # a config or a label that cannot be honoured fails like a job
         _tell_failure(cfg, cur, io.notify)
 
 

@@ -1,13 +1,14 @@
 """Exam request and state read. The dispatcher does the GitHub work."""
 from __future__ import annotations
 
-from typing import Annotated, Callable
+from typing import Annotated, Callable, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path
 from pydantic import BaseModel, ConfigDict, Field
 
 from dispatcher import exams as state
 from dispatcher.config import Config
+from dispatcher.exam_lifecycle import ExamState
 from web.auth import Operator, current_operator
 
 Slug = r"[A-Za-z0-9][A-Za-z0-9._-]*"
@@ -26,27 +27,71 @@ class Answers(BaseModel):
     answers: dict[str, Annotated[int, Field(strict=True)] | str]
 
 
-class ExamAccepted(BaseModel):
+class Exam(BaseModel):
+    """What every exam response says of the exam."""
     repo: str
     pr: int
-    url: str
-    state: str
+    state: ExamState
     head_sha: str | None
     debt: bool
+
+
+class ExamAccepted(Exam):
+    url: str
     detail: str
     pending: bool
 
 
-class ExamView(BaseModel):
+class ExamQuestion(BaseModel):
+    id: str
+    type: Literal["choice", "text"]
+    prompt: str
+    options: list[str] | None = None
+
+
+class ExamQuestions(BaseModel):
+    """The served projection of an attempt: never a key entry or a rubric."""
+    version: int
     repo: str
     pr: int
-    state: str
-    head_sha: str | None
-    debt: bool
+    head_sha: str
+    questions: list[ExamQuestion]
+
+
+class ExamQuestionResult(BaseModel):
+    id: str
+    concept: str
+    points: int | float
+    explanation: str | None = None   # only for a question under 1 point
+    hunk: str | None = None
+
+
+class ExamAttempt(BaseModel):
+    attempt: int
+    passed: bool
+    score: int | float
+    max: int | float
+    questions: list[ExamQuestionResult]
+
+
+class ExamView(Exam):
     detail: str
     attempt: int
-    exam: dict | None
-    results: list[dict]
+    exam: ExamQuestions | None
+    results: list[ExamAttempt]
+
+
+class ExamEntry(Exam):
+    title: str
+    url: str
+
+
+class ExamsView(BaseModel):
+    exams: list[ExamEntry]
+
+
+def _url(console: str, doc: dict) -> str:
+    return f"{console}/exam/{doc['repo']}/{doc['pr']}"
 
 
 def router(sources, cfg: Callable[[], Config]) -> APIRouter:
@@ -58,12 +103,12 @@ def router(sources, cfg: Callable[[], Config]) -> APIRouter:
         if not console:
             raise HTTPException(503, "console_url is not set in targets.yaml")
         doc = sources.request_exam(body.repo, body.pr)
-        return ExamAccepted(**{k: doc[k] for k in ("repo", "pr", "state", "head_sha", "debt", "detail")},
-                            url=f"{console}/exam/{body.repo}/{body.pr}", pending=True)
+        return ExamAccepted(**doc, url=_url(console, doc), pending=True)
 
-    @routes.get("/api/exams")
+    @routes.get("/api/exams", response_model=ExamsView)
     def listing(op: Operator = Depends(current_operator)):
-        return sources.exam_debts()
+        console = cfg().console_url
+        return ExamsView(exams=[ExamEntry(**doc, url=_url(console, doc)) for doc in sources.exams()])
 
     @routes.get("/api/exam/host")
     def host(op: Operator = Depends(current_operator)):
@@ -72,16 +117,15 @@ def router(sources, cfg: Callable[[], Config]) -> APIRouter:
             raise HTTPException(503, "the exam App is not known yet")
         return found
 
-    @routes.get("/api/exam/{owner}/{name}/{pr}", response_model=ExamView)
+    @routes.get("/api/exam/{owner}/{name}/{pr}", response_model=ExamView, response_model_exclude_unset=True)
     def read_exam(owner: Annotated[str, Path(pattern=rf"^{Slug}$")],
                   name: Annotated[str, Path(pattern=rf"^{Slug}$")],
                   pr: Annotated[int, Path(ge=1)], op: Operator = Depends(current_operator)):
         doc = sources.exam_state(f"{owner}/{name}", pr)
         if doc is None:
             raise HTTPException(404, "exam not found")
-        return ExamView(**{k: doc[k] for k in ("repo", "pr", "state", "head_sha", "debt", "detail", "attempt")},
-                        exam=state.public(cfg().state_dir, doc["repo"], doc["pr"]) if doc["state"] == "open" else None,
-                        results=doc.get("results", []))
+        questions = state.public(cfg().state_dir, doc["repo"], doc["pr"]) if doc["state"] == ExamState.OPEN else None
+        return ExamView(**doc, exam=questions)
 
     @routes.post("/api/exam/{owner}/{name}/{pr}/answers")
     def answer(body: Answers, owner: Annotated[str, Path(pattern=rf"^{Slug}$")],

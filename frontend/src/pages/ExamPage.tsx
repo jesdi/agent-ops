@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams } from 'react-router'
-import { api, ApiError, type ExamMiss, type ExamQuestion, type ExamResult, type ExamState } from '../lib/api'
+import { api, ApiError, type ExamAttempt, type ExamQuestion, type ExamState, type ExamView } from '../lib/api'
 import { queryKeys } from '../hooks/queryKeys'
 import { useExam } from '../hooks/useResources'
 
@@ -34,8 +34,8 @@ function Question({ q, value, onChange }: { q: ExamQuestion; value: number | str
   )
 }
 
-function Misses({ result }: { result: ExamResult }) {
-  const missed = result.questions.filter((m: ExamMiss) => m.points < 1)
+function Misses({ result }: { result: ExamAttempt }) {
+  const missed = result.questions.filter((m) => m.points < 1)
   return (
     <section className="space-y-3">
       <p>Score {result.score} / {result.max}</p>
@@ -58,7 +58,7 @@ function isAnswered(questions: ExamQuestion[], answers: Answers) {
   return questions.every((q) => answers[q.id] !== undefined && answers[q.id] !== '')
 }
 
-function AttemptForm({ data, onSubmit, pending }: { data: ExamState; onSubmit: (a: Answers) => void; pending: boolean }) {
+function AttemptForm({ data, onSubmit, pending }: { data: ExamView; onSubmit: (a: Answers) => void; pending: boolean }) {
   const [answers, setAnswers] = useState<Answers>({})
   const questions = data.exam?.questions ?? []
   const ready = isAnswered(questions, answers) && !pending
@@ -77,19 +77,19 @@ function AttemptForm({ data, onSubmit, pending }: { data: ExamState; onSubmit: (
 type Answering = { changed: boolean; error: string | null; pending: boolean; submit: (a: Answers) => void }
 
 /** The page's copy after answers are accepted: grading, with the questions gone. */
-function graded(prev: ExamState | undefined, r: Partial<ExamState>) {
+function graded(prev: ExamView | undefined, r: Partial<ExamView>) {
   return prev && { ...prev, state: r.state ?? 'grading', exam: null }
 }
 
 /** Submits the open attempt; a 409 means the exam changed, so it is reloaded. */
-function useAnswerExam(owner: string, name: string, pr: string, data: ExamState | undefined): Answering {
+function useAnswerExam(owner: string, name: string, pr: string, data: ExamView | undefined): Answering {
   const queryClient = useQueryClient()
   const [changed, setChanged] = useState(false)
   const key = queryKeys.exam(owner, name, pr)
   const submit = useMutation({
     mutationFn: (answers: Answers) => api.answerExam(owner, name, pr, { attempt: data!.attempt, head_sha: data!.head_sha!, answers }),
     onMutate: () => setChanged(false),
-    onSuccess: (r) => queryClient.setQueryData<ExamState>(key, (prev) => graded(prev, r)),
+    onSuccess: (r) => queryClient.setQueryData<ExamView>(key, (prev) => graded(prev, r)),
     onError: (e) => {
       if (isStatus(e, 409)) {
         setChanged(true)
@@ -101,9 +101,9 @@ function useAnswerExam(owner: string, name: string, pr: string, data: ExamState 
   return { changed, error, pending: submit.isPending, submit: (a) => submit.mutate(a) }
 }
 
-type ViewProps = { data: ExamState; answer: Answering }
+type ViewProps = { data: ExamView; answer: Answering }
 
-function LastMisses({ data }: { data: ExamState }) {
+function LastMisses({ data }: { data: ExamView }) {
   const last = data.results.at(-1)
   return last && !last.passed ? <Misses result={last} /> : null
 }
@@ -143,9 +143,9 @@ function OpenView({ data, answer }: ViewProps) {
 }
 
 // what each exam state shows below the notices; any other state shows nothing more
-const STATE_VIEWS = new Map<string, (props: ViewProps) => ReactNode>([
-  ['generating', GeneratingView], ['grading', GradingView], ['error', ErrorView], ['passed', PassedView], ['open', OpenView],
-])
+const STATE_VIEWS: Partial<Record<ExamState, (props: ViewProps) => ReactNode>> = {
+  generating: GeneratingView, grading: GradingView, error: ErrorView, passed: PassedView, open: OpenView,
+}
 
 function Notices({ debt, answer }: { debt: boolean; answer: Answering }) {
   return (
@@ -157,8 +157,8 @@ function Notices({ debt, answer }: { debt: boolean; answer: Answering }) {
   )
 }
 
-function ExamView({ data, answer }: ViewProps) {
-  const View = STATE_VIEWS.get(data.state)
+function ExamBody({ data, answer }: ViewProps) {
+  const View = STATE_VIEWS[data.state]
   return (
     <main className="mx-auto max-w-2xl space-y-4 p-4">
       <h1 className="text-lg font-semibold">Exam for {data.repo} #{data.pr}</h1>
@@ -182,5 +182,5 @@ export function ExamPage() {
   const answer = useAnswerExam(owner, name, pr, exam.data)
   if (exam.isPending) return <p className="p-4 text-ink-muted">loading exam…</p>
   if (exam.isError) return <ExamError error={exam.error} exam={`${owner}/${name}#${pr}`} />
-  return <ExamView data={exam.data} answer={answer} />
+  return <ExamBody data={exam.data} answer={answer} />
 }

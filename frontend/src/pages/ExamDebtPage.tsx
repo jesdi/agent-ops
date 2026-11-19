@@ -10,7 +10,7 @@ export function ExamDebtPage() {
     <ul className="space-y-2 p-4">
       {data.map((e) => (
         <li key={`${e.repo}#${e.pr}`} className="flex flex-wrap gap-x-3">
-          <Link to={`/exam/${e.repo}/${e.pr}`} className="font-medium underline">{e.title ?? `PR #${e.pr}`}</Link>
+          <Link to={`/exam/${e.repo}/${e.pr}`} className="font-medium underline">{e.title || `PR #${e.pr}`}</Link>
           <span className="text-ink-muted">{e.repo} #{e.pr}</span>
           <span className="text-ink-muted">{e.state}</span>
         </li>

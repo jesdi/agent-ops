@@ -4,15 +4,17 @@
 Interface under test (defined here, built by the ticket), on top of test_exam_bypass.py and
 test_exam_records.py:
     github.pr(repo, n) -> "state": "open" | "closed", "merged": bool   (as the fakes already do)
-    GET /api/exams -> 200, a JSON list, one object per exam that is open debt:
-        {"repo", "pr", "head_sha", "state", "debt"}. A passed exam is not in it.
+    GET /api/exams -> 200, {"exams": [{"repo", "pr", "title", "url", "state", "debt",
+        "head_sha"}]}: every exam on the box. The console's debt list is the entries with
+        `debt` true: a debt exam in any state, until it is passed.
     `main()` with `--exam-sweep` runs `exam_runner.sweep(cfg, deps)` once and returns (exit 0):
         it reads every exam on the box, asks `exam_runner.Github` for each PR and reconciles it,
         through `exam_runner.session`, `exam_runner.PrExam` and `exam_runner.fetch_all`, as
         `--exam-run` does. A request for a PR runs the same reconcile (`exams.work`).
     reconcile: merged + passed (or skipped)  -> exam page and data deleted, records kept, 404.
                closed, not merged            -> exam deleted, no record written.
-               merged, exam open             -> stays `open` with `debt` true.
+               merged, exam not passed       -> kept, with `debt` true.
+               merged, passed on an older head -> judged against the merged head as debt.
                merged, never an exam         -> nothing is created.
     Passing a debt exam writes its records and posts no status.
 """
@@ -23,7 +25,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.test_exam_bypass import DEFER, OWNER, SKIP, Hub
-from tests.test_exam_generation import HEADERS, NOW, REPO
+from tests.test_exam_generation import CONSOLE, HEAD, HEADERS, NOW, REPO
 from tests.test_exam_grading import RETRY
 from tests.test_exam_pushes import NEW, passed_box
 from tests.test_exam_records import PASS_ALL, Box
@@ -90,7 +92,7 @@ def read(box, repo, pr):
 def listed(box):
     response = box.client.get("/api/exams", headers=HEADERS)
     assert response.status_code == 200
-    return {(e["repo"], e["pr"]): e for e in response.json()}
+    return {(e["repo"], e["pr"]): e for e in response.json()["exams"]}
 
 
 def passed(box, repo, pr):
@@ -273,3 +275,19 @@ def test_a_passed_debt_exam_of_a_merged_pr_is_deleted_with_its_records_kept(tmp_
     assert read(box, CLAUDE, 12).status_code == 404
     assert len(box.records(CLAUDE)) == 5
     assert box.github.statuses == posted
+
+
+def test_the_listing_holds_every_exam_on_the_box_debt_or_not(tmp_path, monkeypatch):
+    box, _ = merged_debt(tmp_path, monkeypatch)
+    box.open(REPO, 240)
+    response = box.client.get("/api/exams", headers=HEADERS)
+    assert response.json() == {"exams": [
+        {"repo": CLAUDE, "pr": 12, "title": "Leases", "url": f"{CONSOLE}/exam/{CLAUDE}/12",
+         "state": "open", "debt": True, "head_sha": HEAD},
+        {"repo": REPO, "pr": 240, "title": "Leases", "url": f"{CONSOLE}/exam/{REPO}/240",
+         "state": "open", "debt": False, "head_sha": HEAD}]}
+
+
+def test_the_listing_is_refused_without_the_tailscale_header(tmp_path, monkeypatch):
+    box = make(tmp_path, monkeypatch)
+    assert box.client.get("/api/exams").status_code == 401
