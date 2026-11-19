@@ -39,6 +39,9 @@ def request(state_dir: str | Path, repo: str, pr: int) -> dict:
             if existing["state"] == "error" and not existing.get("grading"):   # a request after a failure retries
                 existing.update(state="new", wanted=True)
                 write_json_atomic(_path(state_dir, repo, pr), existing, indent=2)
+            elif existing["state"] in ("open", "passed", "grading", "generating") and not existing["wanted"]:
+                existing["wanted"] = True   # work() compares the head and clears it; kept through grading and generation
+                write_json_atomic(_path(state_dir, repo, pr), existing, indent=2)
             return existing
         doc = {"repo": repo, "pr": pr, "state": "new", "head_sha": None, "debt": False,
                "detail": "", "attempt": 0, "wanted": True, "job": None, "status": None,
@@ -89,9 +92,10 @@ def _claim(cfg, doc: dict, model: str, now) -> bool:
 
 
 def _generate(cfg, doc, pr, model, *, github, run, pr_exam, now,
-              only=None, prior=None) -> tuple[str, str]:
+              only=None, prior=None, delta=None) -> tuple[str, str]:
     """Run one session; (state, detail). `only` makes it a follow-up on those concepts,
-    `prior` is the exam it follows."""
+    `prior` is the exam it follows, `delta` (the passed concepts) makes it the delta judgment
+    after a pass: "passed" is returned when the push added no concept."""
     repo, n = doc["repo"], doc["pr"]
     job = _dir(cfg.state_dir, repo, n) / "job"
     shutil.rmtree(job, ignore_errors=True)
@@ -99,19 +103,24 @@ def _generate(cfg, doc, pr, model, *, github, run, pr_exam, now,
     records = Path(cfg.state_dir) / "exam-records" / repo
     records.mkdir(parents=True, exist_ok=True)
     glossary = github.file(repo, pr["base_ref"], "GLOSSARY.md")
-    (job / "diff.patch").write_text(github.diff(repo, n))
+    diff = github.diff(repo, n)
+    (job / "diff.patch").write_text(diff)
+    (_dir(cfg.state_dir, repo, n) / "head.diff").write_text(diff)   # outside the job: the session cannot swap it
     (job / "body.md").write_text(pr["body"] or "")
     if glossary is not None:
         (job / "GLOSSARY.md").write_text(glossary)
     out, request = job / "exam.json", job / "request.json"
     spec = {
-        "mode": "followup" if only else "first", "repo": repo, "pr": n, "head_sha": pr["head_sha"],
+        "mode": "delta" if delta is not None else "followup" if only else "first", "repo": repo, "pr": n, "head_sha": pr["head_sha"],
         "diff": str(job / "diff.patch"), "body": str(job / "body.md"),
         "glossary": None if glossary is None else str(job / "GLOSSARY.md"),
         "records": str(records), "today": now().astimezone(timezone.utc).date().isoformat(),
         "only_concepts": only, "out": str(out),
         "prior_concepts": [c["id"] for c in (prior or {}).get("concepts", [])],
         "prior_prompts": [q["prompt"] for q in (prior or {}).get("questions", [])]}
+    if delta is not None:
+        shutil.copyfile(_dir(cfg.state_dir, repo, n) / "passed.diff", job / "passed.diff")
+        spec.update(passed_diff=str(job / "passed.diff"), passed_concepts=delta)
     request.write_text(json.dumps(spec))
     try:
         run(request, model=model, timeout=TIMEOUT)
@@ -127,6 +136,8 @@ def _generate(cfg, doc, pr, model, *, github, run, pr_exam, now,
     request.write_text(json.dumps(spec))   # validate against our request, not a rewritten one
     if errors := pr_exam.validate(out, request):
         return "error", "; ".join(errors)
+    if delta is not None and not json.loads(out.read_text())["questions"]:
+        return "passed", ""   # no new concept
     write_json_atomic(_dir(cfg.state_dir, repo, n) / "public.json", pr_exam.public(out))
     shutil.copyfile(out, _dir(cfg.state_dir, repo, n) / "exam.json")   # the key, out of the session's reach
     return "open", ""
@@ -209,11 +220,12 @@ def _record(cfg, d, repo, n, *, pr_exam, now) -> bool:
 
 
 def _finish(cfg, doc, pr, sha, model, *, github, run, pr_exam, now) -> bool:
-    """Grade the submitted attempt and settle it; False when the head moved and the result was dropped."""
+    """Grade the submitted attempt and settle it; False when the head moved, so the caller replaces the exam."""
     repo, n = doc["repo"], doc["pr"]
     d = _dir(cfg.state_dir, repo, n)
     _update(cfg.state_dir, repo, n, state="grading", detail="")
     grades, error = _grade(cfg, doc, sha, model, github=github, run=run)
+    diff = github.diff(repo, n)   # taken before the head check: it is the diff of `sha` when the check holds
     if github.pr(repo, n)["head_sha"] != sha:
         return False
     if grades is None:
@@ -230,24 +242,49 @@ def _finish(cfg, doc, pr, sha, model, *, github, run, pr_exam, now) -> bool:
               "max": scored["max"], "questions": [
                   {k: v for k, v in q.items() if k in ("id", "concept", "points")
                    or (q["points"] < 1 and k in ("explanation", "hunk"))} for q in scored["questions"]]}
-    fields = {"grading": None, "results": [*doc.get("results", []), result]}
+    exam = json.loads((d / "exam.json").read_text())
+    missed = set() if scored["passed"] else set(scored["missed"])   # missed concepts return in the follow-up
+    fields = {"grading": None, "results": [*doc.get("results", []), result],
+              "passed_concepts": list(dict.fromkeys(
+                  [*doc["passed_concepts"], *(c["id"] for c in exam["concepts"] if c["id"] not in missed)]))}
     if scored["passed"]:
         if not _record(cfg, d, repo, n, pr_exam=pr_exam, now=now):
             return True
+        (d / "passed.diff").write_text(diff)
         github.post_status(repo, sha, "exam", "success", "Exam passed")
         _update(cfg.state_dir, repo, n, state="passed", status={"sha": sha, "state": "success"}, **fields)
         return True
     if not _record(cfg, d, repo, n, pr_exam=pr_exam, now=now):
         return True   # before the follow-up, which reads these records and replaces exam.json
-    prior = json.loads((d / "exam.json").read_text())
     state, detail = _generate(cfg, doc, github.pr(repo, n), model, github=github, run=run,
                               pr_exam=pr_exam, now=now, only=list(dict.fromkeys(scored["missed"])),
-                              prior=prior)
-    if github.pr(repo, n)["head_sha"] != sha:   # the graded result stands; only the follow-up is dropped
-        _update(cfg.state_dir, repo, n, job=None, wanted=True, state="generating", **fields)
-        return True
+                              prior=exam)
+    if github.pr(repo, n)["head_sha"] != sha:   # the exam on the old head is replaced, attempts and all
+        return False
     _update(cfg.state_dir, repo, n, state=state, detail=detail, attempt=doc["attempt"] + 1, **fields)
     return True
+
+
+def _reconcile(cfg, doc, github) -> dict | None:
+    """A request for an open or passed exam: None when the head is unchanged, else the exam
+    sent back to generating (an open one is dropped, a passed one gets a delta judgment)."""
+    repo, n = doc["repo"], doc["pr"]
+    if github.pr(repo, n)["head_sha"] == doc["head_sha"]:
+        _update(cfg.state_dir, repo, n, wanted=False)
+        return None
+    if doc["state"] == "passed":
+        return _update(cfg.state_dir, repo, n, state="generating", delta=True, job=None, wanted=True)
+    return _replace(cfg, repo, n)
+
+
+def _replace(cfg, repo, n) -> dict:
+    """Drop every attempt of an exam whose head moved and send it back to generating."""
+    d = _dir(cfg.state_dir, repo, n)
+    for name in ("public.json", "exam.json", "answers.json", "grades.json", "result.json", "passed.diff"):
+        (d / name).unlink(missing_ok=True)
+    shutil.rmtree(d / "job", ignore_errors=True)
+    return _update(cfg.state_dir, repo, n, state="generating", head_sha=None, attempt=0, results=[],
+                   passed_concepts=[], status=None, grading=None, detail="", job=None, wanted=True)
 
 
 def work(cfg, *, github, run, pr_exam, notify, now, usages) -> None:
@@ -263,8 +300,9 @@ def work(cfg, *, github, run, pr_exam, notify, now, usages) -> None:
             if not _finish(
                     cfg, doc, github.pr(doc["repo"], doc["pr"]), sha, entry.model_id,
                     github=github, run=run, pr_exam=pr_exam, now=now):
-                _update(cfg.state_dir, doc["repo"], doc["pr"], job=None, wanted=True,
-                        state="generating", grading=None)
+                _replace(cfg, doc["repo"], doc["pr"])
+            continue
+        if doc["state"] in ("open", "passed") and doc["wanted"] and (doc := _reconcile(cfg, doc, github)) is None:
             continue
         if doc["state"] == "error" or not (doc["wanted"] or doc["job"]):
             continue
@@ -282,13 +320,22 @@ def work(cfg, *, github, run, pr_exam, notify, now, usages) -> None:
         if doc["status"] != {"sha": sha, "state": "pending"}:
             github.post_status(repo, sha, "exam", "pending", "Exam in progress")
             doc = _update(cfg.state_dir, repo, n, status={"sha": sha, "state": "pending"})
+        delta = doc["passed_concepts"] if doc.get("delta") else None
         state, detail = _generate(cfg, doc, pr, entry.model_id, github=github, run=run,
-                                  pr_exam=pr_exam, now=now)
+                                  pr_exam=pr_exam, now=now, delta=delta)
         if github.pr(repo, n)["head_sha"] != sha:   # the head moved: drop this result
             _update(cfg.state_dir, repo, n, job=None, wanted=True, state="generating")
             continue
+        if state == "passed":   # the delta found no new concept: the push is covered
+            d = _dir(cfg.state_dir, repo, n)
+            shutil.copyfile(d / "head.diff", d / "passed.diff")
+            github.post_status(repo, sha, "exam", "success", "Exam passed")
+            _update(cfg.state_dir, repo, n, state="passed", detail="", job=None, delta=False,
+                    head_sha=sha, status={"sha": sha, "state": "success"})
+            continue
         _update(cfg.state_dir, repo, n, state=state, detail=detail, job=None,
                 head_sha=sha if state == "open" else doc["head_sha"],
-                attempt=doc["attempt"] + 1)
+                attempt=doc["attempt"] + 1,
+                **({"delta": False, "results": []} if delta is not None and state == "open" else {}))
         if state == "open" and cfg.console_url:
             notify(f"Exam ready: {cfg.console_url}/exam/{repo}/{n}")
