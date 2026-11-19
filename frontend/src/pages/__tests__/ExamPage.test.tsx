@@ -148,6 +148,23 @@ describe('exam page', () => {
     expect(await screen.findByText(/no exam for/i)).toBeInTheDocument()
   })
 
+  it('says the exam is unavailable on another failure', async () => {
+    serve({ detail: 'state unreadable' }, 500)
+    renderExam()
+    expect(await screen.findByText(/exam unavailable/i)).toBeInTheDocument()
+  })
+
+  it('shows why a submission failed when it was not a conflict, and keeps the answers', async () => {
+    serve(open)
+    server.use(http.post(`${URL_PATH}/answers`, () => HttpResponse.json({ detail: 'answers rejected' }, { status: 422 })))
+    renderExam()
+    await answerAll()
+    await userEvent.click(submit())
+    expect(await screen.findByRole('alert')).toHaveTextContent('answers rejected')
+    expect(screen.queryByText(/exam (has )?changed/i)).not.toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'the base SHA' })).toBeChecked()
+  })
+
   it('marks a debt exam as debt', async () => {
     serve({ ...open, debt: true })
     renderExam()
