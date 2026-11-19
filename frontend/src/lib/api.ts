@@ -111,7 +111,22 @@ const post = <T>(path: string, body: unknown) =>
 const put = <T>(path: string, body: unknown) =>
   request<T>(path, { method: 'PUT', body: JSON.stringify(body) })
 
+export interface ExamQuestion { id: string; type: 'choice' | 'text'; prompt: string; options?: string[] }
+export interface ExamMiss { id: string; concept: string; points: number; explanation?: string; hunk?: string }
+export interface ExamResult { attempt: number; passed: boolean; score: number; max: number; questions: ExamMiss[] }
+export interface ExamState {
+  repo: string; pr: number; state: string; head_sha: string | null; debt: boolean; detail: string; attempt: number
+  exam: { questions: ExamQuestion[] } | null
+  results: ExamResult[]
+}
+
+const examPath = (owner: string, name: string, pr: string) =>
+  `/exam/${[owner, name, pr].map(encodeURIComponent).join('/')}`
+
 export const api = {
+  exam: (owner: string, name: string, pr: string) => request<ExamState>(examPath(owner, name, pr)),
+  answerExam: (owner: string, name: string, pr: string, body: { attempt: number; head_sha: string; answers: Record<string, number | string> }) =>
+    post<Partial<ExamState>>(`${examPath(owner, name, pr)}/answers`, body),
   onboardings: () => request<OnboardingsView>('/onboarding'),
   onboarding: (project: string) => request<OnboardingView>(`/onboarding/${encodeURIComponent(project)}`),
   startOnboarding: (project: string, body: OnboardingStartRequest) =>

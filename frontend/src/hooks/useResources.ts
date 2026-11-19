@@ -117,3 +117,15 @@ export function useTaskArtifacts(repository: string, issue: number) {
     refetchInterval,
   })
 }
+
+const EXAM_POLL_MS = 3000
+
+/** The exam is not announced by live events: poll while the host works on it. */
+export function useExam(owner: string, name: string, pr: string) {
+  return useQuery({
+    queryKey: queryKeys.exam(owner, name, pr),
+    queryFn: () => api.exam(owner, name, pr),
+    retry: false,
+    refetchInterval: (q) => (['generating', 'grading'].includes(q.state.data?.state ?? '') ? EXAM_POLL_MS : false),
+  })
+}
