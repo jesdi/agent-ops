@@ -30,7 +30,7 @@ class Tabs:
         return SimpleNamespace(alive=True) if self.alive else None
 
     def ensure(self, workspace, label, cwd, env=None):
-        self.label = label
+        self.label, self.env = label, env
         return SimpleNamespace(run=lambda command: self.ran.append(command) or True)
 
 
@@ -58,6 +58,23 @@ def test_the_pass_launches_the_runner_in_its_tab_and_never_runs_a_session(tmp_pa
     busy = tabs(alive=True)
     exam_runner.launch(cfg, "targets.yaml")
     assert busy.ran == []
+
+
+def test_only_the_runner_tab_gets_the_app_credentials_and_the_wrapper(tmp_path, tabs, monkeypatch):
+    """The pane inherits the herdr server's env, not the pass's: without these the
+    runner reads the App as unregistered and its sessions start without the wrapper."""
+    from dispatcher import triage
+    runner_only = {"GITHUB_APP_ID": "123", "GITHUB_APP_PRIVATE_KEY": "-----BEGIN KEY-----\nk\n",
+                   "AGENT_OPS_COMMAND_WRAPPER": "/infra/with-claude-token.sh"}
+    for var, value in {**runner_only, "TELEGRAM_BOT_TOKEN": "tg"}.items():
+        monkeypatch.setenv(var, value)
+    cfg = make_config(tmp_path)
+    exams.request(cfg.state_dir, "o/r", 1)
+    fake = tabs()
+    exam_runner.launch(cfg, "targets.yaml")
+    assert fake.env == {**triage._launch_env(), **runner_only}
+    assert fake.env["TELEGRAM_BOT_TOKEN"] == "tg"
+    assert not runner_only.keys() & triage._launch_env().keys()
 
 
 def test_a_second_runner_exits_without_working(tmp_path, monkeypatch):

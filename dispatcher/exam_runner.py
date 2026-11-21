@@ -18,6 +18,9 @@ TAB = "exam-runner"
 RUN_LOCK = "exam-runner.lock"
 PERMISSIONS = {"statuses": "write", "pull_requests": "read", "contents": "read",
                "metadata": "read"}
+# On top of triage's: the App credentials only this runner mints from, and the wrapper its
+# podman sessions start through. A herdr pane inherits the herdr server's env, not the pass's.
+LAUNCH_ENV_VARS = ("GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY", "AGENT_OPS_COMMAND_WRAPPER")
 SCRIPT = Path(__file__).resolve().parent.parent / ".my-skills" / "pr-exam" / "pr_exam.py"
 PROMPT = ("Follow the pr-exam skill at {skill}/SKILL.md. Read the generation request at "
           "{request}; write the exam it asks for to the `out` path it names, then run "
@@ -154,12 +157,18 @@ def _running() -> bool:
     return tab is not None and tab.alive
 
 
+def _launch_env() -> dict[str, str]:
+    """The runner tab's env: triage's, plus LAUNCH_ENV_VARS that are set."""
+    return {**triage._launch_env(),
+            **{var: os.environ[var] for var in LAUNCH_ENV_VARS if os.environ.get(var)}}
+
+
 def launch(cfg, config_path: str) -> None:
     """Once per pass: start the runner in its herdr tab when an exam has work. The pass
     never waits on an exam session; the runner outlives the pass's oneshot unit."""
     if not exams.pending(cfg.state_dir) or _running():
         return
-    tab = herdr.Tab.ensure(herdr.SYSTEM_WORKSPACE, TAB, triage._repo_dir(), env=triage._launch_env())
+    tab = herdr.Tab.ensure(herdr.SYSTEM_WORKSPACE, TAB, triage._repo_dir(), env=_launch_env())
     if tab is None or not tab.run(f"{shlex.quote(sys.executable)} -m dispatcher.main "
                                   f"--config {shlex.quote(config_path)} --exam-run; exit"):
         print("exam runner launch failed: herdr tab could not run it", file=sys.stderr)
