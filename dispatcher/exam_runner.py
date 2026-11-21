@@ -18,9 +18,10 @@ TAB = "exam-runner"
 RUN_LOCK = "exam-runner.lock"
 PERMISSIONS = {"statuses": "write", "pull_requests": "read", "contents": "read",
                "metadata": "read"}
-# On top of triage's: the App credentials only this runner mints from, and the wrapper its
-# podman sessions start through. A herdr pane inherits the herdr server's env, not the pass's.
-LAUNCH_ENV_VARS = ("GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY", "AGENT_OPS_COMMAND_WRAPPER")
+# On top of triage's: the wrapper its podman sessions start through. A herdr pane inherits
+# the herdr server's env, not the pass's. Never a secret: herdr gets `env` in its argv, so
+# the runner decrypts the App itself (main's --exam-run, github_app.cached).
+LAUNCH_ENV_VARS = ("AGENT_OPS_COMMAND_WRAPPER",)
 SCRIPT = Path(__file__).resolve().parent.parent / ".my-skills" / "pr-exam" / "pr_exam.py"
 PROMPT = ("Follow the pr-exam skill at {skill}/SKILL.md. Read the generation request at "
           "{request}; write the exam it asks for to the `out` path it names, then run "

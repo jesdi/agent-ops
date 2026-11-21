@@ -265,7 +265,8 @@ def main() -> None:
     deps = _deps(cfg, args.dry_run)
     migrate.refuse_legacy_task_files(cfg.state_dir, args)
     if args.exam_run:
-        exam_runner.run(cfg, deps)
+        # The runner's herdr tab has no unit's credentials: it decrypts the App itself.
+        exam_runner.run(cfg, replace(deps, app=github_app.Client(secret=github_app.cached)))
         return
     if args.exam_sweep:
         exam_runner.sweep(cfg, deps)

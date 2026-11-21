@@ -60,21 +60,66 @@ def test_the_pass_launches_the_runner_in_its_tab_and_never_runs_a_session(tmp_pa
     assert busy.ran == []
 
 
-def test_only_the_runner_tab_gets_the_app_credentials_and_the_wrapper(tmp_path, tabs, monkeypatch):
-    """The pane inherits the herdr server's env, not the pass's: without these the
-    runner reads the App as unregistered and its sessions start without the wrapper."""
+def test_the_runner_tab_gets_the_wrapper_and_no_app_credential_in_herdr_s_argv(tmp_path, monkeypatch):
+    """herdr's `tab create --env K=V` is argv, which `ps` shows every process on the box:
+    the pane gets the wrapper its podman sessions start through, never the App's key."""
     from dispatcher import triage
-    runner_only = {"GITHUB_APP_ID": "123", "GITHUB_APP_PRIVATE_KEY": "-----BEGIN KEY-----\nk\n",
-                   "AGENT_OPS_COMMAND_WRAPPER": "/infra/with-claude-token.sh"}
-    for var, value in {**runner_only, "TELEGRAM_BOT_TOKEN": "tg"}.items():
-        monkeypatch.setenv(var, value)
+    from tests.test_triage import _herdr_fake_creating
+    monkeypatch.setenv("GITHUB_APP_ID", "123")
+    monkeypatch.setenv("GITHUB_APP_PRIVATE_KEY", "-----BEGIN PRIVATE KEY-----\nk\n")
+    monkeypatch.setenv("AGENT_OPS_COMMAND_WRAPPER", "/infra/with-claude-token.sh")
+    calls = []
+    _herdr_fake_creating(monkeypatch, calls)
     cfg = make_config(tmp_path)
     exams.request(cfg.state_dir, "o/r", 1)
-    fake = tabs()
     exam_runner.launch(cfg, "targets.yaml")
-    assert fake.env == {**triage._launch_env(), **runner_only}
-    assert fake.env["TELEGRAM_BOT_TOKEN"] == "tg"
-    assert not runner_only.keys() & triage._launch_env().keys()
+    [create] = [c for c in calls if c[:2] == ["tab", "create"]]
+    env = [create[i + 1] for i, a in enumerate(create) if a == "--env"]
+    assert env == [f"{k}={v}" for k, v in triage._launch_env().items()] + [
+        "AGENT_OPS_COMMAND_WRAPPER=/infra/with-claude-token.sh"]
+    assert not any("GITHUB_APP" in a or "PRIVATE KEY" in a for call in calls for a in call)
+
+
+def test_the_runner_mints_its_app_token_from_the_secret_cache_in_its_tab(tmp_path, monkeypatch):
+    """The tab's env has no App field (the pane inherits the herdr server's, and none is
+    forwarded): `--exam-run` decrypts the id and key from the cache files the units load."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    import dispatcher.main as main
+    from dispatcher import github_app
+    from tests.test_github_app import APP_ID, FakeGitHub
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    cache = tmp_path / "secrets"
+    cache.mkdir()
+    (cache / "GITHUB_APP_ID.cred").write_text(APP_ID + "\n")
+    (cache / "GITHUB_APP_PRIVATE_KEY.cred").write_bytes(key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption()))
+    creds = tmp_path / "systemd-creds"   # cats the file when called as with-claude-token.sh does
+    creds.write_text('#!/bin/sh\n[ "$1 $2 $3 $5" = "--user decrypt --name=$(basename "$4" .cred) -" ]'
+                     ' || exit 1\nexec cat "$4"\n')
+    creds.chmod(0o755)
+    for field in ("GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY"):
+        monkeypatch.delenv(field, raising=False)
+    monkeypatch.setenv("AGENT_OPS_CREDS", str(creds))
+    monkeypatch.setenv("AGENT_OPS_SECRETS_DIR", str(cache))
+    monkeypatch.setattr(github_app, "_http", FakeGitHub())
+    cfg = make_config(tmp_path)
+    monkeypatch.setattr(main, "_load", lambda path: (cfg, cfg))
+    monkeypatch.setattr(main.sys, "argv", ["agent-ops-dispatcher", "--config", "t.yaml", "--exam-run"])
+    ran = []
+    monkeypatch.setattr(exam_runner, "run", lambda cfg_, deps: ran.append(deps))
+    main.main()
+    [deps] = ran
+    inst = deps.app.installation("jesdi/analytics")
+    assert deps.app.mint(inst, ["jesdi/analytics"], exam_runner.PERMISSIONS).token == "ghs_analytics"
+
+
+def test_a_secret_cache_that_cannot_be_decrypted_reads_as_an_unregistered_app(tmp_path, monkeypatch):
+    from dispatcher import github_app
+    monkeypatch.setenv("AGENT_OPS_CREDS", str(tmp_path / "no-systemd-creds"))
+    assert github_app.cached("GITHUB_APP_PRIVATE_KEY") == ""
+    assert github_app.Client(secret=github_app.cached).registered() is False
 
 
 def test_a_second_runner_exits_without_working(tmp_path, monkeypatch):
