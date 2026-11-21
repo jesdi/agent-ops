@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Collection, Literal
 
-from dispatcher import (claims, eventlog, execution_overrides, failures,
+from dispatcher import (claims, exams, eventlog, execution_overrides, failures,
                         messages as msgq,
                         onboard, onboarding_sessions, priority, queue_ops, state, task_artifacts, triage)
 from dispatcher.usage import ProviderUsage
@@ -148,6 +148,23 @@ class Sources:
         except (OSError, subprocess.SubprocessError) as exc:
             print(f"onboarding kick failed (timer will retry): {exc}")
         return path.name
+
+    def request_exam(self, repo: str, pr: int) -> dict:
+        doc = exams.request(self.state_dir, repo, pr)
+        self._kick_dispatcher()
+        return doc
+
+    def submit_exam(self, repo: str, pr: int, attempt: int, head_sha: str, answers: dict) -> str:
+        outcome = exams.submit(self.state_dir, repo, pr, attempt, head_sha, answers)
+        if outcome == "ok":
+            self._kick_dispatcher()
+        return outcome
+
+    def exams(self) -> list[dict]:
+        return exams.listing(self.state_dir)
+
+    def exam_state(self, repo: str, pr: int) -> dict | None:
+        return exams.read(self.state_dir, repo, pr)
 
     def tasks(self) -> list[TaskState]:
         return state.load_all(self._state_dir)
@@ -496,6 +513,7 @@ class Sources:
              if (root / "failures").exists() else [])
             + (list((root / "quarantine").iterdir())
                if (root / "quarantine").exists() else []))
+        exams = digest((root / "exams").glob("*/*/*/state.json"))
         events = root / "events.jsonl"
         history = str(events.stat().st_size) if events.exists() else "0"
         # Note: "board" and "queue" share the same digest (an intentional
@@ -505,7 +523,7 @@ class Sources:
         # but it was not deliberate coupling; recorded here for future readers.
         return json.dumps({"board": board, "queue": board,
                            "usage": usage, "failures": failures,
-                           "history": history}, sort_keys=True)
+                           "history": history, "exams": exams}, sort_keys=True)
 
     def messages(self, repository: str, issue: int) -> list:
         return msgq.all_messages(self._state_dir, repository, issue)

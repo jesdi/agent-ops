@@ -135,11 +135,12 @@ CODEX = Runtime(
         f"resume {'-- ' if session_id.startswith('-') else ''}{shlex.quote(session_id)}"),
     # `codex exec`: one turn, no TTY. Same bypass as launch_args (the
     # container is the isolation); exec's default read-only sandbox could
-    # not write the caller's output file or reach `gh`.
+    # not write the caller's output file or reach `gh`. --skip-git-repo-check:
+    # the exam session runs in a job dir with no repository, which exec refuses.
     headless_args=lambda prompt, model, effort: (
         f"exec --model {model}"
         f"{' -c model_reasoning_effort=' + effort if effort else ''}"
-        f" --dangerously-bypass-approvals-and-sandbox {prompt}"),
+        f" --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check {prompt}"),
     auth_file="auth.json",
     inspection_args=lambda model, effort: [
         'exec', '--model', model, '--sandbox', 'read-only',

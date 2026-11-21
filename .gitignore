@@ -21,6 +21,7 @@ targets.yaml
 .claude/skills/deep-quality-review
 .claude/skills/file-bug-issue
 .claude/skills/implement-spec
+.claude/skills/pr-exam
 .claude/skills/pr-visual-diff
 .claude/skills/red-team-data-model
 .claude/skills/review-diff
@@ -36,6 +37,7 @@ targets.yaml
 .agents/skills/deep-quality-review
 .agents/skills/file-bug-issue
 .agents/skills/implement-spec
+.agents/skills/pr-exam
 .agents/skills/pr-visual-diff
 .agents/skills/red-team-data-model
 .agents/skills/review-diff

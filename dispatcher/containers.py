@@ -200,6 +200,25 @@ def triage_cmd(name: str, clone: str, triage_dir: str, memory: str,
     ]
 
 
+def exam_cmd(name: str, job: str, records: str, skill: str, memory: str, cpus: str,
+             model: str, prompt_path: str, effort: str = "") -> list[str]:
+    """Headless exam-generation session. No token and no clone: it reads only the
+    job dir (its inputs and the exam it writes), the learning records and the
+    skill, all by their host paths, the last two read-only."""
+    runtime = runtime_for(model)
+    line = runtime.headless(f"\"$(cat {shlex.quote(prompt_path)})\"", bare_model_id(model), effort)
+    return [
+        *_wrapper(),
+        "podman", "run", "--rm", "--init", "--name", name,
+        "--memory", memory, "--cpus", cpus,
+        *_runtime_args(runtime),
+        "-v", f"{job}:{job}", "-w", job,
+        *(["-v", f"{records}:{records}:ro"] if records else []),
+        "-v", f"{skill}:/skill:ro",
+        image(), "bash", "-c", line,
+    ]
+
+
 # Host-side and podman-side bound of one setup run, in seconds (issue #17).
 SETUP_TIMEOUT = 1800
 

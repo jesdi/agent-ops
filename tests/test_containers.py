@@ -245,7 +245,8 @@ def test_triage_cmd_runs_codex_headless_for_an_openai_model(monkeypatch, tmp_pat
     assert "/repos/r:/repos/r:ro" in cmd
     assert "claude-home" not in " ".join(cmd)
     assert cmd[-1] == ('codex exec --model gpt-6-sol -c model_reasoning_effort=high '
-                       '--dangerously-bypass-approvals-and-sandbox "$(cat /triage/p.md)"')
+                       '--dangerously-bypass-approvals-and-sandbox --skip-git-repo-check '
+                       '"$(cat /triage/p.md)"')
 
 
 def test_triage_cmd_refuses_a_provider_without_a_runtime():

@@ -42,6 +42,11 @@ export type ModelsSetting = components['schemas']['ModelsSetting']
 export type ModelsSave = components['schemas']['ModelsSave']
 export type EntrySetting = components['schemas']['EntrySetting']
 export type TrackSetting = components['schemas']['TrackSetting']
+export type ExamView = components['schemas']['ExamView']
+export type ExamState = components['schemas']['ExamState']
+export type ExamQuestion = components['schemas']['ExamQuestion']
+export type ExamAttempt = components['schemas']['ExamAttempt']
+export type ExamsView = components['schemas']['ExamsView']
 
 export interface PendingIntent {
   action: string
@@ -111,7 +116,14 @@ const post = <T>(path: string, body: unknown) =>
 const put = <T>(path: string, body: unknown) =>
   request<T>(path, { method: 'PUT', body: JSON.stringify(body) })
 
+const examPath = (owner: string, name: string, pr: string) =>
+  `/exam/${[owner, name, pr].map(encodeURIComponent).join('/')}`
+
 export const api = {
+  exams: () => request<ExamsView>('/exams'),
+  exam: (owner: string, name: string, pr: string) => request<ExamView>(examPath(owner, name, pr)),
+  answerExam: (owner: string, name: string, pr: string, body: { attempt: number; head_sha: string; answers: Record<string, number | string> }) =>
+    post<ExamView>(`${examPath(owner, name, pr)}/answers`, body),
   onboardings: () => request<OnboardingsView>('/onboarding'),
   onboarding: (project: string) => request<OnboardingView>(`/onboarding/${encodeURIComponent(project)}`),
   startOnboarding: (project: string, body: OnboardingStartRequest) =>

@@ -1,20 +1,23 @@
 """GitHub App access: sign as the App, find installations, mint repo-narrowed tokens.
 
-The App id and private key come from the unit's environment, loaded from the
-box's encrypted secret cache (never from 1Password per call: that spent its daily
-read limit). The key is held in memory only, and never written, logged, put in
-argv or in an exception message.
+The App id and private key come from the box's encrypted secret cache (never from
+1Password per call: that spent its daily read limit): from the unit's environment,
+which loaded them, or (`cached`, outside a unit) decrypted from the cache file. The
+key is held in memory only, and never written, logged, put in argv or in an
+exception message.
 """
 from __future__ import annotations
 
 import base64
 import json
 import os
+import subprocess
 import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Callable
 
 from cryptography.hazmat.primitives import hashes, serialization
@@ -70,6 +73,19 @@ def _http(method, url, headers, body=None):
 def _secret(field: str) -> str:
     """The field as the unit loaded it from the secret cache; empty when absent."""
     return os.environ.get(field, "")
+
+
+def cached(field: str) -> str:
+    """The field decrypted from its secret cache file, for a process no unit loaded it
+    into, as with-claude-token.sh does; empty when it can't be read. The key reaches
+    this process on a pipe, never in argv or an environment herdr is given."""
+    path = Path(os.environ.get("AGENT_OPS_SECRETS_DIR", "/var/lib/agent-ops/secrets")) / f"{field}.cred"
+    argv = [os.environ.get("AGENT_OPS_CREDS", "systemd-creds"), "--user", "decrypt",
+            f"--name={field}", str(path), "-"]
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=15, check=True).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
 
 
 def _now():
@@ -175,6 +191,15 @@ def mint(installation: Installation, repos: list[str], permissions: dict, *,
     return token
 
 
+def info(*, http=_http, now=_now, secret=_secret) -> dict:
+    """The App's own slug and id (GET /app)."""
+    found = _call(http, "GET", API + "/app", _jwt(now, secret),
+                  lambda p: {"slug": _slug(p), "id": int(p["id"])})
+    if found is None:
+        raise AppError("GET /app answered 404")
+    return found
+
+
 def install_link(owner: str, *, http=_http, now=_now, secret=_secret) -> str:
     found = (_lookup(f"/users/{owner}/installation", http, now, secret)
              or _lookup(f"/orgs/{owner}/installation", http, now, secret))
@@ -218,6 +243,9 @@ class Client:
 
     def install_link(self, owner):
         return install_link(owner, **self.kw)
+
+    def info(self):
+        return info(**self.kw)
 
     def mint(self, inst, repos, permissions):
         return mint(inst, repos, permissions, **self.kw)
