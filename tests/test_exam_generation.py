@@ -6,7 +6,7 @@ Interface under test (defined here, built by the ticket):
     github.label_events(repo, n) -> [{"event", "label", "actor"}], oldest first
     github.diff(repo, n) -> str
     github.file(repo, ref, path) -> str | None
-    github.post_status(repo, sha, context, state, description)   (as the App)
+    github.post_status(repo, sha, context, state, description, *, target_url)   (as the App)
     github.app() -> {"slug", "id"}
     run(request: Path, *, model: str, timeout: int) -> None   (the session writes `out`)
     pr_exam.validate(exam: Path, request: Path) -> list[str]   (errors, empty = valid)
@@ -50,6 +50,7 @@ class Github:
         self.glossary = glossary
         self.head = HEAD
         self.statuses, self.files = [], []
+        self.status_links = []
         self.labels, self.events = [], []   # the PR's labels now, and its label events
         self.configs = {}                   # ref -> the text of .pr-exam.json there
 
@@ -67,8 +68,9 @@ class Github:
         self.files.append((repo, ref, path))
         return self.configs.get(ref) if path == ".pr-exam.json" else self.glossary
 
-    def post_status(self, repo, sha, context, state, description):
+    def post_status(self, repo, sha, context, state, description, *, target_url=""):
         self.statuses.append((repo, sha, context, state))
+        self.status_links.append(target_url)
 
     def app(self):
         return {"slug": "agent-ops-hel1", "id": 12345}
@@ -179,14 +181,34 @@ def box(tmp_path, monkeypatch):
 
 
 def test_work_marks_the_head_pending_runs_one_session_and_opens_the_exam(box):
-    box.request()
+    url = box.request()["url"]
     box.work()
     assert (REPO, HEAD, "exam", "pending") in box.posted()
+    assert box.github.status_links == [url]
     assert not any(s[3] == "success" for s in box.posted())
     assert len(box.session.calls) == 1
     body = box.read().json()
     assert body["state"] == "open"
     assert body["head_sha"] == HEAD
+
+
+def test_an_existing_pending_status_gets_the_exam_link_on_the_next_request(box):
+    url = box.request()["url"]
+    box.work()
+    path = Path(box.cfg.state_dir) / "exams" / REPO / "240" / "state.json"
+    doc = json.loads(path.read_text())
+    del doc["status"]["target_url"]
+    del doc["due"]["target_url"]
+    path.write_text(json.dumps(doc))
+    box.github.status_links.clear()
+
+    box.request()
+    box.work()
+    box.request()
+    box.work()
+
+    assert box.github.status_links == [url]
+    assert len(box.session.calls) == 1
 
 
 def test_the_request_file_names_diff_body_glossary_records_and_utc_date(box):
@@ -358,7 +380,7 @@ def test_only_the_exam_runner_holds_statuses_write(tmp_path, monkeypatch):
         return SimpleNamespace(stdout="{}")
 
     exam_runner.Github(access, None, run=post).post_status(
-        REPO, HEAD, "exam", "pending", "Generating exam")
+        REPO, HEAD, "exam", "pending", "Generating exam", target_url=f"{CONSOLE}/exam/{REPO}/240")
     assert len(minted) == 4
     assert all(repos == [REPO] for repos, _, _ in minted)
     assert [perms.get("statuses", "read") for _, perms, _ in minted] == [
@@ -368,6 +390,7 @@ def test_only_the_exam_runner_holds_statuses_write(tmp_path, monkeypatch):
     assert argv[:2] == ["gh", "api"]
     assert "POST" in argv and f"repos/{REPO}/statuses/{HEAD}" in argv
     assert "context=exam" in argv and "state=pending" in argv
+    assert f"target_url={CONSOLE}/exam/{REPO}/240" in argv
 
     assert exam_runner.PERMISSIONS["statuses"] == "write"
     assert host_auth.PERMISSIONS["statuses"] == "read"

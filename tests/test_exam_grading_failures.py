@@ -39,11 +39,11 @@ def test_a_failed_status_post_is_retried_without_writing_the_records_again(tmp_p
     body = box.open(REPO, 240)
     post, failures = box.github.post_status, []
 
-    def flaky(repo, sha, context, state, description):
+    def flaky(repo, sha, context, state, description, *, target_url):
         if state == "success" and not failures:
             failures.append(1)
             raise subprocess.TimeoutExpired("gh", 120)
-        post(repo, sha, context, state, description)
+        post(repo, sha, context, state, description, target_url=target_url)
     box.github.post_status = flaky
     box.grade(REPO, 240, body)
     box.work()
