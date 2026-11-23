@@ -121,14 +121,19 @@ def _success(cur: dict) -> str:
     return _SUCCESS.get(cur["state"]) or ("deferred" if deferred else "")
 
 
-def status(cur: dict, sha: str) -> dict | None:
+def exam_url(console_url: str, repo: str, pr: int) -> str:
+    return f"{console_url}/exam/{repo}/{pr}"
+
+
+def status(cur: dict, sha: str, console_url: str) -> dict | None:
     """The `exam` status the exam's state earns on `sha`: the one rule behind every status
     queued. None for a merged PR, whose exam is only debt, and for a disabled repo."""
     if cur["merged"] or cur["state"] == ExamState.DISABLED:
         return None
     success = _success(cur)
     return {"sha": sha, "state": "success" if success else "pending",
-            "description": success or "Exam in progress"}
+            "description": success or "Exam in progress",
+            "target_url": exam_url(console_url, cur["repo"], cur["pr"]) if console_url else ""}
 
 
 def _untouched(cur: dict) -> bool:
@@ -169,7 +174,7 @@ def over(cur: dict) -> bool:
     return cur["merged"] and cur["state"] == ExamState.PASSED
 
 
-def reconcile(cur: dict, d: Path, pr: dict, bypass: Bypass) -> bool:
+def reconcile(cur: dict, d: Path, pr: dict, bypass: Bypass, console_url: str) -> bool:
     """Bring the exam in line with its PR as `pr` read it and `bypass` decided; True when
     that ends the exam, which the caller deletes (its learning records stay).
 
@@ -182,5 +187,5 @@ def reconcile(cur: dict, d: Path, pr: dict, bypass: Bypass) -> bool:
     if not busy(cur):
         _follow(cur, d, pr, bypass)
     cur["debt"] = (bypass.deferred or pr["merged"]) and cur["state"] != ExamState.PASSED
-    cur["due"] = status(cur, pr["head_sha"])
+    cur["due"] = status(cur, pr["head_sha"], console_url)
     return over(cur)

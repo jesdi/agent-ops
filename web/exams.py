@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from dispatcher import exams as state
 from dispatcher.config import Config
-from dispatcher.exam_lifecycle import ExamState
+from dispatcher.exam_lifecycle import ExamState, exam_url
 from web.auth import Operator, current_operator
 
 Slug = r"[A-Za-z0-9][A-Za-z0-9._-]*"
@@ -91,7 +91,7 @@ class ExamsView(BaseModel):
 
 
 def _url(console: str, doc: dict) -> str:
-    return f"{console}/exam/{doc['repo']}/{doc['pr']}"
+    return exam_url(console, doc["repo"], doc["pr"])
 
 
 def router(sources, cfg: Callable[[], Config]) -> APIRouter:

@@ -448,7 +448,7 @@ def _mark_started(cfg, doc, sha: str, github) -> None:
     request named is pending from then on."""
     with state_lock(cfg.state_dir, LOCK):
         cur = read(cfg.state_dir, doc["repo"], doc["pr"])
-        cur["due"] = exam_lifecycle.status(cur, sha)
+        cur["due"] = exam_lifecycle.status(cur, sha, cfg.console_url)
         _write(cfg.state_dir, cur)
     if _due(cur):
         _post_due(cfg, cur, github)
@@ -520,7 +520,8 @@ def _run_job(cfg, doc, io) -> bool:
 def _post_due(cfg, doc, github) -> None:
     """Post the queued status; it is marked posted only once GitHub took it."""
     due = doc["due"]
-    github.post_status(doc["repo"], due["sha"], "exam", due["state"], due["description"])
+    github.post_status(doc["repo"], due["sha"], "exam", due["state"], due["description"],
+                       target_url=due.get("target_url", ""))
     with state_lock(cfg.state_dir, LOCK):
         cur = read(cfg.state_dir, doc["repo"], doc["pr"])
         if cur["due"] == due:
@@ -538,7 +539,7 @@ def _reconcile(cfg, doc: dict, pr: dict, io) -> None:
         if cur is None:
             return
         d = _dir(cfg.state_dir, doc["repo"], doc["pr"])
-        if exam_lifecycle.reconcile(cur, d, pr, bypass):
+        if exam_lifecycle.reconcile(cur, d, pr, bypass, cfg.console_url):
             shutil.rmtree(d, ignore_errors=True)
             return
         if not exam_lifecycle.busy(cur):

@@ -73,9 +73,11 @@ class Github:
                 return None
             raise
 
-    def post_status(self, repo, sha, context, state, description) -> None:
-        self._api(repo, "-X", "POST", f"repos/{repo}/statuses/{sha}", "-f", f"context={context}",
-                  "-f", f"state={state}", "-f", f"description={description}")
+    def post_status(self, repo, sha, context, state, description, *, target_url="") -> None:
+        fields = ["-f", f"context={context}", "-f", f"state={state}", "-f", f"description={description}"]
+        if target_url:
+            fields.extend(["-f", f"target_url={target_url}"])
+        self._api(repo, "-X", "POST", f"repos/{repo}/statuses/{sha}", *fields)
 
     def app(self) -> dict:
         info = self.client.info()

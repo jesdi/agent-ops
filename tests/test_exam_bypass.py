@@ -30,8 +30,8 @@ class Hub(Github):
         self.configs = {"main": json.dumps(CONFIG)}
         self.described = []
 
-    def post_status(self, repo, sha, context, state, description):
-        super().post_status(repo, sha, context, state, description)
+    def post_status(self, repo, sha, context, state, description, *, target_url=""):
+        super().post_status(repo, sha, context, state, description, target_url=target_url)
         self.described.append((sha, state, description))
 
 

@@ -13,8 +13,8 @@ def test_a_push_while_the_delta_success_is_posted_is_judged_on_the_newest_head(t
     box = passed_box(tmp_path, monkeypatch, delta=[])
     post = box.github.post_status
 
-    def moving(repo, sha, context, state, description):
-        post(repo, sha, context, state, description)
+    def moving(repo, sha, context, state, description, *, target_url):
+        post(repo, sha, context, state, description, target_url=target_url)
         if state == "success" and sha == NEW:
             box.github.head = NEWER
             box.request()

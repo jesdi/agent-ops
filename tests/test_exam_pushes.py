@@ -189,8 +189,8 @@ def test_a_push_between_the_pass_and_its_status_is_judged_on_the_new_head(tmp_pa
     first = opened(box)
     post = box.github.post_status
 
-    def moving(repo, sha, context, state, description):
-        post(repo, sha, context, state, description)
+    def moving(repo, sha, context, state, description, *, target_url):
+        post(repo, sha, context, state, description, target_url=target_url)
         if state == "success" and sha == HEAD:
             box.github.head = NEW
             box.request()
