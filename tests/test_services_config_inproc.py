@@ -67,3 +67,12 @@ def test_render_and_main(tmp_path, capsys):
     with pytest.raises(ValueError):
         sc.render(args[0], write(tmp_path, "x.yaml", "[1]"), str(units))
     capsys.readouterr()
+
+
+@pytest.mark.parametrize("change", [{"digest": {"paused": "false"}}, {"digest": "paused"}, {"digest": None}])
+def test_render_refuses_a_bad_change_before_writing(tmp_path, change):
+    units = tmp_path / "u"
+    units.mkdir()
+    with pytest.raises(ValueError, match="digest"):
+        sc.render(write(tmp_path, "c.yaml", cfg()), write(tmp_path, "ch.yaml", change), str(units))
+    assert not any(units.iterdir())

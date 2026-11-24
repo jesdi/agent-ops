@@ -105,14 +105,24 @@ def _timer(job: str, sched: dict) -> str:
             f"Unit=agent-ops-{job}.service\n\n[Install]\nWantedBy=timers.target\n")
 
 
+def _check_change(job: str, entry) -> None:
+    if not isinstance(entry, dict):
+        raise ValueError(f"{job}: change must be a map")
+    if "paused" in entry and not isinstance(entry["paused"], bool):
+        raise ValueError(f"{job}: change paused must be true or false")
+
+
 def render(config: str, changes: str, unit_dir: str) -> dict:
+    """Every input is validated before the first timer is written."""
     cfg = load(config)
     ch = _job_map(yaml.safe_load(Path(changes).read_text()) or {}, "changes")
+    for job, entry in ch.items():
+        _check_change(job, entry)
     out: dict[str, list[str]] = {"enabled": [], "disabled": []}
     for job in JOBS:
         name = f"agent-ops-{job}.timer"
         (Path(unit_dir) / name).write_text(_timer(job, cfg[job]["schedule"]))
-        paused = (ch.get(job) or {}).get("paused", cfg[job]["paused"])
+        paused = ch.get(job, {}).get("paused", cfg[job]["paused"])
         out["disabled" if paused else "enabled"].append(name)
     return out
 
