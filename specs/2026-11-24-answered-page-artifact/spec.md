@@ -21,15 +21,18 @@ the request page with a set of answers filled in and its inputs read-only. The
    `text/html`: the request page's markup, with the submitted answers filled in.
    For every answer key `q` with value `v`, the radio input named `q` whose value
    is `v` is checked; for every key `q.note`, the textarea `note-q` holds that
-   text. Opening the artifact link (`GET /api/task/{repository}/{issue}/artifacts/{id}`)
+   text. No other radio is checked: a radio the request page checks by default
+   (the template's `standard` track pill) is unchecked unless the answers pick it. Opening the artifact link (`GET /api/task/{repository}/{issue}/artifacts/{id}`)
    returns it inline under the existing sandbox CSP, never as JSON and never as a
    download.
 2. **Read-only.** In the answered page every `input`, `textarea`, `select` and
    `button` is disabled, and no change can be made or posted from it, whether it
    is opened in a tab or embedded.
-3. **Nothing submitted is hidden.** An answer whose key matches no input of the
-   page (a renamed question, a session's text answer) is still shown in the
-   answered page, as its key and value in plain text.
+3. **Nothing submitted is hidden.** An answer that lands on no input of the
+   page (a key that matches no radio, a value that matches none of its radios'
+   values, a `q.note` with no textarea `note-q`, a value that is not a string:
+   a renamed question, a session's text answer) is still shown in the answered
+   page, as its key and value in plain text.
 4. **Answer text is text.** Answer values and notes are inserted as text: markup
    in them (`<`, `&`, `</textarea>`, `<script>`) shows literally and adds no
    element to the page.
@@ -44,7 +47,8 @@ the request page with a set of answers filled in and its inputs read-only. The
    answers file with `submitted` set that it has not captured yet (in practice a
    session wrote it from a text answer: `actor` `"text"`, no revision), it
    stores the answered page from that file and the request page in the
-   worktree; with no open request, from the kind's default page
+   worktree when the open request is of the same kind; otherwise, from the
+   kind's default page
    (`.agent/review.html` for `plan-approval`, `.agent/questionnaire.html` for
    `answers`).
 7. **Drafts are not captured.** A draft (`submit` null) never creates or changes
@@ -55,6 +59,8 @@ the request page with a set of answers filled in and its inputs read-only. The
    is removed or broken. A later collection never replaces it with the raw JSON
    file, nor rebuilds it with a newer page for the same answers. Only the next
    captured submission of the same kind replaces it, under the same id and URL.
+   The ids `review-answers` and `questionnaire-answers` belong to the capture: a
+   session's `.agent/artifacts.json` entry under either id is not collected.
 9. **Capture never blocks the answers.** When the answered page cannot be built
    or stored (request page missing or unreadable, archive write fails), the
    answers file is still written and the session still woken exactly as today;
@@ -104,6 +110,14 @@ the request page with a set of answers filled in and its inputs read-only. The
 - **Then** `review-answers` opens as `text/html` with `b` and `critical`
   checked, and the listing shows it with status `local` and media type `text/html`
 
+### Scenario: a default-checked radio the answers do not pick is unchecked
+
+- **Given** a review page whose track pills check `standard` by default
+- **When** the operator approves with `{"track": "critical"}`, and in a second
+  task approves with `{}` (no track)
+- **Then** the first answered page has `critical` checked and `standard`
+  unchecked; the second has no track pill checked
+
 ### Scenario: every input of the answered page is disabled
 
 - **Given** the answered page of the first scenario
@@ -116,6 +130,14 @@ the request page with a set of answers filled in and its inputs read-only. The
   `legacy` input
 - **When** the answered page is captured
 - **Then** it shows `legacy` and `yes` as plain text, and `parquet` is checked
+
+### Scenario: a value no radio offers, and a note with no textarea, are shown as text
+
+- **Given** answers `{"format": "xml", "other.note": "see #280"}` on the page of
+  the first scenario
+- **When** the answered page is captured
+- **Then** neither format radio is checked, and the page shows `format` / `xml`
+  and `other.note` / `see #280` as plain text
 
 ### Scenario: markup in a note is shown literally
 
@@ -156,6 +178,15 @@ the request page with a set of answers filled in and its inputs read-only. The
   `{"format": "csv"}`, and the collector runs
 - **Then** `questionnaire-answers` opens as the questionnaire with `csv` checked
 
+### Scenario: a session's manifest entry cannot replace the captured page
+
+- **Given** the answered page of the first scenario is captured, and the
+  session's `.agent/artifacts.json` lists
+  `{"id": "questionnaire-answers", "path": ".agent/questionnaire-answers.json"}`
+- **When** the collector runs
+- **Then** `questionnaire-answers` still opens as the answered page, `text/html`,
+  not the JSON file
+
 ### Scenario: a later collection does not rebuild the page with the newer page
 
 - **Given** the answered page of the first scenario is captured, and the answers
@@ -184,7 +215,9 @@ the request page with a set of answers filled in and its inputs read-only. The
 `review-answers` / `questionnaire-answers` content is the raw JSON file and that
 a bare JSON file in the worktree is registered. Under requirements 1, 6 and 7
 those assertions move to the answered page (and a file without `submitted` is
-no longer registered). A session's own manifest entry for an answers file under
+no longer registered). Its expiry test registers `review-answers` through the
+manifest; under requirement 8 that entry is ignored, so the test captures a
+submission instead. A session's own manifest entry for an answers file under
 another id (its `my-answers` test) is the session's choice and stays a plain
 copy of the file.
 
