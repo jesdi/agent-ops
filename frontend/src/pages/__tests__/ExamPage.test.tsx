@@ -152,7 +152,7 @@ describe('exam page', () => {
 
   it('shows the grader feedback under a partial free-text question explanation, and none on a choice or passed one', async () => {
     serve({
-      ...open, state: 'passed', exam: null,
+      ...open, state: 'open', exam: null,
       results: [{
         attempt: 1, passed: false, score: 2.5, max: 4,
         questions: [
@@ -168,6 +168,22 @@ describe('exam page', () => {
     expect(explanation.compareDocumentPosition(feedback) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(screen.getAllByText(/misses that/)).toHaveLength(1)
     expect(screen.getByText('The lease belongs to the runner that took it.')).toBeInTheDocument()
+  })
+
+  it('shows the grader feedback of a partial question on a passed attempt', async () => {
+    serve({
+      ...open, state: 'passed', exam: null,
+      results: [{
+        attempt: 1, passed: true, score: 4.5, max: 5,
+        questions: [
+          { id: 't1', concept: 'token-growth', points: 0.5, explanation: 'The token only ever grows.', hunk: '@@ -2 +2 @@\n+y', feedback: 'misses that the token only grows' },
+          { id: 'c1', concept: 'lease-ownership', points: 1 },
+        ],
+      }],
+    })
+    renderExam()
+    expect(await screen.findByText(/misses that the token only grows/)).toBeInTheDocument()
+    expect(screen.getByText('The token only ever grows.')).toBeInTheDocument()
   })
 
   it('on a 409 says the exam changed and reloads it', async () => {
