@@ -49,7 +49,8 @@ issue thread (grilling session) and are carried over as they were made:
   `tests/fixtures/review-page.html`; sessions fill content slots only. The
   template's script already tells the raw view apart
   (`embedded = window.parent !== window`). The banner logic ships in a new
-  release of that skill package; this repo bumps the pin and the fixture
+  release of that skill package, which lives in another repository
+  (`jesdi/general-skills`, installed by `scripts/install-skills.sh`); this repo bumps the pin and the fixture
   (`tests/test_sessions_share_one_record_acceptance.py` keeps them equal).
 - **"Session busy" is rarely what a busy session gets today.** A request
   exists only while the status is held, parked for review or answers, or
@@ -65,7 +66,9 @@ issue thread (grilling session) and are carried over as they were made:
   written, not new state.
 - **After delivery the request closes.** A delivered submission wakes the
   session, the status leaves the request, and `GET …/request` returns `null`
-  today. The delivered state must still reach the route that sent it.
+  today. The delivered state must still reach the route that sent it. The
+  delivery is therefore read where it does not depend on an open request
+  (see `design.md`).
 - **Mobile layout is already covered.** `frontend/e2e/review-route.spec.ts`
   checks the bar at 400 px; the `pixel-7` Playwright project runs every e2e
   test on a phone viewport. Requirement 5 adds the operator's check on a real
@@ -92,16 +95,20 @@ issue thread (grilling session) and are carried over as they were made:
    the answers are sent from the console's review page. Every input of the
    page is disabled. Inside the console's iframe there is no banner and the
    inputs work. The page makes no network request either way. Scenarios 6, 7.
-4. **`GET /api/task/<repo>/<n>/request` reports delivery.** The response
-   carries `delivery: {state, reason}` with `state` one of `queued`,
-   `delivered`, `dropped`, or `delivery: null` when no submission was made
-   on this request. It is worked out from what exists: a pending submission
-   intent of the task is `queued`; otherwise the newer of (a) the answers
-   file's submission and (b) the latest `intent-dropped` event of an answers
-   submission of the task decides `delivered` or `dropped` (with the
-   event's reason). Drafts never set a delivery state. Nothing new is stored
-   beyond marking the dropped event as an answers submission. Scenarios
-   8, 9, 10, 11.
+4. **The console reads the delivery of the task's latest submission.**
+   The console's API reports `delivery: {state, reason, submit, revision}`
+   with `state` one of `queued`, `delivered`, `dropped`, or `delivery: null`
+   when the task has no submission. `revision` is the page revision the
+   submission was made on, `submit` its kind. It is worked out from what
+   exists: a pending submission intent of the task is `queued`; otherwise
+   the newer, by submission time, of (a) the answers file's submission and
+   (b) the latest `intent-dropped` event of an answers submission of the
+   task decides `delivered` or `dropped` (with the event's reason). Drafts
+   never set a delivery state. Nothing new is stored beyond marking the
+   dropped event as an answers submission with its submit, revision and
+   submission time. The review route shows a delivery only for the revision
+   it shows or the revision this tab sent on, so a drop of an earlier round
+   never shows on a new round's page. Scenarios 8, 9, 10, 11.
 5. **The delivered state reaches the route after the request closes.** When
    the submission woke the session and the request closed, the review route
    shows "delivered" rather than "no open request". Scenario 12.
@@ -116,7 +123,9 @@ issue thread (grilling session) and are carried over as they were made:
    with a request at the intent's revision, it is applied as today. When
    the request's revision differs, it is dropped as "stale revision". When
    the task ends (done, failed, canceled) or parks with no request, it is
-   dropped as "no open request". Drafts keep today's rule (dropped).
+   dropped as "no open request". A task held at a login prompt
+   (HELD_LOGIN) is a live session too: the submission is held. Drafts keep
+   today's rule (dropped).
    Scenarios 15, 16, 17.
 8. **A changed page restores what still fits.** When a submission is dropped
    as "stale revision" and the request now shows another revision, the
@@ -173,6 +182,9 @@ issue thread (grilling session) and are carried over as they were made:
   `<meta name="agent-ops-console" content="https://old.example/task/widget/42/review">`
 - **When** the request is armed again with `console_url: https://ops.example`
 - **Then** the page holds one `agent-ops-console` meta, with the new URL.
+- **Given** a page that already holds the meta with the current URL
+- **When** the next pass reads the report again
+- **Then** the page bytes and the request's revision are unchanged.
 
 ### Scenario 5: no console URL, or an unwritable page (requirement 2)
 
@@ -182,6 +194,9 @@ issue thread (grilling session) and are carried over as they were made:
 - **Given** `.agent/questionnaire.html` is a symlink
 - **Then** the dispatcher writes nothing through it and arms the request as
   it does today (the shape check decides).
+- **Given** a page without the `agent-ops-review` marker (it fails the shape
+  check)
+- **Then** the dispatcher writes no meta into it.
 
 ### Scenario 6: the raw view shows the banner and disables inputs (requirement 3)
 
@@ -204,30 +219,39 @@ issue thread (grilling session) and are carried over as they were made:
 
 - **Given** a pending `answers` intent `{submit: changes, revision: r1}` for
   `widget#42`
-- **When** the console reads `GET /api/task/widget/42/request`
-- **Then** `delivery` is `{state: queued, reason: ""}`.
+- **When** the console reads the delivery of `widget#42`
+- **Then** `delivery` is `{state: queued, reason: "", submit: changes,
+  revision: r1}`.
 
 ### Scenario 9: delivered (requirement 4)
 
 - **Given** no pending intent and `.agent/review-answers.json` with
   `{submitted: changes, revision: r1, submitted_at: 10:00}` and no answers
   drop event after 10:00
-- **Then** `delivery` is `{state: delivered, reason: ""}`.
+- **Then** `delivery` is `{state: delivered, reason: "", submit: changes,
+  revision: r1}`.
 
 ### Scenario 10: dropped (requirement 4)
 
 - **Given** no pending intent, no submitted answers file, and an
-  `intent-dropped` event at 10:01 for an answers submission of `widget#42`
-  with reason "stale revision"
-- **Then** `delivery` is `{state: dropped, reason: "stale revision"}`.
+  `intent-dropped` event for an answers submission `{submit: changes,
+  revision: r1}` of `widget#42` made at 10:01, with reason "stale revision"
+- **Then** `delivery` is `{state: dropped, reason: "stale revision",
+  submit: changes, revision: r1}`.
 - **Given** additionally an answers file submitted at 10:02, **then** the
-  state is `delivered` (the newer one wins).
+  state is `delivered` (the newer submission wins).
+- **Given** instead an answers file submitted at 10:02 and a drop event,
+  written at 10:03, of a submission made at 10:00, **then** the state is
+  `delivered`: submission time decides, not the time of the event.
 
 ### Scenario 11: a stale draft is no dropped delivery (requirement 4)
 
 - **Given** only an `intent-dropped` event for an answers **draft** (submit
   null) of `widget#42`, reason "stale revision"
 - **Then** `delivery` is `null`.
+- **Given** a drop event of a submission on r0 (an earlier round) and the
+  route now showing r1, with no submission from this tab
+- **Then** the Send bar shows no delivery state.
 
 ### Scenario 12: delivered after the request closed (requirement 5)
 
@@ -241,7 +265,8 @@ issue thread (grilling session) and are carried over as they were made:
 - **Given** the route on revision r1
 - **When** the operator presses "Send answers" and the API answers 202
 - **Then** the bar shows "queued", and "delivered" once `delivery.state` is
-  `delivered`; it never shows "sent" from the 202 alone.
+  `delivered`; it never shows "sent" from the 202 alone, and no Resend
+  button shows while the state is `queued` or `delivered`.
 
 ### Scenario 14: Resend after a drop (requirement 6)
 
@@ -282,12 +307,12 @@ issue thread (grilling session) and are carried over as they were made:
 
 ### Scenario 18: page changed, answers restored where ids match (requirement 8)
 
-- **Given** the operator sent `{format: b, track: security, "format.note": "x"}`
+- **Given** the operator sent `{format: b, scope: wide, "format.note": "x"}`
   on r1 and it was dropped as "stale revision"; the request is now r2, whose
-  page has question `format` but not `track`
+  page has question `format` but not `scope`
 - **When** the route shows r2
 - **Then** it shows "page changed, check and resend", the new page has
-  `format: b` and the note `x`, `track` is not restored, and nothing is
+  `format: b` and the note `x`, `scope` is not restored, and nothing is
   submitted until the operator presses Send.
 
 ### Scenario 19: Send bar on a phone (requirement 9)
