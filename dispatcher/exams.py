@@ -393,6 +393,9 @@ def _score(d: Path, grades: dict, pr_exam) -> tuple[dict | None, str]:
         scored = pr_exam.score(d / "exam.json", d / "answers.json", d / "grades.json")
     except (ValueError, KeyError, subprocess.SubprocessError, OSError) as exc:
         return None, f"scoring failed: {exc}"
+    for q in scored["questions"]:   # the grader's line rides along with each free-text question
+        if feedback := grades.get(q["id"], {}).get("feedback"):
+            q["feedback"] = feedback
     (d / "result.json").write_text(json.dumps(scored))
     return scored, ""
 
@@ -402,7 +405,7 @@ def _result(doc, scored: dict) -> dict:
     return {"attempt": doc["attempt"], "passed": scored["passed"], "score": scored["score"],
             "max": scored["max"], "questions": [
                 {k: v for k, v in q.items() if k in ("id", "concept", "points")
-                 or (q["points"] < 1 and k in ("explanation", "hunk"))} for q in scored["questions"]]}
+                 or (q["points"] < 1 and k in ("explanation", "hunk", "feedback"))} for q in scored["questions"]]}
 
 
 def _graded_fields(doc, scored: dict, exam: dict) -> dict:

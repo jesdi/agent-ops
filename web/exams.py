@@ -64,6 +64,7 @@ class ExamQuestionResult(BaseModel):
     points: int | float
     explanation: str | None = None   # only for a question under 1 point
     hunk: str | None = None
+    feedback: str | None = None   # the grader's line, only for a missed or partial free-text question
 
 
 class ExamAttempt(BaseModel):

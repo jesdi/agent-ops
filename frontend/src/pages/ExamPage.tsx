@@ -43,6 +43,7 @@ function Misses({ result }: { result: ExamAttempt }) {
         <article key={m.id} className="space-y-1">
           <h2 className="font-medium">{m.concept}</h2>
           <p>{m.explanation}</p>
+          {m.feedback && <p className="text-sm">{m.feedback}</p>}
           <pre className="overflow-x-auto rounded border border-border bg-surface p-2 text-sm">{m.hunk}</pre>
         </article>
       ))}
@@ -118,11 +119,14 @@ function ErrorView({ data }: ViewProps) {
 function PassedView({ data }: ViewProps) {
   const last = data.results.at(-1)
   return last ? (
-    <section className="space-y-1">
-      <h2 className="font-medium">Passed</h2>
-      <p>Score {last.score} / {last.max}</p>
-      {!data.debt && <p>The exam status is posted as success.</p>}
-    </section>
+    <>
+      <section className="space-y-1">
+        <h2 className="font-medium">Passed</h2>
+        <p>Score {last.score} / {last.max}</p>
+        {!data.debt && <p>The exam status is posted as success.</p>}
+      </section>
+      <LastMisses data={data} />
+    </>
   ) : null
 }
 

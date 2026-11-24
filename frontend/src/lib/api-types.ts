@@ -1033,6 +1033,8 @@ export interface components {
             concept: string;
             /** Explanation */
             explanation?: string | null;
+            /** Feedback */
+            feedback?: string | null;
             /** Hunk */
             hunk?: string | null;
             /** Id */
