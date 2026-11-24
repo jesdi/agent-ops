@@ -52,8 +52,9 @@ def _attempt_dir(d: Path, n: int) -> Path:
 
 def _migrate(d: Path, attempt: int) -> None:
     """Move an exam left in the flat layout (per-attempt files at the exam level) into its
-    attempt's directory. Each file moves by an atomic rename, so a second mover finds nothing."""
-    if not (d / ATTEMPT_FILES[0]).exists():
+    attempt's directory. The caller holds the exams lock. Each file moves by an atomic rename
+    and any file left at the flat path asks for the move, so an interrupted move resumes."""
+    if not any((d / name).exists() for name in ATTEMPT_FILES):
         return
     target = _attempt_dir(d, attempt)
     target.mkdir(parents=True, exist_ok=True)
@@ -65,6 +66,13 @@ def _migrate(d: Path, attempt: int) -> None:
 
 
 def read(state_dir: str | Path, repo: str, pr: int) -> dict | None:
+    """The exam's state, its legacy files migrated; takes the exams lock."""
+    with state_lock(state_dir, LOCK):
+        return _load(state_dir, repo, pr)
+
+
+def _load(state_dir: str | Path, repo: str, pr: int) -> dict | None:
+    """`read` for a caller that holds the exams lock."""
     try:
         doc = json.loads(_path(state_dir, repo, pr).read_text())
     except FileNotFoundError:
@@ -84,7 +92,7 @@ def request(state_dir: str | Path, repo: str, pr: int) -> dict:
     asks for the same from a job's claim on: a reconcile that fails after the job's result
     was applied is made again by the next work."""
     with state_lock(state_dir, LOCK):
-        doc = read(state_dir, repo, pr)
+        doc = _load(state_dir, repo, pr)
         if doc is None:
             doc = {"repo": repo, "pr": pr, "title": "", "state": ExamState.NEW, "head_sha": None,
                    "debt": False, "detail": "", "attempt": 0, "requested": 0, "reconciled": 0,
@@ -150,7 +158,7 @@ def listing(state_dir: str | Path) -> list[dict]:
 
 def _update(state_dir, repo: str, pr: int, **fields) -> dict:
     with state_lock(state_dir, LOCK):
-        doc = read(state_dir, repo, pr)
+        doc = _load(state_dir, repo, pr)
         doc.update(fields)
         _write(state_dir, doc)
         return doc
@@ -191,7 +199,7 @@ def _claimable(cur: dict, job: dict, now) -> bool:
 def _claim(cfg, doc: dict, job: dict, now) -> bool:
     """Record `job` unless the exam moved on since `doc` was read or a live job is recorded."""
     with state_lock(cfg.state_dir, LOCK):
-        cur = read(cfg.state_dir, doc["repo"], doc["pr"])
+        cur = _load(cfg.state_dir, doc["repo"], doc["pr"])
         if cur is None or not _claimable(cur, job, now):
             return False
         cur.update(job=job, detail="", stale=True,
@@ -204,7 +212,7 @@ def _finish(cfg, doc: dict, job: dict, change) -> dict | None:
     """End `job` with `change(cur, d)` under the lock, only while it is still the exam's job;
     the exam after it, None when the exam had moved on."""
     with state_lock(cfg.state_dir, LOCK):
-        cur = read(cfg.state_dir, doc["repo"], doc["pr"])
+        cur = _load(cfg.state_dir, doc["repo"], doc["pr"])
         if cur is None or cur["job"] != job:
             return None
         cur["job"] = None
@@ -323,10 +331,10 @@ def submit(state_dir, repo: str, pr: int, attempt: int, head_sha: str, answers: 
     """Accept the answers of the open attempt: "ok", "conflict" (repeated, earlier or
     another head) or "incomplete". Changes nothing unless "ok"."""
     with state_lock(state_dir, LOCK):
-        doc = read(state_dir, repo, pr)
+        doc = _load(state_dir, repo, pr)
         if not _is_open(doc, attempt, head_sha):
             return "conflict"
-        questions = public(state_dir, repo, pr)["questions"]
+        questions = public(state_dir, repo, pr, doc["attempt"])["questions"]
         if not all(_answers(q, answers.get(q["id"])) for q in questions):
             return "incomplete"
         write_json_atomic(_attempt_dir(_dir(state_dir, repo, pr), attempt) / "answers.json", {q["id"]: answers[q["id"]] for q in questions})
@@ -492,7 +500,7 @@ def _mark_started(cfg, doc, sha: str, github) -> None:
     """Post what a generating exam earns on `sha` before its session starts: a head no
     request named is pending from then on."""
     with state_lock(cfg.state_dir, LOCK):
-        cur = read(cfg.state_dir, doc["repo"], doc["pr"])
+        cur = _load(cfg.state_dir, doc["repo"], doc["pr"])
         cur["due"] = exam_lifecycle.status(cur, sha, cfg.console_url)
         _write(cfg.state_dir, cur)
     if _due(cur):
@@ -568,7 +576,7 @@ def _post_due(cfg, doc, github) -> None:
     github.post_status(doc["repo"], due["sha"], "exam", due["state"], due["description"],
                        target_url=due.get("target_url", ""))
     with state_lock(cfg.state_dir, LOCK):
-        cur = read(cfg.state_dir, doc["repo"], doc["pr"])
+        cur = _load(cfg.state_dir, doc["repo"], doc["pr"])
         if cur["due"] == due:
             cur["status"] = due
             _write(cfg.state_dir, cur)
@@ -580,7 +588,7 @@ def _reconcile(cfg, doc: dict, pr: dict, io) -> None:
     made since, or during a job, stays wanted. The operator hears of a bypass that failed."""
     bypass = exam_lifecycle.bypass(cfg, doc["repo"], doc["pr"], pr, io)
     with state_lock(cfg.state_dir, LOCK):
-        cur = read(cfg.state_dir, doc["repo"], doc["pr"])
+        cur = _load(cfg.state_dir, doc["repo"], doc["pr"])
         if cur is None:
             return
         d = _dir(cfg.state_dir, doc["repo"], doc["pr"])
