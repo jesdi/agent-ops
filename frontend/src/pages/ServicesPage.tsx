@@ -39,8 +39,12 @@ function UpcomingRuns({ upcoming }: { upcoming: string[] }) {
 function Runs({ job }: { job: ServiceJob }) {
   return (
     <>
-      <h3 className="font-semibold">Recent runs</h3>
-      <RecentRuns recent={job.recent_runs ?? []} />
+      {!job.read_only && (
+        <>
+          <h3 className="font-semibold">Recent runs</h3>
+          <RecentRuns recent={job.recent_runs ?? []} />
+        </>
+      )}
       <h3 className="font-semibold">Upcoming runs</h3>
       <UpcomingRuns upcoming={job.upcoming ?? []} />
     </>
