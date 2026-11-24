@@ -25,6 +25,9 @@ from tests.test_workspace import repository
 NAME = "task-portfolio_eval-42-setup"
 HANG = "exec sleep 3600"
 PARTIAL = "echo partial out; echo partial err >&2; exec sleep 3600"
+# Long enough for the fake podman to start and echo under a loaded xdist run:
+# at 1 s the timeout fired first and the partial log came out empty.
+SETUP_TIMEOUT = 5
 
 FAKE_PODMAN = """#!/bin/sh
 reg="$FAKE_PODMAN_REGISTRY"
@@ -80,7 +83,7 @@ def fake_podman(tmp_path, monkeypatch):
 @pytest.fixture
 def run(tmp_path, monkeypatch, fake_podman):
     """create_workspace with git stubbed out, the 1800 s provisioning timeout
-    shrunk to 1 s, and every subprocess.run recorded as (argv, timeout)."""
+    shrunk to SETUP_TIMEOUT, and every subprocess.run recorded as (argv, timeout)."""
     (tmp_path / "repo" / ".git").mkdir(parents=True)
     real_sh = workspace._sh
     real_run = subprocess.run
@@ -96,7 +99,7 @@ def run(tmp_path, monkeypatch, fake_podman):
                     f"gitdir: {tmp_path / 'repo'}/.git/worktrees/task-42\n")
             return
         sh_timeouts.append((list(args), timeout))
-        real_sh(args, cwd, timeout=1 if timeout == 1800 else timeout, log=log, env=env)
+        real_sh(args, cwd, timeout=SETUP_TIMEOUT if timeout == 1800 else timeout, log=log, env=env)
 
     def recording_run(args, *a, **kw):
         calls.append((list(args), kw.get("timeout")))
