@@ -731,6 +731,15 @@ finished-task flush (done, failed and won't do, `done_retention_days` after
 `terminal_at`; it also removes the worktree and local branch); archive entries
 do not consume capacity or return to the board.
 
+The **answers artifacts** (`review-answers`, `questionnaire-answers`) are the
+**answered page**: the request page with the submitted answers filled in and
+every control disabled (`dispatcher/answered_page.py`). The drain captures it
+into the archive when it records a submission, from the page on disk at that
+moment, so it outlives the worktree and the next round; drafts are not
+captured, and a failed capture never holds back the answers file or the wake.
+The item's `digest` is the SHA-256 of the answers file it was built from. The
+collector never registers the raw answers files.
+
 `TaskState.terminal_at` records the first transition into done, failed or
 canceled. State serialization preserves that timestamp across unrelated
 terminal writes and clears it on reopening. Collection cancels expiry for

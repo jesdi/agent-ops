@@ -14,13 +14,17 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from dispatcher import host_auth, spec_publish, state
+from dispatcher import answered_page, answers, host_auth, spec_publish, state
+from dispatcher.artifacts import REVIEW_PAGE_MAX_BYTES
 from dispatcher.state import TaskState, operator_request
 
 log = logging.getLogger(__name__)
 RETENTION_DAYS = 7
 MAX_BYTES = 20 * 1024 * 1024
 ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,79}\Z")
+# The artifact each answers kind is captured as.
+ANSWERS_ARTIFACTS = {"plan-approval": ("review-answers", "Review answers"),
+                     "answers": ("questionnaire-answers", "Questionnaire answers")}
 
 
 @dataclass(frozen=True)
@@ -155,8 +159,6 @@ def _automatic_registrations(task: TaskState) -> list[Registration]:
     entries = []
     for artifact_id, name, path in (
         ("prototype", "Prototype", ".agent/prototype.html"),
-        ("review-answers", "Review answers", ".agent/review-answers.json"),
-        ("questionnaire-answers", "Questionnaire answers", ".agent/questionnaire-answers.json"),
     ):
         if (Path(task.worktree) / path).is_file():
             entries.append(Registration(artifact_id, name, path))
@@ -251,6 +253,42 @@ def collect(state_dir, task: TaskState, repo: str, *, publish: bool = True,
         Collector(root, task, repo, publish, now, auth).collect(index)
     index.save(root / "index.json")
     state.archive(state_dir, task)
+
+
+def _capture(index: ArtifactIndex, root: Path, task: TaskState, kind: str, now: datetime) -> None:
+    """Store in `index` the answered page of the task's answers file of
+    `kind` when it is a submission the index does not hold yet. The item's
+    digest is the answers file's, not the page's. Raises OSError or
+    ValueError when the file, the page or the archive cannot be used."""
+    name, _ = answers.ANSWERS_FILES[kind]
+    path = f".agent/{name}"
+    raw = state.read_regular(Path(task.worktree) / path, answers.ANSWERS_FILE_MAX_BYTES)
+    doc = json.loads(raw) if raw is not None else None
+    if not isinstance(doc, dict) or doc.get("submitted") is None:
+        return
+    artifact_id, artifact_name = ANSWERS_ARTIFACTS[kind]
+    digest = hashlib.sha256(raw).hexdigest()
+    items = {item.id: item for item in index.items}
+    if artifact_id in items and items[artifact_id].digest == digest:
+        return
+    page = state.read_regular(Path(task.worktree) / operator_request(task).path, REVIEW_PAGE_MAX_BYTES)
+    if page is None:
+        raise OSError("request page is not a readable regular file")
+    _copy_content(root / "content" / artifact_id,
+                  answered_page.render(page.decode(), doc.get("answers")).encode())
+    items[artifact_id] = StoredArtifact(artifact_id, artifact_name, path, "text/html", digest,
+                                        task.stage.value, now.isoformat())
+    index.items = list(items.values())
+
+
+def capture_answers(state_dir, task: TaskState, now: datetime | None = None) -> None:
+    """Archive the answered page of the submission just recorded for the
+    task's open request."""
+    root = state.archive_root(state_dir, task.repository, task.issue)
+    index = read(state_dir, task.repository, task.issue)
+    index.retain_for(task)
+    _capture(index, root, task, operator_request(task).kind, now or datetime.now(timezone.utc))
+    index.save(root / "index.json")
 
 
 def pin_published(state_dir, task: TaskState, repo: str) -> None:
