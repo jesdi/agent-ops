@@ -436,6 +436,35 @@ def test_a_failed_archive_write_still_records_and_wakes(tmp_path, monkeypatch, c
     _assert_answers_kept_and_warned(c, wt, captured, messages_before, caplog)
 
 
+def _fail_index_writes(monkeypatch, c):
+    """Only the write of the task's archive index.json raises; the content
+    write goes through, as when the disk fills between the two."""
+    index = os.path.abspath(os.fspath(archive_root(c.state_dir, REPOSITORY, ISSUE) / "index.json"))
+    real_replace = os.replace
+
+    def replace_(src, dst, *a, **kw):
+        if not kw.get("dst_dir_fd") and os.path.abspath(os.fspath(dst)) == index:
+            raise OSError(28, "No space left on device")
+        return real_replace(src, dst, *a, **kw)
+    monkeypatch.setattr(os, "replace", replace_)
+
+
+def test_a_failed_index_write_keeps_the_earlier_artifact(tmp_path, monkeypatch, caplog):
+    c, wt = _answered(tmp_path, monkeypatch)
+    captured, messages_before = _second_round(c, wt)
+    [entry_before] = [i for i in _listing(c) if i["id"] == "questionnaire-answers"]
+    caplog.clear()
+    caplog.set_level(logging.WARNING)
+
+    with monkeypatch.context() as m:
+        _fail_index_writes(m, c)
+        _drain(c, {"format": "csv"}, "changes", page=NEXT_PAGE)
+
+    _assert_answers_kept_and_warned(c, wt, captured, messages_before, caplog)
+    [entry_after] = [i for i in _listing(c) if i["id"] == "questionnaire-answers"]
+    assert entry_after == entry_before
+
+
 # --- retention ------------------------------------------------------------------
 
 def test_a_captured_review_answers_expires_with_the_task(tmp_path, monkeypatch):
