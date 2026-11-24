@@ -287,8 +287,19 @@ def capture_answers(state_dir, task: TaskState, now: datetime | None = None) -> 
     root = state.archive_root(state_dir, task.repository, task.issue)
     index = read(state_dir, task.repository, task.issue)
     index.retain_for(task)
-    _capture(index, root, task, operator_request(task).kind, now or datetime.now(timezone.utc))
-    index.save(root / "index.json")
+    kind = operator_request(task).kind
+    content = root / "content" / ANSWERS_ARTIFACTS[kind][0]
+    earlier = content.read_bytes() if content.is_file() else None
+    _capture(index, root, task, kind, now or datetime.now(timezone.utc))
+    try:
+        index.save(root / "index.json")
+    except OSError:
+        # The index still names the earlier submission: put its page back.
+        if earlier is None:
+            content.unlink(missing_ok=True)
+        else:
+            _copy_content(content, earlier)
+        raise
 
 
 def pin_published(state_dir, task: TaskState, repo: str) -> None:
