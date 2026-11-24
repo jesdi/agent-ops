@@ -95,3 +95,19 @@ test('failed artifact query preserves the review link and local request content'
   expect(screen.getByRole('heading', { name: 'Local design' })).toBeInTheDocument()
   expect(screen.getByRole('link', { name: 'open review' })).toBeInTheDocument()
 })
+
+// #281: the raw page has no Send control; the open request's page goes to the review route.
+test.each([
+  ['plan-approval', '.agent/review.html'],
+  ['answers', '.agent/questionnaire.html'],
+])('the artifact of the open %s page links to the review route', async (kind, path) => {
+  seed([{ ...spec, id: 'review', name: 'Review page', path, media_type: 'text/html', status: 'local',
+    url: '/api/task/widget/42/artifacts/review', github_url: '' }])
+  server.use(http.get('/api/task/widget/42/request', () => HttpResponse.json({
+    kind, revision: 'r1', answers: {},
+    content: { kind: 'readable', path, media_type: 'text/html', text: '<p>pick one</p>' },
+  })))
+  renderWithProviders(<ArtifactsPanel repository="widget" issue={42} />)
+  const link = await screen.findByRole('link', { name: 'Open Review page' })
+  await vi.waitFor(() => expect(link).toHaveAttribute('href', '/task/widget/42/review'))
+})

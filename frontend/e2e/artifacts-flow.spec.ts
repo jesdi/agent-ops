@@ -52,3 +52,26 @@ for (const width of [390, 1280]) {
     await expect(artifacts.getByRole('link', { name: 'Open Prototype' })).toHaveCount(0)
   })
 }
+
+// #281: the review page registered as an artifact opened the raw HTML, which
+// has no Send control; it must open the console's review route instead.
+for (const [kind, path, send] of [['plan-approval', '.agent/review.html', 'Send changes'],
+  ['answers', '.agent/questionnaire.html', 'Send answers']] as const) {
+  test(`the artifact link of the open ${kind} page opens the review route with ${send}`, async ({ page }) => {
+    await page.route('**/api/task/widget/42/request', route => route.fulfill({ json: {
+      kind, revision: 'r1', answers: {},
+      content: { kind: 'readable', path, media_type: 'text/html', text: '<p>pick one</p>' },
+    } }))
+    await page.route('**/api/task/widget/42/artifacts', route => route.fulfill({ json: {
+      items: [{ id: 'review', name: 'Review page', path, media_type: 'text/html',
+        updated_at: '2026-11-24T00:00:00Z', stage: 'plan', status: 'local',
+        url: '/api/task/widget/42/artifacts/review', github_url: '' }],
+      expired: false, expires_at: '',
+    } }))
+    await page.goto('/task/widget/42')
+    const link = page.getByRole('region', { name: 'Artifacts', exact: true }).getByRole('link', { name: 'Open Review page' })
+    await expect(link).toHaveAttribute('href', '/task/widget/42/review')
+    await link.click()
+    await expect(page.getByRole('button', { name: send })).toBeVisible()
+  })
+}
