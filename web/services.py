@@ -62,17 +62,18 @@ def describe_schedule(calendar: str | None) -> str:
 RECENT, UPCOMING = 5, 3
 
 
-def _interval(schedule: str) -> int | None:
-    """Seconds between runs of a schedule worded by describe_schedule; None when unknown."""
-    if m := re.fullmatch(r"every (\d+) min", schedule):
+def _calendar_interval(calendar: str | None) -> int | None:
+    """Seconds between runs of a systemd OnCalendar that repeats evenly; None otherwise."""
+    if m := re.fullmatch(r"\*:0/(\d+)", calendar or ""):
         return int(m[1]) * 60
-    return 86400 if re.fullmatch(r"daily at \d\d:\d\d .*", schedule) else None
+    return 86400 if re.fullmatch(r"\*-\*-\* \d{1,2}:\d\d(?::00)?", calendar or "") else None
 
 
-def _upcoming(unit: dict, schedule: str) -> list[str]:
+def _upcoming(unit: dict) -> list[str]:
     if unit["active_state"] != "active" or not unit["next_run"]:
         return []
-    first, step = datetime.fromisoformat(unit["next_run"]), _interval(schedule)
+    first = datetime.fromisoformat(unit["next_run"])
+    step = unit.get("interval_seconds") or _calendar_interval(unit["on_calendar"])
     count = UPCOMING if step else 1  # ponytail: multi-time schedules list one run, add a calendar walk if needed
     return [(first + timedelta(seconds=(step or 0) * i)).isoformat() for i in range(count)]
 
@@ -89,7 +90,7 @@ def _job(unit: dict, runs: dict[str, list[dict]], *, read_only: bool) -> Job:
     running = not read_only and bool(mine) and mine[-1]["result"] is None
     return Job(
         recent_runs=[] if read_only else _recent(runs.get(job_id, [])),
-        upcoming=_upcoming(unit, schedule),
+        upcoming=_upcoming(unit),
         id=job_id, name=unit["description"],
         description=unit["description"],
         state="running" if running else "active" if unit["active_state"] == "active" else "paused",

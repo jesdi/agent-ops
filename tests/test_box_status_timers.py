@@ -51,7 +51,8 @@ def test_timers_lists_unloaded_and_monotonic(monkeypatch):
     assert set(timers) == {"agent-ops-dispatcher.timer", "agent-ops-triage.timer"}
     assert not any("foo@.timer" in c for c in calls)
     d = timers["agent-ops-dispatcher.timer"]
-    assert describe_schedule(d["on_calendar"]) == "every 5 min"
+    assert describe_schedule(d["on_calendar"]) == "every 5 min" and d["interval_seconds"] == 300
+    assert timers["agent-ops-triage.timer"]["interval_seconds"] is None
     assert d["next_run"] == "2026-11-18T11:13:00+00:00"
     assert d["last_run"]["duration_seconds"] == 27
     t = timers["agent-ops-triage.timer"]
@@ -83,3 +84,11 @@ def test_describe_schedule_words():
     assert describe_schedule("*-*-* 6:30") == "daily at 06:30 UTC"
     assert describe_schedule("Mon *-*-* 03:00") == "Mon *-*-* 03:00"
     assert describe_schedule(None) == ""
+
+
+def test_upcoming_follows_the_probed_interval_not_the_words():
+    from web.services import _upcoming
+    unit = {"active_state": "active", "next_run": "2026-11-18T12:00:00+00:00",
+            "on_calendar": "every 2h", "interval_seconds": 7200}
+    assert _upcoming(unit) == ["2026-11-18T12:00:00+00:00", "2026-11-18T14:00:00+00:00",
+                               "2026-11-18T16:00:00+00:00"]

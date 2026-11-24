@@ -128,6 +128,7 @@ def _timer(scope: str, t: dict[str, str], services: dict[str, dict]) -> dict:
         "scope": scope, "unit": t["Id"], "fragment_path": t.get("FragmentPath", ""),
         "description": t.get("Description", ""), "active_state": t["ActiveState"],
         "on_calendar": calendar[1] if calendar else monotonic,
+        "interval_seconds": None if calendar else interval,
         "last_run": _last_run(services.get(t["Id"].removesuffix(".timer") + ".service", {})),
         "next_run": _next_run(t, interval)}
 
