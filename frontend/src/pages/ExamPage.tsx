@@ -34,11 +34,11 @@ function Question({ q, value, onChange }: { q: ExamQuestion; value: number | str
   )
 }
 
-function Misses({ result }: { result: ExamAttempt }) {
+function Misses({ result, showScore = true }: { result: ExamAttempt; showScore?: boolean }) {
   const missed = result.questions.filter((m) => m.points < 1)
   return (
     <section className="space-y-3">
-      <p>Score {result.score} / {result.max}</p>
+      {showScore && <p>Score {result.score} / {result.max}</p>}
       {missed.map((m) => (
         <article key={m.id} className="space-y-1">
           <h2 className="font-medium">{m.concept}</h2>
@@ -125,7 +125,8 @@ function PassedView({ data }: ViewProps) {
         <p>Score {last.score} / {last.max}</p>
         {!data.debt && <p>The exam status is posted as success.</p>}
       </section>
-      <LastMisses data={data} />
+      {/* a passing attempt can still hold partial answers, with the grader's feedback */}
+      <Misses result={last} showScore={false} />
     </>
   ) : null
 }
