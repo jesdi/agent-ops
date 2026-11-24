@@ -150,6 +150,26 @@ describe('exam page', () => {
     expect(miss.compareDocumentPosition(followUpNode) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
+  it('shows the grader feedback under a partial free-text question explanation, and none on a choice or passed one', async () => {
+    serve({
+      ...open, state: 'passed', exam: null,
+      results: [{
+        attempt: 1, passed: false, score: 2.5, max: 4,
+        questions: [
+          { id: 'q1', concept: 'lease-ownership', points: 0, explanation: 'The lease belongs to the runner that took it.', hunk: '@@ -1 +1 @@\n+x' },
+          { id: 'q5', concept: 'token-growth', points: 0.5, explanation: 'The token only ever grows.', hunk: '@@ -2 +2 @@\n+y', feedback: 'misses that the token only grows' },
+          { id: 'q6', concept: 'base-sha-recheck', points: 1 },
+        ],
+      }],
+    })
+    renderExam()
+    const feedback = await screen.findByText(/misses that the token only grows/)
+    const explanation = screen.getByText('The token only ever grows.')
+    expect(explanation.compareDocumentPosition(feedback) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.getAllByText(/misses that/)).toHaveLength(1)
+    expect(screen.getByText('The lease belongs to the runner that took it.')).toBeInTheDocument()
+  })
+
   it('on a 409 says the exam changed and reloads it', async () => {
     const reloaded = { ...open, head_sha: 'b'.repeat(40), attempt: 1, exam: { ...open.exam, questions: [{ ...q2, id: 'q9', prompt: 'A brand new question?' }] } }
     let gets = 0
