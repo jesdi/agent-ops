@@ -118,6 +118,11 @@ export function useTaskArtifacts(repository: string, issue: number) {
   })
 }
 
+export function useServices() {
+  const refetchInterval = useFallbackInterval()
+  return useQuery({ queryKey: queryKeys.services, queryFn: api.services, refetchInterval })
+}
+
 /** Only the debt exams of the listing: the nav count and the debt page share this entry. */
 export function useExamDebts() {
   const refetchInterval = useFallbackInterval()

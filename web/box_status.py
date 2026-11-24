@@ -40,10 +40,111 @@ class Probes:
     units: Callable[[], dict[str, Unit]]
     tabs: Callable[[], set[str]]
     journal: Callable[[], list] = lambda: []
+    timers: Callable[[], list[dict]] = lambda: []
 
 
 def system_probes() -> Probes:
-    return Probes(units=_systemd_units, tabs=_herdr_tabs, journal=_journal)
+    return Probes(units=_systemd_units, tabs=_herdr_tabs, journal=_journal,
+                  timers=systemd_timers)
+
+
+def _systemctl(scope: str) -> list[str]:
+    return ["systemctl", "--user"] if scope == "user" else ["systemctl"]
+
+
+def _systemctl_out(scope: str, *args: str) -> str:
+    proc = subprocess.run([*_systemctl(scope), *args], capture_output=True, text=True, timeout=10)
+    if proc.returncode:
+        raise RuntimeError(f"systemctl failed: {proc.stderr.strip()}")
+    return proc.stdout
+
+
+def _installed_timers(scope: str) -> list[str]:
+    """Installed timer names, loaded or not: `show '*.timer'` misses an
+    inactive (e.g. disabled after reboot) timer, which must still list as paused."""
+    out = _systemctl_out(scope, "list-unit-files", "*.timer", "--no-legend", "--no-pager")
+    names = [l.split()[0] for l in out.splitlines() if l.strip()]
+    return [n for n in names if "@." not in n]  # a template is no job; show fails on it
+
+
+def _props(block: str) -> dict[str, str]:
+    return dict(l.split("=", 1) for l in block.splitlines() if "=" in l)
+
+
+def _show(scope: str, names: list[str], props: str) -> list[dict[str, str]]:
+    if not names:
+        return []
+    out = _systemctl_out(scope, "show", "--timestamp=unix", *names, "-p", props)
+    return [_props(block) for block in out.split("\n\n") if block.strip()]
+
+
+def _iso(stamp: str | None) -> str | None:
+    stamp = (stamp or "").lstrip("@")
+    return (datetime.fromtimestamp(int(stamp), timezone.utc).isoformat()
+            if stamp.isdigit() else None)
+
+
+_DURATION_UNITS = {"d": 86400, "h": 3600, "min": 60, "m": 60, "s": 1}
+
+
+def _seconds(words: str) -> int:
+    return sum(int(n) * _DURATION_UNITS.get(u, 0) for n, u in re.findall(r"(\d+)\s*([a-z]+)", words))
+
+
+def _monotonic_schedule(timers_monotonic: str) -> tuple[str | None, int | None]:
+    """(schedule, interval seconds) of an `OnUnitActiveUSec=5min` timer; the
+    schedule is an OnCalendar-style `*:0/N` for whole minutes, else raw words."""
+    m = re.search(r"OnUnitActiveUSec=([^;}]*?)\s*(?:;|\})", timers_monotonic)
+    if not m:
+        return None, None
+    seconds = _seconds(m[1])
+    if seconds and seconds % 60 == 0 and seconds < 3600:
+        return f"*:0/{seconds // 60}", seconds
+    return f"every {m[1]}", seconds or None
+
+
+def _last_run(svc: dict[str, str]) -> dict | None:
+    start, end = _iso(svc.get("ExecMainStartTimestamp")), _iso(svc.get("ExecMainExitTimestamp"))
+    if not (start and end and end >= start):
+        return None
+    return {"at": start, "duration_seconds": int(
+        (datetime.fromisoformat(end) - datetime.fromisoformat(start)).total_seconds())}
+
+
+def _next_run(t: dict[str, str], interval: int | None) -> str | None:
+    """A monotonic timer has no realtime elapse: next = last trigger + interval."""
+    if realtime := _iso(t.get("NextElapseUSecRealtime")):
+        return realtime
+    trigger = _iso(t.get("LastTriggerUSec"))
+    if trigger and interval and t["ActiveState"] == "active":
+        return (datetime.fromisoformat(trigger) + timedelta(seconds=interval)).isoformat()
+    return None
+
+
+def _timer(scope: str, t: dict[str, str], services: dict[str, dict]) -> dict:
+    calendar = re.search(r"OnCalendar=([^;}]*?)\s*(?:;|\})", t.get("TimersCalendar", ""))
+    monotonic, interval = _monotonic_schedule(t.get("TimersMonotonic", ""))
+    return {
+        "scope": scope, "unit": t["Id"], "fragment_path": t.get("FragmentPath", ""),
+        "description": t.get("Description", ""), "active_state": t["ActiveState"],
+        "on_calendar": calendar[1] if calendar else monotonic,
+        "last_run": _last_run(services.get(t["Id"].removesuffix(".timer") + ".service", {})),
+        "next_run": _next_run(t, interval)}
+
+
+def systemd_timers() -> list[dict]:
+    """Every installed timer, user and system, with its service's last run.
+    Services are told apart by the caller; a timer here is a `.timer` unit."""
+    out = []
+    for scope in ("user", "system"):
+        names = _installed_timers(scope)
+        services = {p["Id"]: p for p in _show(
+            scope, [n.removesuffix(".timer") + ".service" for n in names],
+            "Id,ExecMainStartTimestamp,ExecMainExitTimestamp")}
+        out += [_timer(scope, t, services) for t in _show(
+            scope, names, "Id,Description,ActiveState,FragmentPath,TimersCalendar,"
+            "TimersMonotonic,NextElapseUSecRealtime,LastTriggerUSec")]
+    return out
 
 
 def _systemd_units() -> dict[str, Unit]:

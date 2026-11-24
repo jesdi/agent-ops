@@ -47,6 +47,8 @@ export type ExamState = components['schemas']['ExamState']
 export type ExamQuestion = components['schemas']['ExamQuestion']
 export type ExamAttempt = components['schemas']['ExamAttempt']
 export type ExamsView = components['schemas']['ExamsView']
+export type ServicesView = components['schemas']['ServicesView']
+export type ServiceJob = components['schemas']['Job']
 
 export interface PendingIntent {
   action: string
@@ -121,6 +123,7 @@ const examPath = (owner: string, name: string, pr: string) =>
 
 export const api = {
   exams: () => request<ExamsView>('/exams'),
+  services: () => request<ServicesView>('/services'),
   exam: (owner: string, name: string, pr: string) => request<ExamView>(examPath(owner, name, pr)),
   answerExam: (owner: string, name: string, pr: string, body: { attempt: number; head_sha: string; answers: Record<string, number | string> }) =>
     post<ExamView>(`${examPath(owner, name, pr)}/answers`, body),

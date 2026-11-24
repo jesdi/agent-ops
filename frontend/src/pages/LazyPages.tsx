@@ -7,6 +7,7 @@ export const TaskPage = lazy(() => import('./TaskPage').then((m) => ({ default: 
 export const ReviewPage = lazy(() => import('./ReviewPage').then((m) => ({ default: m.ReviewPage })))
 export const ExamDebtPage = lazy(() => import('./ExamDebtPage').then((m) => ({ default: m.ExamDebtPage })))
 export const ExamPage = lazy(() => import('./ExamPage').then((m) => ({ default: m.ExamPage })))
+export const ServicesPage = lazy(() => import('./ServicesPage').then((m) => ({ default: m.ServicesPage })))
 export const SettingsPage = lazy(() => import('./SettingsPage').then((m) => ({ default: m.SettingsPage })))
 
 export const NewOnboardingPage = lazy(() => import('./OnboardingPage').then((m) => ({ default: m.NewOnboardingPage })))

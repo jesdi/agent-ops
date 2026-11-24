@@ -396,6 +396,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/services": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Services */
+        get: operations["services_api_services_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/settings/models": {
         parameters: {
             query?: never;
@@ -1052,6 +1069,24 @@ export interface components {
             /** Url */
             url: string;
         };
+        /** Job */
+        Job: {
+            /** Description */
+            description: string;
+            /** Id */
+            id: string;
+            last_run: components["schemas"]["Run"] | null;
+            /** Name */
+            name: string;
+            /** Next Run */
+            next_run: string | null;
+            /** Read Only */
+            read_only: boolean;
+            /** Schedule */
+            schedule: string;
+            /** State */
+            state: string;
+        };
         /** MessageView */
         MessageView: {
             /** Actor */
@@ -1569,6 +1604,13 @@ export interface components {
              */
             text: string;
         };
+        /** Run */
+        Run: {
+            /** At */
+            at: string;
+            /** Duration Seconds */
+            duration_seconds?: number | null;
+        };
         /** RunReq */
         RunReq: {
             /**
@@ -1581,6 +1623,15 @@ export interface components {
              * @default
              */
             model: string;
+        };
+        /** ServicesView */
+        ServicesView: {
+            /** Managed */
+            managed: components["schemas"]["Job"][];
+            /** Now */
+            now: string;
+            /** Read Only */
+            read_only: components["schemas"]["Job"][];
         };
         /**
          * StepState
@@ -2439,6 +2490,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    services_api_services_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServicesView"];
                 };
             };
         };

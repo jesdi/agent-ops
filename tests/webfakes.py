@@ -77,6 +77,14 @@ class FakeSources:
         self.undelivered = {}         # (repository, issue) -> int
         self.blocked_wakes = set()    # (repository, issue) with a wake-blocked marker
         self.execution_overrides = {}  # (repository, issue) -> model/bypass tuple
+        self.box_timers = []      # raw systemd timer/service records, see service_timers()
+
+    def service_timers(self):
+        """The box's systemd units as the probe reports them: one dict per
+        unit with scope ("user"|"system"), unit, fragment_path, description,
+        active_state, on_calendar (None for a service), last_run
+        ({"at": iso, "duration_seconds": int} | None) and next_run (iso | None)."""
+        return list(self.box_timers)
 
     def tasks(self):
         return list(self.tasks_list)

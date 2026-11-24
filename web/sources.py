@@ -22,6 +22,7 @@ from dispatcher.intents import write_intent
 from dispatcher.queue_ops import QueuePlan
 from dispatcher.sessions import session_name
 from dispatcher.state import TaskState
+from web import box_status
 
 RANK_TTL_SECONDS = 15.0
 DESCRIPTION_TTL_SECONDS = 300.0
@@ -162,6 +163,9 @@ class Sources:
 
     def exams(self) -> list[dict]:
         return exams.listing(self.state_dir)
+
+    def service_timers(self) -> list[dict]:
+        return box_status.systemd_timers()
 
     def exam_state(self, repo: str, pr: int) -> dict | None:
         return exams.read(self.state_dir, repo, pr)

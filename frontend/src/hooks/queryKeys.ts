@@ -6,6 +6,7 @@ export const queryKeys = {
   failures: ['failures'] as const,
   history: ['history'] as const,
   exams: ['exams'] as const,
+  services: ['services'] as const,
   exam: (owner: string, name: string, pr: string) => ['exam', owner, name, pr] as const,
   // Issue numbers are per-repository: alpha#73 and beta#73 must not share a
   // cache entry, so repository leads the key.
