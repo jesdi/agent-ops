@@ -170,9 +170,9 @@ def parse_units(show: str) -> dict[str, Unit]:
     return units
 
 
-def _journal() -> list:
+def _journal(since: str = "6 hours ago") -> list:
     proc = subprocess.run(
-        ["journalctl", "--user", "-u", "agent-ops-*", "--since", "6 hours ago",
+        ["journalctl", "--user", "-u", "agent-ops-*", "--since", since,
          "-o", "json", "--no-pager"],
         capture_output=True, text=True, timeout=20)
     if proc.returncode:
@@ -195,6 +195,48 @@ def parse_journal(output: str) -> list:
         except (ValueError, KeyError, TypeError):
             continue
     return entries
+
+
+_RUN_ENDS = (("Deactivated successfully", "success"), ("Finished ", "success"),
+             ("Failed with result", "failed"))
+
+
+def _pending(mine: list[dict]) -> dict | None:
+    """The last run when it has no end line yet."""
+    return mine[-1] if mine and mine[-1]["result"] is None else None
+
+
+def _open_run(mine: list[dict], e) -> None:
+    if _pending(mine) and e.message.startswith("Started "):
+        return  # Type=notify logs Starting then Started: one run
+    mine.append({"at": e.time.isoformat(), "duration_seconds": None, "result": None})
+
+
+def _close_run(mine: list[dict], e) -> None:
+    result = next((r for word, r in _RUN_ENDS if word in e.message), None)
+    run = _pending(mine)
+    if result and run:
+        started = datetime.fromisoformat(run["at"])
+        run.update(result=result, duration_seconds=int((e.time - started).total_seconds()))
+
+
+def journal_runs(entries: list) -> dict[str, list[dict]]:
+    """Runs per job id (service name without `.service`), oldest first, from
+    systemd's own lines: `Starting` (oneshot) or `Started` opens a run, the next end line closes it
+    (a run with no end line yet is still going: no duration, no result)."""
+    runs: dict[str, list[dict]] = {}
+    for e in entries:
+        if not e.unit.endswith(".service"):
+            continue
+        mine = runs.setdefault(e.unit.removesuffix(".service"), [])
+        step = _open_run if e.message.startswith(("Starting ", "Started ")) else _close_run
+        step(mine, e)
+    return runs
+
+
+def service_runs() -> dict[str, list[dict]]:
+    """Journal probe for the Services page: a week of runs, so a daily job has five."""
+    return journal_runs(_journal("7 days ago"))
 
 
 def _herdr_tabs() -> set[str]:

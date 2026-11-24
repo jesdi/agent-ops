@@ -1082,10 +1082,20 @@ export interface components {
             next_run: string | null;
             /** Read Only */
             read_only: boolean;
+            /**
+             * Recent Runs
+             * @default []
+             */
+            recent_runs: components["schemas"]["RecentRun"][];
             /** Schedule */
             schedule: string;
             /** State */
             state: string;
+            /**
+             * Upcoming
+             * @default []
+             */
+            upcoming: string[];
         };
         /** MessageView */
         MessageView: {
@@ -1545,6 +1555,15 @@ export interface components {
         ReadyReq: {
             /** Issue */
             issue: number;
+        };
+        /** RecentRun */
+        RecentRun: {
+            /** At */
+            at: string;
+            /** Duration Seconds */
+            duration_seconds?: number | null;
+            /** Result */
+            result: string;
         };
         /** ReplyReq */
         ReplyReq: {

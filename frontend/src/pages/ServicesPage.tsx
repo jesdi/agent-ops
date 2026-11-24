@@ -16,6 +16,36 @@ function nextRun(job: ServiceJob, now: string): string {
   return mins <= 0 ? 'now' : `in ${mins} min`
 }
 
+function RecentRuns({ recent }: { recent: NonNullable<ServiceJob['recent_runs']> }) {
+  if (recent.length === 0) return <p className="text-ink-muted">No runs recorded</p>
+  return (
+    <ul>
+      {recent.map((r) => (
+        <li key={r.at} className="flex gap-3">
+          <span>{hhmm(r.at)} · {r.duration_seconds === null ? '…' : `${r.duration_seconds} s`}</span>
+          <span className={r.result === 'failed' ? 'text-failed-fg' : 'text-ink-muted'}>{r.result}</span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function UpcomingRuns({ upcoming }: { upcoming: string[] }) {
+  if (upcoming.length === 0) return <p className="text-ink-muted">No runs scheduled</p>
+  return <ul>{upcoming.map((at) => <li key={at}>{hhmm(at)}</li>)}</ul>
+}
+
+function Runs({ job }: { job: ServiceJob }) {
+  return (
+    <>
+      <h3 className="font-semibold">Recent runs</h3>
+      <RecentRuns recent={job.recent_runs ?? []} />
+      <h3 className="font-semibold">Upcoming runs</h3>
+      <UpcomingRuns upcoming={job.upcoming ?? []} />
+    </>
+  )
+}
+
 function Detail({ job, now }: { job: ServiceJob; now: string }) {
   const rows: [string, string][] = [
     ['State', job.state], ['Schedule', job.schedule],
@@ -34,6 +64,7 @@ function Detail({ job, now }: { job: ServiceJob; now: string }) {
           </div>
         ))}
       </dl>
+      <Runs job={job} />
     </section>
   )
 }

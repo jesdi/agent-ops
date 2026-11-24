@@ -78,6 +78,7 @@ class FakeSources:
         self.blocked_wakes = set()    # (repository, issue) with a wake-blocked marker
         self.execution_overrides = {}  # (repository, issue) -> model/bypass tuple
         self.box_timers = []      # raw systemd timer/service records, see service_timers()
+        self.box_runs = {}        # job id -> journal runs, oldest first, see service_runs()
 
     def service_timers(self):
         """The box's systemd units as the probe reports them: one dict per
@@ -85,6 +86,13 @@ class FakeSources:
         active_state, on_calendar (None for a service), last_run
         ({"at": iso, "duration_seconds": int} | None) and next_run (iso | None)."""
         return list(self.box_timers)
+
+    def service_runs(self):
+        """The journal probe: job id (timer name without `.timer`) -> every
+        run it records, oldest first, as {"at": iso, "duration_seconds": int | None,
+        "result": "success" | "failed" | "stopped"}; a run still going has
+        duration_seconds None and no result of its own ("running")."""
+        return {k: list(v) for k, v in self.box_runs.items()}
 
     def tasks(self):
         return list(self.tasks_list)

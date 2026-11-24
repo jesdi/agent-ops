@@ -167,6 +167,9 @@ class Sources:
     def service_timers(self) -> list[dict]:
         return box_status.systemd_timers()
 
+    def service_runs(self) -> dict[str, list[dict]]:
+        return box_status.service_runs()
+
     def exam_state(self, repo: str, pr: int) -> dict | None:
         return exams.read(self.state_dir, repo, pr)
 

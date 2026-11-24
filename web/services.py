@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from fastapi import APIRouter, Depends
@@ -19,6 +19,12 @@ class Run(BaseModel):
     duration_seconds: int | None = None
 
 
+class RecentRun(BaseModel):
+    at: str
+    duration_seconds: int | None = None
+    result: str         # "success" | "failed" | "stopped" | "running"
+
+
 class Job(BaseModel):
     id: str
     name: str
@@ -28,6 +34,8 @@ class Job(BaseModel):
     last_run: Run | None
     next_run: str | None
     read_only: bool
+    recent_runs: list[RecentRun] = []
+    upcoming: list[str] = []
 
 
 class ServicesView(BaseModel):
@@ -51,12 +59,39 @@ def describe_schedule(calendar: str | None) -> str:
     return calendar
 
 
-def _job(unit: dict, *, read_only: bool) -> Job:
+RECENT, UPCOMING = 5, 3
+
+
+def _interval(schedule: str) -> int | None:
+    """Seconds between runs of a schedule worded by describe_schedule; None when unknown."""
+    if m := re.fullmatch(r"every (\d+) min", schedule):
+        return int(m[1]) * 60
+    return 86400 if re.fullmatch(r"daily at \d\d:\d\d .*", schedule) else None
+
+
+def _upcoming(unit: dict, schedule: str) -> list[str]:
+    if unit["active_state"] != "active" or not unit["next_run"]:
+        return []
+    first, step = datetime.fromisoformat(unit["next_run"]), _interval(schedule)
+    count = UPCOMING if step else 1  # ponytail: multi-time schedules list one run, add a calendar walk if needed
+    return [(first + timedelta(seconds=(step or 0) * i)).isoformat() for i in range(count)]
+
+
+def _recent(runs: list[dict]) -> list[RecentRun]:
+    return [RecentRun(at=r["at"], duration_seconds=r["duration_seconds"],
+                      result=r["result"] or "running") for r in reversed(runs[-RECENT:])]
+
+
+def _job(unit: dict, runs: dict[str, list[dict]], *, read_only: bool) -> Job:
+    schedule = describe_schedule(unit["on_calendar"])
+    job_id = unit["unit"].removesuffix(".timer")
     return Job(
-        id=unit["unit"].removesuffix(".timer"), name=unit["description"],
+        recent_runs=[] if read_only else _recent(runs.get(job_id, [])),
+        upcoming=_upcoming(unit, schedule),
+        id=job_id, name=unit["description"],
         description=unit["description"],
         state="active" if unit["active_state"] == "active" else "paused",
-        schedule=describe_schedule(unit["on_calendar"]),
+        schedule=schedule,
         last_run=unit["last_run"], next_run=unit["next_run"], read_only=read_only)
 
 
@@ -69,13 +104,13 @@ def _read_only(t: dict) -> bool:
             and t["unit"].endswith(".timer"))
 
 
-def services_view(timers: list[dict], now: datetime) -> ServicesView:
+def services_view(timers: list[dict], runs: dict[str, list[dict]], now: datetime) -> ServicesView:
     """Managed: agent-ops user timers. Read-only: root timers whose unit file is
     in /etc/systemd/system (Ubuntu's own timers live elsewhere)."""
     return ServicesView(
         now=now.isoformat(),
-        managed=[_job(t, read_only=False) for t in timers if _managed(t)],
-        read_only=[_job(t, read_only=True) for t in timers if _read_only(t)])
+        managed=[_job(t, runs, read_only=False) for t in timers if _managed(t)],
+        read_only=[_job(t, runs, read_only=True) for t in timers if _read_only(t)])
 
 
 def router(sources, now: Callable[[], datetime]) -> APIRouter:
@@ -83,6 +118,6 @@ def router(sources, now: Callable[[], datetime]) -> APIRouter:
 
     @routes.get("/api/services", response_model=ServicesView)
     def services(op: Operator = Depends(current_operator)):
-        return services_view(sources.service_timers(), now().astimezone(timezone.utc))
+        return services_view(sources.service_timers(), sources.service_runs(), now().astimezone(timezone.utc))
 
     return routes

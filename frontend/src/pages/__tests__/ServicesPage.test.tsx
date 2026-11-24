@@ -83,3 +83,69 @@ describe('services page', () => {
     expect(screen.queryByRole('spinbutton')).toBeNull()
   })
 })
+
+const iso = (h: number, m: number) => `2026-11-24T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00+00:00`
+const serveDetail = (extra: Record<string, unknown>, id = 'agent-ops-dispatcher') => server.use(
+  http.get('/api/services', () => HttpResponse.json({
+    now: '2026-11-24T10:12:00+00:00',
+    managed: [job(id, 'Subject job', { recent_runs: [], upcoming: [], ...extra })], read_only: [],
+  })),
+  http.get('/api/exams', () => HttpResponse.json({ exams: [] })),
+)
+
+describe('services page detail: runs', () => {
+  it('lists the five recent runs with result and duration, and the next three run times', async () => {
+    serveDetail({
+      last_run: { at: iso(10, 8), duration_seconds: 27 },
+      next_run: iso(10, 13),
+      recent_runs: [
+        { at: iso(9, 55), duration_seconds: 41, result: 'success' },
+        { at: iso(9, 50), duration_seconds: 52, result: 'failed' },
+        { at: iso(9, 45), duration_seconds: 43, result: 'success' },
+        { at: iso(9, 40), duration_seconds: 34, result: 'success' },
+        { at: iso(9, 35), duration_seconds: 35, result: 'success' },
+      ],
+      upcoming: [iso(10, 13), iso(10, 18), iso(10, 23)],
+    })
+    renderWithProviders(<ServicesPage />)
+    await userEvent.click(await screen.findByText('Subject job'))
+
+    expect(await screen.findByText('10:18')).toBeInTheDocument()
+    expect(screen.getByText('10:23')).toBeInTheDocument()
+    const runs = screen.getAllByText(/^09:\d\d · \d+ s/)
+    expect(runs).toHaveLength(5)
+    expect(runs.map((r) => r.textContent)).toEqual([
+      expect.stringMatching(/^09:55 · 41 s/), expect.stringMatching(/^09:50 · 52 s/),
+      expect.stringMatching(/^09:45 · 43 s/), expect.stringMatching(/^09:40 · 34 s/),
+      expect.stringMatching(/^09:35 · 35 s/),
+    ])
+    expect(runs[1]?.closest('li, tr, div')).toHaveTextContent(/failed/i)
+  })
+
+  it('shows a daily 03:00 run in the upcoming list', async () => {
+    serveDetail({
+      schedule: 'daily at 03:00 UTC', next_run: '2026-11-25T03:00:00+00:00',
+      upcoming: ['2026-11-25T03:00:00+00:00'],
+    })
+    renderWithProviders(<ServicesPage />)
+    await userEvent.click(await screen.findByText('Subject job'))
+
+    expect(await screen.findByText('03:00')).toBeInTheDocument()
+  })
+
+  it('says "No runs recorded" for a job with no runs', async () => {
+    serveDetail({ state: 'paused' })
+    renderWithProviders(<ServicesPage />)
+    await userEvent.click(await screen.findByText('Subject job'))
+
+    expect(await screen.findByText('No runs recorded')).toBeInTheDocument()
+  })
+
+  it('says no runs are scheduled for a paused job', async () => {
+    serveDetail({ state: 'paused' })
+    renderWithProviders(<ServicesPage />)
+    await userEvent.click(await screen.findByText('Subject job'))
+
+    expect(await screen.findByText(/no runs (are )?scheduled/i)).toBeInTheDocument()
+  })
+})
