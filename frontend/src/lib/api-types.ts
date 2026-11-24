@@ -1002,6 +1002,17 @@ export interface components {
             /** Url */
             url: string;
         };
+        /**
+         * ExamKeptAttempt
+         * @description A failed attempt kept: its served questions and its result, never a key.
+         */
+        ExamKeptAttempt: {
+            /** Attempt */
+            attempt: number;
+            /** Questions */
+            questions: components["schemas"]["ExamQuestion"][];
+            result: components["schemas"]["ExamAttempt"];
+        };
         /** ExamQuestion */
         ExamQuestion: {
             /** Id */
@@ -1061,6 +1072,11 @@ export interface components {
         ExamView: {
             /** Attempt */
             attempt: number;
+            /**
+             * Attempts
+             * @default []
+             */
+            attempts: components["schemas"]["ExamKeptAttempt"][];
             /** Debt */
             debt: boolean;
             /** Detail */
