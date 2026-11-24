@@ -42,11 +42,36 @@ def _dir(state_dir, repo: str, pr: int) -> Path:
     return _path(state_dir, repo, pr).parent
 
 
+ATTEMPT_FILES = ("exam.json", "public.json", "answers.json", "grades.json", "result.json")
+
+
+def _attempt_dir(d: Path, n: int) -> Path:
+    """Where attempt `n` keeps its exam, answers, grades and result."""
+    return d / "attempts" / str(n)
+
+
+def _migrate(d: Path, attempt: int) -> None:
+    """Move an exam left in the flat layout (per-attempt files at the exam level) into its
+    attempt's directory. Each file moves by an atomic rename, so a second mover finds nothing."""
+    if not (d / ATTEMPT_FILES[0]).exists():
+        return
+    target = _attempt_dir(d, attempt)
+    target.mkdir(parents=True, exist_ok=True)
+    for name in ATTEMPT_FILES:
+        try:
+            (d / name).replace(target / name)
+        except FileNotFoundError:
+            pass
+
+
 def read(state_dir: str | Path, repo: str, pr: int) -> dict | None:
     try:
-        return json.loads(_path(state_dir, repo, pr).read_text())
+        doc = json.loads(_path(state_dir, repo, pr).read_text())
     except FileNotFoundError:
         return None
+    if doc["attempt"]:
+        _migrate(_path(state_dir, repo, pr).parent, doc["attempt"])
+    return doc
 
 
 def _write(state_dir, doc: dict) -> None:
@@ -73,12 +98,28 @@ def request(state_dir: str | Path, repo: str, pr: int) -> dict:
         return doc
 
 
-def public(state_dir: str | Path, repo: str, pr: int) -> dict | None:
-    """The served questions, as pr_exam.public projected them; never the exam file."""
+def public(state_dir: str | Path, repo: str, pr: int, attempt: int | None = None) -> dict | None:
+    """The served questions of `attempt` (the current one), as pr_exam.public projected them;
+    never the exam file."""
+    if attempt is None:
+        doc = read(state_dir, repo, pr)
+        attempt = doc["attempt"] if doc else 0
     try:
-        return json.loads((_dir(state_dir, repo, pr) / "public.json").read_text())
+        return json.loads((_attempt_dir(_dir(state_dir, repo, pr), attempt) / "public.json").read_text())
     except FileNotFoundError:
         return None
+
+
+def kept(state_dir: str | Path, doc: dict) -> list[dict]:
+    """The failed attempts before the current one, oldest first, with their questions and result."""
+    out = []
+    for result in doc["results"]:
+        n = result["attempt"]
+        if result["passed"] or n >= doc["attempt"]:
+            continue
+        if questions := public(state_dir, doc["repo"], doc["pr"], n):
+            out.append({"attempt": n, "questions": questions["questions"], "result": result})
+    return out
 
 
 def app(state_dir: str | Path) -> dict | None:
@@ -249,7 +290,7 @@ def _generate(cfg, doc, job: dict, pr, model, io) -> tuple[str, str, str]:
     jd = _job_dir(d)
     (Path(cfg.state_dir) / "exam-records" / repo).mkdir(parents=True, exist_ok=True)
     diff, glossary = _inputs(io, pr, repo, n, jd)
-    prior = json.loads((d / "exam.json").read_text()) if job["kind"] == "followup" else None
+    prior = json.loads((_attempt_dir(d, doc["attempt"]) / "exam.json").read_text()) if job["kind"] == "followup" else None
     spec = _spec(cfg, doc, job["kind"], job["head_sha"], jd, glossary, io.now, prior)
     if error := _exam_error(io, jd, spec, model):
         return "error", error, diff
@@ -288,7 +329,7 @@ def submit(state_dir, repo: str, pr: int, attempt: int, head_sha: str, answers: 
         questions = public(state_dir, repo, pr)["questions"]
         if not all(_answers(q, answers.get(q["id"])) for q in questions):
             return "incomplete"
-        write_json_atomic(_dir(state_dir, repo, pr) / "answers.json", {q["id"]: answers[q["id"]] for q in questions})
+        write_json_atomic(_attempt_dir(_dir(state_dir, repo, pr), attempt) / "answers.json", {q["id"]: answers[q["id"]] for q in questions})
         doc.update(state=ExamState.GRADING, grading={"attempt": attempt})
         _write(state_dir, doc)
         return "ok"
@@ -324,11 +365,12 @@ def _grades(out: Path, texts: list) -> tuple[dict | None, str]:
 def _grade(cfg, doc, sha, diff: str, model, io) -> tuple[dict | None, str]:
     """Grades of the free-text answers by a fresh session; (grades, error)."""
     d = _dir(cfg.state_dir, doc["repo"], doc["pr"])
-    key = json.loads((d / "exam.json").read_text())
+    a = _attempt_dir(d, doc["attempt"])
+    key = json.loads((a / "exam.json").read_text())
     texts = [q for q in key["questions"] if q["type"] == "text"]
     if not texts:
         return {}, ""
-    answers = json.loads((d / "answers.json").read_text())
+    answers = json.loads((a / "answers.json").read_text())
     job = _job_dir(d)
     request = _grading_request(job, doc, sha, diff, key, answers, texts)
     if error := _run(io, request, model, "the grading session"):
@@ -378,10 +420,10 @@ def _graded(cfg, scored: dict, diff: str, io):
     that leaves grading, so a later status failure never writes them again. A fail queues
     the follow-up on the missed concepts."""
     def change(cur: dict, d: Path) -> None:
-        if error := _record(cfg, d, cur["repo"], io.pr_exam, io.now):
+        if error := _record(cfg, _attempt_dir(d, cur["attempt"]), cur["repo"], io.pr_exam, io.now):
             cur.update(state=ExamState.ERROR, detail=error)
             return
-        exam = json.loads((d / "exam.json").read_text())
+        exam = json.loads((_attempt_dir(d, cur["attempt"]) / "exam.json").read_text())
         cur.update(_graded_fields(cur, scored, exam))
         if scored["passed"]:
             (d / "passed.diff").write_text(diff)
@@ -405,8 +447,10 @@ def _generated(job: dict, outcome: str, diff: str):
             (d / "passed.diff").write_text(diff)
             cur.update(state=ExamState.PASSED, head_sha=job["head_sha"], delta=False)
             return
-        (d / STAGED[0]).replace(d / "exam.json")
-        (d / STAGED[1]).replace(d / "public.json")
+        a = _attempt_dir(d, cur["attempt"] + 1)
+        a.mkdir(parents=True, exist_ok=True)
+        (d / STAGED[0]).replace(a / "exam.json")
+        (d / STAGED[1]).replace(a / "public.json")
         if cur["delta"]:   # a delta exam starts over on the new head
             cur["results"] = []
         cur.update(state=ExamState.OPEN, head_sha=job["head_sha"], attempt=cur["attempt"] + 1,
@@ -423,7 +467,8 @@ def _execute_grade(cfg, doc, job: dict, model: str, io):
     grades, error = _grade(cfg, doc, job["head_sha"], diff, model, io)
     if grades is None:
         return _failed(error)
-    scored, error = _score(_dir(cfg.state_dir, doc["repo"], doc["pr"]), grades, io.pr_exam)
+    scored, error = _score(_attempt_dir(_dir(cfg.state_dir, doc["repo"], doc["pr"]), doc["attempt"]),
+                           grades, io.pr_exam)
     return _failed(error) if scored is None else _graded(cfg, scored, diff, io)
 
 

@@ -74,11 +74,19 @@ class ExamAttempt(BaseModel):
     questions: list[ExamQuestionResult]
 
 
+class ExamKeptAttempt(BaseModel):
+    """A failed attempt kept: its served questions and its result, never a key."""
+    attempt: int
+    questions: list[ExamQuestion]
+    result: ExamAttempt
+
+
 class ExamView(Exam):
     detail: str
     attempt: int
     exam: ExamQuestions | None
     results: list[ExamAttempt]
+    attempts: list[ExamKeptAttempt] = []
 
 
 class ExamEntry(Exam):
@@ -123,7 +131,9 @@ def router(sources, cfg: Callable[[], Config]) -> APIRouter:
         if doc is None:
             raise HTTPException(404, "exam not found")
         waiting = doc["state"] == ExamState.OPEN
-        return ExamView(**doc, exam=state.public(cfg().state_dir, repo, pr) if waiting else None)
+        state_dir = cfg().state_dir
+        return ExamView(**doc, exam=state.public(state_dir, repo, pr, doc["attempt"]) if waiting else None,
+                        attempts=state.kept(state_dir, doc))
 
     @routes.get("/api/exam/{owner}/{name}/{pr}", response_model=ExamView, response_model_exclude_unset=True)
     def read_exam(owner: Annotated[str, Path(pattern=rf"^{Slug}$")],
