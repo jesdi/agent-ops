@@ -8,6 +8,7 @@ drained by `operator_intents._apply_intents`; the collector runs with
 console API (`GET /api/task/{repository}/{issue}/artifacts[/{id}]`), as the
 Artifacts panel does; retention runs through `task_artifacts.cleanup`.
 """
+import builtins
 import hashlib
 import json
 import logging
@@ -437,16 +438,40 @@ def test_a_failed_archive_write_still_records_and_wakes(tmp_path, monkeypatch, c
 
 
 def _fail_index_writes(monkeypatch, c):
-    """Only the write of the task's archive index.json raises; the content
-    write goes through, as when the disk fills between the two."""
-    index = os.path.abspath(os.fspath(archive_root(c.state_dir, REPOSITORY, ISSUE) / "index.json"))
-    real_replace = os.replace
+    """The content write into the task's archive goes through; then the disk
+    is full: the write of index.json and every later write that allocates
+    space in the archive raise, as a restoring copy would."""
+    root = str(archive_root(c.state_dir, REPOSITORY, ISSUE))
+    index = os.path.join(root, "index.json")
+    real_replace, real_os_open, real_open = os.replace, os.open, builtins.open
+    full = []
+
+    def inside(path):
+        return os.path.abspath(os.fspath(path)).startswith(root)
+
+    def enospc():
+        return OSError(28, "No space left on device")
 
     def replace_(src, dst, *a, **kw):
-        if not kw.get("dst_dir_fd") and os.path.abspath(os.fspath(dst)) == index:
-            raise OSError(28, "No space left on device")
+        if not kw.get("dst_dir_fd") and inside(dst):
+            if full or os.path.abspath(os.fspath(dst)) == index:
+                raise enospc()
+            full.append(dst)
         return real_replace(src, dst, *a, **kw)
+
+    def os_open(path, flags, *a, **kw):
+        if full and flags & os.O_CREAT and not kw.get("dir_fd") and inside(path):
+            raise enospc()
+        return real_os_open(path, flags, *a, **kw)
+
+    def open_(file, mode="r", *a, **kw):
+        if full and isinstance(file, (str, bytes, os.PathLike)) and set(mode) & set("wax+") \
+                and inside(file):
+            raise enospc()
+        return real_open(file, mode, *a, **kw)
     monkeypatch.setattr(os, "replace", replace_)
+    monkeypatch.setattr(os, "open", os_open)
+    monkeypatch.setattr(builtins, "open", open_)
 
 
 def test_a_failed_index_write_keeps_the_earlier_artifact(tmp_path, monkeypatch, caplog):
