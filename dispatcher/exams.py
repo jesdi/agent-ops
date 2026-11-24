@@ -394,8 +394,9 @@ def _score(d: Path, grades: dict, pr_exam) -> tuple[dict | None, str]:
     except (ValueError, KeyError, subprocess.SubprocessError, OSError) as exc:
         return None, f"scoring failed: {exc}"
     for q in scored["questions"]:   # the grader's line rides along with each free-text question
-        if feedback := grades.get(q["id"], {}).get("feedback"):
-            q["feedback"] = feedback
+        g = grades.get(q["id"])
+        if isinstance(g, dict) and isinstance(g.get("feedback"), str) and g["feedback"]:
+            q["feedback"] = g["feedback"][:1000]
     (d / "result.json").write_text(json.dumps(scored))
     return scored, ""
 
