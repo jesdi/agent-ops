@@ -9,6 +9,7 @@ import hashlib
 import json
 import logging
 import mimetypes
+import os
 import re
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
@@ -255,30 +256,29 @@ def collect(state_dir, task: TaskState, repo: str, *, publish: bool = True,
     state.archive(state_dir, task)
 
 
-def _capture(index: ArtifactIndex, root: Path, task: TaskState, kind: str, now: datetime) -> None:
-    """Store in `index` the answered page of the task's answers file of
-    `kind` when it is a submission the index does not hold yet. The item's
-    digest is the answers file's, not the page's. Raises OSError or
-    ValueError when the file, the page or the archive cannot be used."""
+def _capture(index: ArtifactIndex, task: TaskState, kind: str, now: datetime) -> bytes | None:
+    """Store in `index` the item of the answered page of the task's answers
+    file of `kind` when it is a submission the index does not hold yet, and
+    return the page. The item's digest is the answers file's, not the page's.
+    Raises OSError or ValueError when the file or the page cannot be used."""
     name, _ = answers.ANSWERS_FILES[kind]
     path = f".agent/{name}"
     raw = state.read_regular(Path(task.worktree) / path, answers.ANSWERS_FILE_MAX_BYTES)
     doc = json.loads(raw) if raw is not None else None
     if not isinstance(doc, dict) or doc.get("submitted") is None:
-        return
+        return None
     artifact_id, artifact_name = ANSWERS_ARTIFACTS[kind]
     digest = hashlib.sha256(raw).hexdigest()
     items = {item.id: item for item in index.items}
     if artifact_id in items and items[artifact_id].digest == digest:
-        return
+        return None
     page = state.read_regular(Path(task.worktree) / operator_request(task).path, REVIEW_PAGE_MAX_BYTES)
     if page is None:
         raise OSError("request page is not a readable regular file")
-    _copy_content(root / "content" / artifact_id,
-                  answered_page.render(page.decode(), doc.get("answers")).encode())
     items[artifact_id] = StoredArtifact(artifact_id, artifact_name, path, "text/html", digest,
                                         task.stage.value, now.isoformat())
     index.items = list(items.values())
+    return answered_page.render(page.decode(), doc.get("answers")).encode()
 
 
 def capture_answers(state_dir, task: TaskState, now: datetime | None = None) -> None:
@@ -288,18 +288,21 @@ def capture_answers(state_dir, task: TaskState, now: datetime | None = None) -> 
     index = read(state_dir, task.repository, task.issue)
     index.retain_for(task)
     kind = operator_request(task).kind
-    content = root / "content" / ANSWERS_ARTIFACTS[kind][0]
-    earlier = content.read_bytes() if content.is_file() else None
-    _capture(index, root, task, kind, now or datetime.now(timezone.utc))
-    try:
+    page = _capture(index, task, kind, now or datetime.now(timezone.utc))
+    if page is None:
         index.save(root / "index.json")
-    except OSError:
-        # The index still names the earlier submission: put its page back.
-        if earlier is None:
-            content.unlink(missing_ok=True)
-        else:
-            _copy_content(content, earlier)
-        raise
+        return
+    # Stage the page, save the index, then rename the page in: a full disk
+    # fails before the earlier page or its index entry is touched, and the
+    # last step allocates nothing.
+    content = root / "content" / ANSWERS_ARTIFACTS[kind][0]
+    staged = content.with_name(f".{content.name}.staged")
+    try:
+        _copy_content(staged, page)
+        index.save(root / "index.json")
+        os.replace(staged, content)
+    finally:
+        staged.unlink(missing_ok=True)
 
 
 def pin_published(state_dir, task: TaskState, repo: str) -> None:
