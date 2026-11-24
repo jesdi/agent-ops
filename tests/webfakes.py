@@ -79,6 +79,8 @@ class FakeSources:
         self.execution_overrides = {}  # (repository, issue) -> model/bypass tuple
         self.box_timers = []      # raw systemd timer/service records, see service_timers()
         self.box_runs = {}        # job id -> journal runs, oldest first, see service_runs()
+        self.box_now = "2026-11-24T10:12:00+00:00"  # the box clock for runs it starts
+        self.systemctl_calls = []  # (verb, unit) of every start_unit / stop_unit
 
     def service_timers(self):
         """The box's systemd units as the probe reports them: one dict per
@@ -93,6 +95,31 @@ class FakeSources:
         "result": "success" | "failed" | "stopped"}; a run still going has
         duration_seconds None and no result of its own ("running")."""
         return {k: list(v) for k, v in self.box_runs.items()}
+
+    def start_unit(self, unit):
+        """`systemctl --user start <unit>`: a oneshot run that begins now and is
+        still going. The unit's timer is left as it is."""
+        self.systemctl_calls.append(("start", unit))
+        self.box_runs.setdefault(unit.removesuffix(".service"), []).append(
+            {"at": self.box_now, "duration_seconds": None, "result": None})
+
+    def stop_unit(self, unit):
+        """`systemctl --user stop <unit>`: the run in progress ends as stopped."""
+        self.systemctl_calls.append(("stop", unit))
+        for entry in self.box_runs.get(unit.removesuffix(".service"), []):
+            if entry["duration_seconds"] is None:
+                entry.update(duration_seconds=0, result="stopped")
+
+    def finish_runs(self, seconds=5):
+        """The box lets every run in progress end on its own, successfully; the
+        job's timer then reports it as the last run."""
+        for job, entries in self.box_runs.items():
+            for entry in entries:
+                if entry["duration_seconds"] is None:
+                    entry.update(duration_seconds=seconds, result="success")
+                    for timer in self.box_timers:
+                        if timer["unit"] == f"{job}.timer":
+                            timer["last_run"] = {"at": entry["at"], "duration_seconds": seconds}
 
     def tasks(self):
         return list(self.tasks_list)

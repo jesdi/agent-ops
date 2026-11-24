@@ -119,7 +119,7 @@ export function useTaskArtifacts(repository: string, issue: number) {
 }
 
 export function useServices() {
-  const refetchInterval = useFallbackInterval()
+  const refetchInterval = 5000 // no SSE event for services: poll even while connected
   return useQuery({ queryKey: queryKeys.services, queryFn: api.services, refetchInterval })
 }
 

@@ -124,6 +124,8 @@ const examPath = (owner: string, name: string, pr: string) =>
 export const api = {
   exams: () => request<ExamsView>('/exams'),
   services: () => request<ServicesView>('/services'),
+  runService: (job: string) => post<object>(`/services/${encodeURIComponent(job)}/run`, {}),
+  stopService: (job: string) => post<object>(`/services/${encodeURIComponent(job)}/stop`, {}),
   exam: (owner: string, name: string, pr: string) => request<ExamView>(examPath(owner, name, pr)),
   answerExam: (owner: string, name: string, pr: string, body: { attempt: number; head_sha: string; answers: Record<string, number | string> }) =>
     post<ExamView>(`${examPath(owner, name, pr)}/answers`, body),

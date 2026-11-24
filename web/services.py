@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from web.auth import Operator, current_operator
@@ -29,7 +29,7 @@ class Job(BaseModel):
     id: str
     name: str
     description: str
-    state: str          # "active" | "paused"
+    state: str          # "active" | "paused" | "running"
     schedule: str
     last_run: Run | None
     next_run: str | None
@@ -85,12 +85,14 @@ def _recent(runs: list[dict]) -> list[RecentRun]:
 def _job(unit: dict, runs: dict[str, list[dict]], *, read_only: bool) -> Job:
     schedule = describe_schedule(unit["on_calendar"])
     job_id = unit["unit"].removesuffix(".timer")
+    mine = runs.get(job_id, [])
+    running = not read_only and bool(mine) and mine[-1]["result"] is None
     return Job(
         recent_runs=[] if read_only else _recent(runs.get(job_id, [])),
         upcoming=_upcoming(unit, schedule),
         id=job_id, name=unit["description"],
         description=unit["description"],
-        state="active" if unit["active_state"] == "active" else "paused",
+        state="running" if running else "active" if unit["active_state"] == "active" else "paused",
         schedule=schedule,
         last_run=unit["last_run"], next_run=unit["next_run"], read_only=read_only)
 
@@ -119,5 +121,20 @@ def router(sources, now: Callable[[], datetime]) -> APIRouter:
     @routes.get("/api/services", response_model=ServicesView)
     def services(op: Operator = Depends(current_operator)):
         return services_view(sources.service_timers(), sources.service_runs(), now().astimezone(timezone.utc))
+
+    def act(job: str, verb: str) -> dict:
+        if not any(j.id == job for j in services_view(
+                sources.service_timers(), {}, now()).managed):
+            raise HTTPException(404, "not a managed job")
+        (sources.start_unit if verb == "start" else sources.stop_unit)(f"{job}.service")
+        return {}
+
+    @routes.post("/api/services/{job}/run")
+    def run_now(job: str, op: Operator = Depends(current_operator)):
+        return act(job, "start")
+
+    @routes.post("/api/services/{job}/stop")
+    def stop_run(job: str, op: Operator = Depends(current_operator)):
+        return act(job, "stop")
 
     return routes

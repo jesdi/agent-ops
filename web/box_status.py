@@ -198,7 +198,8 @@ def parse_journal(output: str) -> list:
 
 
 _RUN_ENDS = (("Deactivated successfully", "success"), ("Finished ", "success"),
-             ("Failed with result", "failed"))
+             ("Failed with result", "failed"),
+             ("Stopped ", "stopped"))
 
 
 def _pending(mine: list[dict]) -> dict | None:
@@ -212,25 +213,37 @@ def _open_run(mine: list[dict], e) -> None:
     mine.append({"at": e.time.isoformat(), "duration_seconds": None, "result": None})
 
 
-def _close_run(mine: list[dict], e) -> None:
+def _close_run(mine: list[dict], e, stopping: bool) -> None:
     result = next((r for word, r in _RUN_ENDS if word in e.message), None)
     run = _pending(mine)
     if result and run:
         started = datetime.fromisoformat(run["at"])
-        run.update(result=result, duration_seconds=int((e.time - started).total_seconds()))
+        run.update(result="stopped" if stopping else result,
+                   duration_seconds=int((e.time - started).total_seconds()))
 
 
 def journal_runs(entries: list) -> dict[str, list[dict]]:
     """Runs per job id (service name without `.service`), oldest first, from
     systemd's own lines: `Starting` (oneshot) or `Started` opens a run, the next end line closes it
-    (a run with no end line yet is still going: no duration, no result)."""
+    (a run with no end line yet is still going: no duration, no result).
+    An operator stop logs `Stopping` first: the run stays open until its end
+    line, then ends as stopped whatever that line says."""
     runs: dict[str, list[dict]] = {}
+    stopping: set[str] = set()
     for e in entries:
         if not e.unit.endswith(".service"):
             continue
-        mine = runs.setdefault(e.unit.removesuffix(".service"), [])
-        step = _open_run if e.message.startswith(("Starting ", "Started ")) else _close_run
-        step(mine, e)
+        job = e.unit.removesuffix(".service")
+        mine = runs.setdefault(job, [])
+        if e.message.startswith(("Starting ", "Started ")):
+            _open_run(mine, e)
+            stopping.discard(job)
+        elif e.message.startswith("Stopping "):
+            stopping.add(job)
+        else:
+            _close_run(mine, e, job in stopping)
+            if not _pending(mine):
+                stopping.discard(job)
     return runs
 
 

@@ -170,6 +170,14 @@ class Sources:
     def service_runs(self) -> dict[str, list[dict]]:
         return box_status.service_runs()
 
+    def start_unit(self, unit: str) -> None:
+        subprocess.run(("systemctl", "--user", "start", "--no-block", unit),
+                       capture_output=True, timeout=5, check=True)
+
+    def stop_unit(self, unit: str) -> None:
+        subprocess.run(("systemctl", "--user", "stop", unit),
+                       capture_output=True, timeout=30, check=True)
+
     def exam_state(self, repo: str, pr: int) -> dict | None:
         return exams.read(self.state_dir, repo, pr)
 

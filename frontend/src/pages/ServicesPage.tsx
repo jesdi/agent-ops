@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useServices } from '../hooks/useResources'
+import { useServiceActions } from '../hooks/useServiceActions'
 import type { ServiceJob } from '../lib/api'
 
 const hhmm = (iso: string) => new Date(iso).toISOString().slice(11, 16)
@@ -46,6 +47,19 @@ function Runs({ job }: { job: ServiceJob }) {
   )
 }
 
+function Actions({ job }: { job: ServiceJob }) {
+  const { run, stop } = useServiceActions()
+  if (job.read_only) return null
+  const error = run.error ?? stop.error
+  return (
+    <div className="flex gap-2">
+      <button type="button" onClick={() => run.mutate(job.id)}>Run now</button>
+      {job.state === 'running' && <button type="button" onClick={() => stop.mutate(job.id)}>Stop run</button>}
+      {error && <p className="text-failed-fg">{error.message}</p>}
+    </div>
+  )
+}
+
 function Detail({ job, now }: { job: ServiceJob; now: string }) {
   const rows: [string, string][] = [
     ['State', job.state], ['Schedule', job.schedule],
@@ -64,6 +78,7 @@ function Detail({ job, now }: { job: ServiceJob; now: string }) {
           </div>
         ))}
       </dl>
+      <Actions job={job} />
       <Runs job={job} />
     </section>
   )
