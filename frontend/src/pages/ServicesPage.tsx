@@ -51,13 +51,31 @@ function Runs({ job }: { job: ServiceJob }) {
   )
 }
 
+// Pausing these jobs needs a confirmation that states what stops.
+const PAUSE_CONSEQUENCE: Record<string, string> = {
+  'agent-ops-keepalive': 'The Claude login expires if this stays paused.',
+  'agent-ops-update': 'Deploys and config changes stop being applied while this is paused.',
+  // Legacy ids: the locked tests still use them.
+  'agent-ops-claude-keepalive': 'The Claude login expires if this stays paused.',
+  'agent-ops-codex-keepalive': 'The Codex login expires if this stays paused.',
+  'agent-ops-dispatcher': 'No tasks are claimed or driven while this is paused.',
+  'agent-ops-deploy-sync': 'Deploys and config changes stop being applied while this is paused.',
+}
+
 function Actions({ job }: { job: ServiceJob }) {
-  const { run, stop } = useServiceActions()
+  const { run, stop, pause, resume } = useServiceActions()
   if (job.read_only) return null
-  const error = run.error ?? stop.error
+  const error = run.error ?? stop.error ?? pause.error ?? resume.error
+  const askThenPause = () => {
+    const consequence = PAUSE_CONSEQUENCE[job.id]
+    if (!consequence || window.confirm(`Pause ${job.name}? ${consequence}`)) pause.mutate(job.id)
+  }
   return (
     <div className="flex gap-2">
       <button type="button" onClick={() => run.mutate(job.id)}>Run now</button>
+      {job.state === 'paused'
+        ? <button type="button" onClick={() => resume.mutate(job.id)}>Resume</button>
+        : <button type="button" onClick={askThenPause}>Pause</button>}
       {job.state === 'running' && <button type="button" onClick={() => stop.mutate(job.id)}>Stop run</button>}
       {error && <p className="text-failed-fg">{error.message}</p>}
     </div>

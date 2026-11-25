@@ -236,6 +236,12 @@ const server = createServer(async (req, res) => {
   if (url.pathname === '/api/usage') return json(200, state.usage)
   if (url.pathname === '/api/services') return json(200, state.services)
   if (/^\/api\/services\/[^/]+\/(run|stop)$/.test(url.pathname) && req.method === 'POST') return json(200, {})
+  const flip = url.pathname.match(/^\/api\/services\/([^/]+)\/(pause|resume)$/)
+  if (flip && req.method === 'POST') {
+    const job = state.services.managed.find((j) => j.id === flip[1])
+    if (job) job.state = flip[2] === 'pause' ? 'paused' : 'active'
+    return json(200, {})
+  }
   if (url.pathname === '/api/failures') return json(200, state.failures)
   if (url.pathname === '/api/history') return json(200, state.history)
   if (url.pathname === '/api/pending-intents') {

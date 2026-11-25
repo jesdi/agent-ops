@@ -178,6 +178,14 @@ class Sources:
         subprocess.run(("systemctl", "--user", "stop", unit),
                        capture_output=True, timeout=30, check=True)
 
+    def disable_timer(self, unit: str) -> None:
+        subprocess.run(("systemctl", "--user", "disable", "--now", unit),
+                       capture_output=True, timeout=30, check=True)
+
+    def enable_timer(self, unit: str) -> None:
+        subprocess.run(("systemctl", "--user", "enable", "--now", unit),
+                       capture_output=True, timeout=30, check=True)
+
     def exam_state(self, repo: str, pr: int) -> dict | None:
         return exams.read(self.state_dir, repo, pr)
 

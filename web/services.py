@@ -8,6 +8,7 @@ from typing import Callable
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from dispatcher import services_changes
 from web.auth import Operator, current_operator
 
 USER_JOB_PREFIX = "agent-ops-"
@@ -116,17 +117,38 @@ def services_view(timers: list[dict], runs: dict[str, list[dict]], now: datetime
         read_only=[_job(t, runs, read_only=True) for t in timers if _read_only(t)])
 
 
-def router(sources, now: Callable[[], datetime]) -> APIRouter:
+def router(sources, now: Callable[[], datetime], state_dir: Callable[[], str]) -> APIRouter:
     routes = APIRouter()
 
     @routes.get("/api/services", response_model=ServicesView)
     def services(op: Operator = Depends(current_operator)):
         return services_view(sources.service_timers(), sources.service_runs(), now().astimezone(timezone.utc))
 
-    def act(job: str, verb: str) -> dict:
+    def check_managed(job: str) -> None:
         if not any(j.id == job for j in services_view(
                 sources.service_timers(), {}, now()).managed):
             raise HTTPException(404, "not a managed job")
+
+    def switch(job: str, paused: bool) -> dict:
+        check_managed(job)
+        change = sources.disable_timer if paused else sources.enable_timer
+        try:
+            services_changes.set_paused(state_dir(), job.removeprefix(USER_JOB_PREFIX), paused,
+                                        lambda: change(f"{job}.timer"))
+        except Exception as e:
+            raise HTTPException(502, f"systemctl failed: {e}") from e
+        return {}
+
+    @routes.post("/api/services/{job}/pause")
+    def pause(job: str, op: Operator = Depends(current_operator)):
+        return switch(job, True)
+
+    @routes.post("/api/services/{job}/resume")
+    def resume(job: str, op: Operator = Depends(current_operator)):
+        return switch(job, False)
+
+    def act(job: str, verb: str) -> dict:
+        check_managed(job)
         (sources.start_unit if verb == "start" else sources.stop_unit)(f"{job}.service")
         return {}
 

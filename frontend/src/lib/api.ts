@@ -126,6 +126,8 @@ export const api = {
   services: () => request<ServicesView>('/services'),
   runService: (job: string) => post<object>(`/services/${encodeURIComponent(job)}/run`, {}),
   stopService: (job: string) => post<object>(`/services/${encodeURIComponent(job)}/stop`, {}),
+  pauseService: (job: string) => post<object>(`/services/${encodeURIComponent(job)}/pause`, {}),
+  resumeService: (job: string) => post<object>(`/services/${encodeURIComponent(job)}/resume`, {}),
   exam: (owner: string, name: string, pr: string) => request<ExamView>(examPath(owner, name, pr)),
   answerExam: (owner: string, name: string, pr: string, body: { attempt: number; head_sha: string; answers: Record<string, number | string> }) =>
     post<ExamView>(`${examPath(owner, name, pr)}/answers`, body),

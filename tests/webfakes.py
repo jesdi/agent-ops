@@ -80,7 +80,8 @@ class FakeSources:
         self.box_timers = []      # raw systemd timer/service records, see service_timers()
         self.box_runs = {}        # job id -> journal runs, oldest first, see service_runs()
         self.box_now = "2026-11-24T10:12:00+00:00"  # the box clock for runs it starts
-        self.systemctl_calls = []  # (verb, unit) of every start_unit / stop_unit
+        self.systemctl_calls = []  # (verb, unit) of every start_unit / stop_unit / disable_timer / enable_timer
+        self.systemctl_failure = None  # an Exception raised by disable_timer / enable_timer
 
     def service_timers(self):
         """The box's systemd units as the probe reports them: one dict per
@@ -109,6 +110,24 @@ class FakeSources:
         for entry in self.box_runs.get(unit.removesuffix(".service"), []):
             if entry["duration_seconds"] is None:
                 entry.update(duration_seconds=0, result="stopped")
+
+    def disable_timer(self, unit):
+        """`systemctl --user disable --now <unit>.timer`: the timer is disabled and
+        stopped, so the job reports as paused. Raises `systemctl_failure` when set."""
+        self._switch_timer("disable", unit, "inactive")
+
+    def enable_timer(self, unit):
+        """`systemctl --user enable --now <unit>.timer`: the timer is enabled and
+        started, so the job reports as active. Raises `systemctl_failure` when set."""
+        self._switch_timer("enable", unit, "active")
+
+    def _switch_timer(self, verb, unit, active_state):
+        self.systemctl_calls.append((verb, unit))
+        if self.systemctl_failure:
+            raise self.systemctl_failure
+        for timer in self.box_timers:
+            if timer["unit"] == unit:
+                timer["active_state"] = active_state
 
     def finish_runs(self, seconds=5):
         """The box lets every run in progress end on its own, successfully; the
