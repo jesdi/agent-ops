@@ -136,12 +136,15 @@ def calendar_runs(calendar: str, count: int = 3) -> list[str]:
     return [] if proc.returncode else parse_calendar_runs(proc.stdout)
 
 
+def calendar(sched: dict) -> str:
+    """The OnCalendar of a `daily` or `calendar` schedule."""
+    return f"*-*-* {sched['daily']}:00 {sched['tz']}" if "daily" in sched else sched["calendar"]
+
+
 def _when(sched: dict) -> str:
     if "every" in sched:
         return f"OnBootSec=1min\nOnUnitActiveSec={sched['every']}min"
-    if "daily" in sched:
-        return f"OnCalendar=*-*-* {sched['daily']}:00 {sched['tz']}"
-    return f"OnCalendar={sched['calendar']}"
+    return f"OnCalendar={calendar(sched)}"
 
 
 def timer_unit(job: str, sched: dict) -> str:

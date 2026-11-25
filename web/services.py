@@ -117,7 +117,7 @@ DIFFERS = "The box differs from the services config."
 
 def _warning(unit: dict, key: str, changes: dict, installed: dict | None) -> str | None:
     """The box differs from the installed config with no console change behind it: its
-    paused state, or its timer (a hand-edited unit file or a drop-in over it)."""
+    paused state, or the schedule its loaded timer fires on."""
     if installed is None:
         return None
     return DIFFERS if _differs(unit, key, changes.get(key) or {}, installed.get(key) or {}) else None
@@ -126,23 +126,34 @@ def _warning(unit: dict, key: str, changes: dict, installed: dict | None) -> str
 def _differs(unit: dict, key: str, change: dict, want: dict) -> bool:
     if "paused" not in change and _paused_differs(unit, want):
         return True
-    return "schedule" not in change and _timer_edited(unit, key, want)
+    return "schedule" not in change and _timer_edited(unit, want)
 
 
 def _paused_differs(unit: dict, want: dict) -> bool:
     return (unit["active_state"] != "active") != bool(want.get("paused", False))
 
 
-def _timer_edited(unit: dict, key: str, want: dict) -> bool:
-    """Whether the timer is not the one the config renders; an unreadable unit file tells nothing."""
-    if unit.get("drop_ins"):
+def _timer_edited(unit: dict, want: dict) -> bool:
+    """Whether the timer systemd has loaded (unit file, drop-ins and all, as of the last
+    daemon-reload) fires on another schedule than the config's; no triggers tell nothing."""
+    loaded, sched = unit.get("triggers"), want.get("schedule")
+    if not (loaded and sched):
+        return False
+    if "every" in sched:
+        return bool(loaded["calendar"]) or loaded["every_seconds"] != sched["every"] * 60
+    return loaded["every_seconds"] is not None or not _same_calendar(
+        loaded["calendar"], services_config.calendar(sched))
+
+
+def _same_calendar(loaded: list[str], want: str) -> bool:
+    """One OnCalendar firing when `want` does: systemd normalises an expression, so a
+    different spelling is judged by the runs systemd lists for both."""
+    if len(loaded) != 1:
+        return False
+    if loaded[0] == want:
         return True
-    if "schedule" not in want:
-        return False
-    try:
-        return Path(unit["fragment_path"]).read_text() != services_config.timer_unit(key, want["schedule"])
-    except OSError:
-        return False
+    runs = services_config.calendar_runs(loaded[0])
+    return bool(runs) and runs == services_config.calendar_runs(want)
 
 
 def _job(unit: dict, runs: dict[str, list[dict]], *, read_only: bool,

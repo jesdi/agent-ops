@@ -15,6 +15,7 @@ ActiveState=active
 FragmentPath=/home/agent/.config/systemd/user/agent-ops-dispatcher.timer
 TimersCalendar=
 TimersMonotonic={ OnUnitActiveUSec=5min ; next_elapse=1h }
+TimersMonotonic={ OnBootUSec=1min ; next_elapse=1min }
 NextElapseUSecRealtime=
 LastTriggerUSec=@1795000080
 
@@ -58,6 +59,8 @@ def test_timers_lists_unloaded_and_monotonic(monkeypatch):
     assert d["last_run"]["duration_seconds"] == 27
     t = timers["agent-ops-triage.timer"]
     assert t["active_state"] == "inactive" and t["last_run"] is None and t["next_run"] is None
+    assert d["triggers"] == {"calendar": [], "every_seconds": 300}
+    assert t["triggers"] == {"calendar": ["*-*-* 06:00:00"], "every_seconds": None}
 
 
 def test_monotonic_schedule_beyond_an_hour_keeps_its_words():

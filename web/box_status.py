@@ -68,7 +68,11 @@ def _installed_timers(scope: str) -> list[str]:
 
 
 def _props(block: str) -> dict[str, str]:
-    return dict(l.split("=", 1) for l in block.splitlines() if "=" in l)
+    """A property systemctl prints once per entry (TimersMonotonic, TimersCalendar) keeps them all."""
+    props: dict[str, str] = {}
+    for key, _, value in (l.partition("=") for l in block.splitlines() if "=" in l):
+        props[key] = f"{props[key]} {value}" if props.get(key) else value
+    return props
 
 
 def _show(scope: str, names: list[str], props: str) -> list[dict[str, str]]:
@@ -121,8 +125,11 @@ def _next_run(t: dict[str, str], interval: int | None) -> str | None:
     return None
 
 
+_CALENDAR = re.compile(r"OnCalendar=([^;}]*?)\s*(?:;|\})")
+
+
 def _timer(scope: str, t: dict[str, str], services: dict[str, dict]) -> dict:
-    calendar = re.search(r"OnCalendar=([^;}]*?)\s*(?:;|\})", t.get("TimersCalendar", ""))
+    calendar = _CALENDAR.search(t.get("TimersCalendar", ""))
     monotonic, interval = _monotonic_schedule(t.get("TimersMonotonic", ""))
     return {
         "scope": scope, "unit": t["Id"], "fragment_path": t.get("FragmentPath", ""),
@@ -131,7 +138,8 @@ def _timer(scope: str, t: dict[str, str], services: dict[str, dict]) -> dict:
         "interval_seconds": None if calendar else interval,
         "last_run": _last_run(services.get(t["Id"].removesuffix(".timer") + ".service", {})),
         "next_run": _next_run(t, interval),
-        "drop_ins": t.get("DropInPaths", "").split(),
+        "triggers": {"calendar": _CALENDAR.findall(t.get("TimersCalendar", "")),
+                     "every_seconds": interval},
         "upcoming": services_config.calendar_runs(calendar[1]) if calendar and t["ActiveState"] == "active" else []}
 
 
@@ -146,7 +154,7 @@ def systemd_timers() -> list[dict]:
             "Id,ExecMainStartTimestamp,ExecMainExitTimestamp")}
         out += [_timer(scope, t, services) for t in _show(
             scope, names, "Id,Description,ActiveState,FragmentPath,TimersCalendar,"
-            "TimersMonotonic,NextElapseUSecRealtime,LastTriggerUSec,DropInPaths")]
+            "TimersMonotonic,NextElapseUSecRealtime,LastTriggerUSec")]
     return out
 
 
