@@ -92,8 +92,8 @@ def schedule_of(unit: dict) -> Schedule | None:
 
 
 def _calendar_schedule(calendar: str) -> Schedule | None:
-    if m := re.fullmatch(r"\*:0/(\d+)", calendar):
-        return Schedule(every=int(m[1]))
+    """A real OnCalendar, `*:0/N` included: only `calendar` keeps it clock-aligned on save,
+    since `every` renders as OnUnitActiveSec. Interval timers arrive by `interval_seconds`."""
     if m := re.fullmatch(r"\*-\*-\* (\d{1,2}):(\d\d)(?::00)?(?: ([A-Za-z0-9_+\-/]+))?", calendar):
         return Schedule(daily=f"{int(m[1]):02d}:{m[2]}", tz=m[3] or "UTC")
     return Schedule(calendar=calendar) if calendar else None

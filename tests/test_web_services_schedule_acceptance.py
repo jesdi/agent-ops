@@ -379,7 +379,8 @@ SPEC = {"every": None, "daily": None, "tz": None, "calendar": None}
 
 
 @pytest.mark.parametrize("job,timer_fields,spec", [
-    (DISPATCHER, {}, {"every": 5}),
+    (DISPATCHER, {"interval_seconds": 300}, {"every": 5}),
+    (DIGEST, {"on_calendar": "*:0/5"}, {"calendar": "*:0/5"}),
     (DIGEST, {}, {"daily": "08:00", "tz": "UTC"}),
     (TRIAGE, {}, {"daily": "04:00", "tz": "Europe/Madrid"}),
     (DIGEST, {"on_calendar": "Mon..Fri *-*-* 09:00"}, {"calendar": "Mon..Fri *-*-* 09:00"}),
