@@ -146,14 +146,14 @@ def _timer_edited(unit: dict, want: dict) -> bool:
 
 
 def _same_calendar(loaded: list[str], want: str) -> bool:
-    """One OnCalendar firing when `want` does: systemd normalises an expression, so a
-    different spelling is judged by the runs systemd lists for both."""
+    """One OnCalendar firing when `want` does: a different spelling is judged by the
+    normalized form systemd gives both, not by a sample of runs two schedules can share."""
     if len(loaded) != 1:
         return False
     if loaded[0] == want:
         return True
-    runs = services_config.calendar_runs(loaded[0])
-    return bool(runs) and runs == services_config.calendar_runs(want)
+    norm = services_config.calendar_normalized(loaded[0])
+    return norm is not None and norm == services_config.calendar_normalized(want)
 
 
 def _job(unit: dict, runs: dict[str, list[dict]], *, read_only: bool,

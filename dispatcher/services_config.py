@@ -125,15 +125,30 @@ def parse_calendar_runs(output: str) -> list[str]:
     return [datetime.fromisoformat(m).replace(tzinfo=timezone.utc).isoformat() for m in _ELAPSE.findall(output)]
 
 
+def _analyze(*args: str) -> str | None:
+    """`TZ=UTC systemd-analyze calendar <args>`'s output; None when it fails."""
+    try:
+        proc = subprocess.run(["systemd-analyze", "calendar", *args],
+                              capture_output=True, text=True, timeout=10, env={**os.environ, "TZ": "UTC"})
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return None if proc.returncode else proc.stdout
+
+
 def calendar_runs(calendar: str, count: int = 3) -> list[str]:
     """The next `count` runs of an OnCalendar expression, as systemd itself computes them
     (timezones and daylight-saving included); none when systemd-analyze fails."""
-    try:
-        proc = subprocess.run(["systemd-analyze", "calendar", f"--iterations={count}", calendar],
-                              capture_output=True, text=True, timeout=10, env={**os.environ, "TZ": "UTC"})
-    except (OSError, subprocess.TimeoutExpired):
-        return []
-    return [] if proc.returncode else parse_calendar_runs(proc.stdout)
+    return parse_calendar_runs(_analyze(f"--iterations={count}", calendar) or "")
+
+
+_NORMALIZED = re.compile(r"^Normalized form: (.+)$", re.M)
+
+
+def calendar_normalized(calendar: str) -> str | None:
+    """systemd's normalized form of an OnCalendar expression, timezone included: two
+    expressions fire alike exactly when these match. None when systemd-analyze fails."""
+    m = _NORMALIZED.search(_analyze(calendar) or "")
+    return m[1] if m else None
 
 
 def calendar(sched: dict) -> str:

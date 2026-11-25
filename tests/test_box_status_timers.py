@@ -126,3 +126,17 @@ def test_calendar_runs_is_empty_when_systemd_analyze_fails(monkeypatch):
     monkeypatch.setattr(box_status.subprocess, "run",
                         lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="bad"))
     assert services_config.calendar_runs("every tuesday-ish") == []
+
+
+def test_calendar_normalized_is_systemds_normalized_form_with_its_timezone(monkeypatch):
+    seen = []
+    monkeypatch.setattr(box_status.subprocess, "run",
+                        lambda cmd, **kw: seen.append(cmd) or SimpleNamespace(returncode=0, stdout=ANALYZE, stderr=""))
+    assert services_config.calendar_normalized("Mon..Fri *-*-* 09:00 Europe/Madrid") == "Mon..Fri *-*-* 09:00:00 Europe/Madrid"
+    assert seen[0][-1] == "Mon..Fri *-*-* 09:00 Europe/Madrid"
+
+
+def test_calendar_normalized_is_none_when_systemd_analyze_fails(monkeypatch):
+    monkeypatch.setattr(box_status.subprocess, "run",
+                        lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="bad"))
+    assert services_config.calendar_normalized("every tuesday-ish") is None
