@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useServices } from '../hooks/useResources'
 import { useServiceActions } from '../hooks/useServiceActions'
 import type { ServiceJob } from '../lib/api'
 import { ScheduleEditor } from '../components/ScheduleEditor'
+import { BUTTON } from '../lib/controls'
 
 const hhmm = (iso: string) => new Date(iso).toISOString().slice(11, 16)
 
@@ -42,11 +43,11 @@ function Runs({ job }: { job: ServiceJob }) {
     <>
       {!job.read_only && (
         <>
-          <h3 className="font-semibold">Recent runs</h3>
+          <h3 className="pt-2 text-sm font-semibold">Recent runs</h3>
           <RecentRuns recent={job.recent_runs ?? []} />
         </>
       )}
-      <h3 className="font-semibold">Upcoming runs</h3>
+      <h3 className="pt-2 text-sm font-semibold">Upcoming runs</h3>
       <UpcomingRuns upcoming={job.upcoming ?? []} />
     </>
   )
@@ -66,18 +67,18 @@ const PAUSE_CONSEQUENCE: Record<string, string> = {
 function ChangeFailed({ change, onRetry }: { change: ServiceJob['change']; onRetry: () => void }) {
   if (change?.state !== 'failed') return null
   return (
-    <>
-      <span className="text-failed-fg">change failed</span>
+    <p className="flex flex-wrap items-center gap-2 rounded bg-failed-bg px-2 py-1 text-sm text-failed-fg">
+      <span>change failed</span>
       {change.url && <a href={change.url} className="underline">#{change.pr}</a>}
-      <button type="button" onClick={onRetry}>Retry</button>
-    </>
+      <button type="button" className={`${BUTTON} text-ink`} onClick={onRetry}>Retry</button>
+    </p>
   )
 }
 
 function ChangeApplying({ change }: { change: ServiceJob['change'] }) {
   if (change?.state !== 'applying') return null
   return (
-    <p>
+    <p className="w-fit rounded bg-ink/5 px-2 py-1 text-sm text-ink-muted">
       <span>applying change</span>
       {change.pr != null && <> · <span>PR </span>{change.url
         ? <a href={change.url} className="underline">#{change.pr}</a> : `#${change.pr}`}</>}
@@ -94,14 +95,18 @@ function Actions({ job }: { job: ServiceJob }) {
     if (!consequence || window.confirm(`Pause ${job.name}? ${consequence}`)) pause.mutate(job.id)
   }
   return (
-    <div className="flex gap-2">
-      <button type="button" onClick={() => run.mutate(job.id)}>Run now</button>
-      {job.state === 'paused'
-        ? <button type="button" onClick={() => resume.mutate(job.id)}>Resume</button>
-        : <button type="button" onClick={askThenPause}>Pause</button>}
-      {job.state === 'running' && <button type="button" onClick={() => stop.mutate(job.id)}>Stop run</button>}
+    <div className="space-y-2">
+      <div className="flex flex-wrap gap-2">
+        <button type="button" className={BUTTON} onClick={() => run.mutate(job.id)}>Run now</button>
+        {job.state === 'paused'
+          ? <button type="button" className={BUTTON} onClick={() => resume.mutate(job.id)}>Resume</button>
+          : <button type="button" className={BUTTON} onClick={askThenPause}>Pause</button>}
+        {job.state === 'running' && (
+          <button type="button" className={`${BUTTON} text-failed-fg`} onClick={() => stop.mutate(job.id)}>Stop run</button>
+        )}
+      </div>
       <ChangeFailed change={job.change} onRetry={() => retry.mutate(job.id)} />
-      {error && <p className="text-failed-fg">{error.message}</p>}
+      {error && <p className="text-sm text-failed-fg">{error.message}</p>}
     </div>
   )
 }
@@ -111,12 +116,18 @@ function Detail({ job, now }: { job: ServiceJob; now: string }) {
     ['State', job.state], ['Schedule', job.schedule],
     ['Last run', lastRun(job)], ['Next run', nextRun(job, now)],
   ]
+  // On a phone the detail sits under the list: bring it into view when a job is picked.
+  const ref = useRef<HTMLElement>(null)
+  useEffect(() => { ref.current?.scrollIntoView?.({ block: 'nearest' }) }, [])
   return (
-    <section aria-label="Job detail" className="space-y-2">
-      <h2 className="font-semibold">{job.name}</h2>
-      <p className="text-ink-muted">{job.description}</p>
-      {job.read_only && <p className="text-sm text-ink-muted">read-only</p>}
-      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1">
+    <section ref={ref} aria-label="Job detail"
+      className="min-w-0 scroll-mt-4 space-y-3 self-start rounded border border-border bg-surface-raised p-3 sm:p-4">
+      <div>
+        <h2 className="font-semibold">{job.name}</h2>
+        {job.description !== job.name && <p className="text-sm text-ink-muted">{job.description}</p>}
+        {job.read_only && <p className="mt-1 w-fit rounded bg-ink/5 px-1.5 text-xs text-ink-muted">read-only</p>}
+      </div>
+      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
         {rows.map(([label, value]) => (
           <div key={label} className="contents">
             <dt className="text-ink-muted">{label}</dt>
@@ -124,11 +135,11 @@ function Detail({ job, now }: { job: ServiceJob; now: string }) {
           </div>
         ))}
       </dl>
-      {job.warning && <p className="text-failed-fg">{job.warning}</p>}
+      {job.warning && <p className="rounded bg-waiting-bg px-2 py-1 text-sm text-waiting-fg">{job.warning}</p>}
       <ChangeApplying change={job.change} />
       {!job.read_only && <ScheduleEditor job={job} />}
       <Actions job={job} />
-      <Runs job={job} />
+      <div className="space-y-1 text-sm"><Runs job={job} /></div>
     </section>
   )
 }
@@ -146,7 +157,7 @@ function Group({ title, jobs, selected, onSelect }: {
               type="button"
               aria-pressed={selected === j.id}
               onClick={() => onSelect(j.id)}
-              className={`w-full px-2 py-1 text-left ${selected === j.id ? 'font-semibold' : ''}`}
+              className={`w-full rounded px-2 py-1.5 text-left text-sm hover:bg-surface-raised ${selected === j.id ? 'bg-surface-raised font-semibold' : ''}`}
             >
               {j.name}
             </button>
@@ -169,7 +180,7 @@ export function ServicesPage() {
         <Group title="Managed" jobs={data.managed} selected={selected} onSelect={setSelected} />
         <Group title="Root jobs" jobs={data.read_only} selected={selected} onSelect={setSelected} />
       </div>
-      {job ? <Detail key={job.id} job={job} now={data.now} /> : <p className="text-ink-muted">Select a job.</p>}
+      {job ? <Detail key={job.id} job={job} now={data.now} /> : <p className="text-sm text-ink-muted">Select a job.</p>}
     </div>
   )
 }

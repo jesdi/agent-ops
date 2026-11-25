@@ -1,8 +1,11 @@
 import { useState } from 'react'
 import type { ServiceJob } from '../lib/api'
+import { FIELD, PRIMARY } from '../lib/controls'
 import { useServiceActions } from '../hooks/useServiceActions'
 
 type Kind = 'every' | 'daily' | 'calendar'
+
+const LABEL = 'flex flex-col gap-0.5 text-xs text-ink-muted'
 
 /** Schedule editor of a managed job: locked while a change applies; a refusal shows its message. */
 export function ScheduleEditor({ job }: { job: ServiceJob }) {
@@ -18,28 +21,38 @@ export function ScheduleEditor({ job }: { job: ServiceJob }) {
     schedule.mutate({ job: job.id, body })
   }
   return (
-    <form onSubmit={submit} aria-label="Schedule editor" className="space-y-1">
-      <label>Schedule type{' '}
-        <select value={kind} onChange={(e) => setKind(e.target.value as Kind)}>
-          <option value="every">Every N minutes</option>
-          <option value="daily">Daily at</option>
-          <option value="calendar">Custom</option>
-        </select>
-      </label>
-      {kind === 'every' && (
-        <label> Minutes <input value={every} onChange={(e) => setEvery(e.target.value)} /></label>
-      )}
-      {kind === 'daily' && (
-        <>
-          <label> Time <input value={time} onChange={(e) => setTime(e.target.value)} placeholder="HH:MM" /></label>
-          <label> Timezone <input value={tz} onChange={(e) => setTz(e.target.value)} /></label>
-        </>
-      )}
-      {kind === 'calendar' && (
-        <label> Expression <input value={calendar} onChange={(e) => setCalendar(e.target.value)} /></label>
-      )}
-      <button type="submit" disabled={job.change?.state === 'applying' || schedule.isPending}>Save schedule</button>
-      {schedule.error && <p className="text-failed-fg">{schedule.error.message}</p>}
+    <form onSubmit={submit} aria-label="Schedule editor" className="space-y-1.5 border-t border-border pt-3">
+      <div className="flex flex-wrap items-end gap-2">
+        <label className={LABEL}>Schedule type
+          <select className={`${FIELD} text-ink`} value={kind} onChange={(e) => setKind(e.target.value as Kind)}>
+            <option value="every">Every N minutes</option>
+            <option value="daily">Daily at</option>
+            <option value="calendar">Custom</option>
+          </select>
+        </label>
+        {kind === 'every' && (
+          <label className={LABEL}>Minutes
+            <input className={`${FIELD} w-24 text-ink`} inputMode="numeric" value={every} onChange={(e) => setEvery(e.target.value)} />
+          </label>
+        )}
+        {kind === 'daily' && (
+          <>
+            <label className={LABEL}>Time
+              <input className={`${FIELD} w-24 text-ink`} value={time} onChange={(e) => setTime(e.target.value)} placeholder="HH:MM" />
+            </label>
+            <label className={LABEL}>Timezone
+              <input className={`${FIELD} w-44 text-ink`} value={tz} onChange={(e) => setTz(e.target.value)} placeholder="Europe/Madrid" />
+            </label>
+          </>
+        )}
+        {kind === 'calendar' && (
+          <label className={`${LABEL} min-w-0 flex-1 basis-48`}>Expression
+            <input className={`${FIELD} font-mono text-ink`} value={calendar} onChange={(e) => setCalendar(e.target.value)} placeholder="Mon..Fri *-*-* 09:00" />
+          </label>
+        )}
+        <button type="submit" className={PRIMARY} disabled={job.change?.state === 'applying' || schedule.isPending}>Save schedule</button>
+      </div>
+      {schedule.error && <p className="text-sm text-failed-fg">{schedule.error.message}</p>}
     </form>
   )
 }
