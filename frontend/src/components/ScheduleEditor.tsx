@@ -7,16 +7,32 @@ type Kind = 'every' | 'daily' | 'calendar'
 
 const LABEL = 'flex flex-col gap-0.5 text-xs text-ink-muted'
 
+type Current = ServiceJob['current_schedule']
+
+/** The editor's fields on the job's current schedule; empty when it is not known. */
+function startValues(current: Current) {
+  const s = { every: null, daily: null, tz: null, calendar: null, ...current }
+  return {
+    kind: kindOf(s), every: s.every === null ? '' : String(s.every),
+    time: s.daily ?? '', tz: s.tz ?? '', calendar: s.calendar ?? '',
+  }
+}
+
+function kindOf(s: { daily?: string | null; calendar?: string | null }): Kind {
+  if (s.daily) return 'daily'
+  return s.calendar ? 'calendar' : 'every'
+}
+
 /** Schedule editor of a managed job, opened on its current schedule: locked while a change
  * applies, or when `locked` (no services config installed); a refusal shows its message. */
 export function ScheduleEditor({ job, locked }: { job: ServiceJob; locked: boolean }) {
   const { schedule } = useServiceActions()
-  const now = job.current_schedule
-  const [kind, setKind] = useState<Kind>(now?.daily ? 'daily' : now?.calendar ? 'calendar' : 'every')
-  const [every, setEvery] = useState(now?.every?.toString() ?? '')
-  const [time, setTime] = useState(now?.daily ?? '')
-  const [tz, setTz] = useState(now?.tz ?? '')
-  const [calendar, setCalendar] = useState(now?.calendar ?? '')
+  const start = startValues(job.current_schedule)
+  const [kind, setKind] = useState<Kind>(start.kind)
+  const [every, setEvery] = useState(start.every)
+  const [time, setTime] = useState(start.time)
+  const [tz, setTz] = useState(start.tz)
+  const [calendar, setCalendar] = useState(start.calendar)
   const body = { every: { every: Number(every) }, daily: { daily: time, tz }, calendar: { calendar } }[kind]
   const submit = (e: React.FormEvent) => {
     e.preventDefault()

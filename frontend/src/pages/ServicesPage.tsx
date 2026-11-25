@@ -121,11 +121,15 @@ function Actions({ job, locked }: { job: ServiceJob; locked: boolean }) {
   )
 }
 
+// A paused job run by hand stays paused: its run shows next to the state.
+function stateText(job: ServiceJob): string {
+  return job.state === 'paused' && job.running ? 'paused · running now' : job.state
+}
+
 // `locked`: no services config is installed, so Pause, Resume and a schedule cannot be recorded.
 function Detail({ job, now, locked }: { job: ServiceJob; now: string; locked: boolean }) {
   const rows: [string, string][] = [
-    // A paused job run by hand stays paused: its run shows next to the state.
-    ['State', job.state === 'paused' && job.running ? 'paused · running now' : job.state], ['Schedule', job.schedule],
+    ['State', stateText(job)], ['Schedule', job.schedule],
     ['Last run', lastRun(job, now)], ['Next run', nextRun(job, now)],
   ]
   // On a phone the detail sits under the list: bring it into view when a job is picked.
@@ -156,14 +160,19 @@ function Detail({ job, now, locked }: { job: ServiceJob; now: string; locked: bo
   )
 }
 
+function changeStatus(change: ServiceJob['change']): [string, string] | null {
+  if (change?.state === 'applying') return ['applying', 'text-ink-muted']
+  return change?.state === 'failed' ? ['change failed', 'text-failed-fg'] : null
+}
+
 /** Why a row sorts first, as [word, colour]: paused, a run in progress, a change, a drift warning. */
 function rowStatus(j: ServiceJob): [string, string][] {
   const parts: [string, string][] = []
   if (j.read_only) return parts
   if (j.state === 'paused') parts.push(['paused', 'text-ink-muted'])
   if (j.running) parts.push(['running', 'text-ink-muted'])
-  if (j.change?.state === 'applying') parts.push(['applying', 'text-ink-muted'])
-  if (j.change?.state === 'failed') parts.push(['change failed', 'text-failed-fg'])
+  const change = changeStatus(j.change)
+  if (change) parts.push(change)
   if (j.warning) parts.push(['drift', 'text-waiting-fg'])
   return parts
 }

@@ -86,9 +86,12 @@ def describe_schedule(calendar: str | None) -> str:
 
 def schedule_of(unit: dict) -> Schedule | None:
     """The schedule a managed job's timer fires on, in the services config's shape."""
-    calendar, seconds = unit["on_calendar"] or "", unit.get("interval_seconds")
-    if seconds:
+    if seconds := unit.get("interval_seconds"):
         return Schedule(every=seconds // 60) if seconds % 60 == 0 else None
+    return _calendar_schedule(unit["on_calendar"] or "")
+
+
+def _calendar_schedule(calendar: str) -> Schedule | None:
     if m := re.fullmatch(r"\*:0/(\d+)", calendar):
         return Schedule(every=int(m[1]))
     if m := re.fullmatch(r"\*-\*-\* (\d{1,2}):(\d\d)(?::00)?(?: ([A-Za-z0-9_+\-/]+))?", calendar):
@@ -129,12 +132,17 @@ def _recent(runs: list[dict]) -> list[RecentRun]:
 def _change(entry: dict | None) -> Change | None:
     """A failed recording of any change, or a schedule change applying. A pause or resume
     still being recorded is none: it holds on the box already (requirements 12, 17)."""
-    rec = (entry or {}).get("record") or {}
-    if not (rec.get("failed") or "schedule" in (entry or {})):
+    entry = entry or {}
+    rec = entry.get("record") or {}
+    if not (rec.get("failed") or "schedule" in entry):
         return None
+    return Change(state="failed" if rec.get("failed") else "applying", **_link(rec))
+
+
+def _link(rec: dict) -> dict:
+    """The pull request to link: the failed mark's, else the one the recorder opened."""
     link = rec["failed"] if isinstance(rec.get("failed"), dict) else rec
-    return Change(state="failed" if rec.get("failed") else "applying",
-                  pr=link.get("pr"), url=link.get("url"))
+    return {"pr": link.get("pr"), "url": link.get("url")}
 
 
 def _warning(unit: dict, key: str, changes: dict, installed: dict | None) -> str | None:
@@ -143,14 +151,22 @@ def _warning(unit: dict, key: str, changes: dict, installed: dict | None) -> str
     if installed is None:
         return None
     change, want = changes.get(key) or {}, installed.get(key) or {}
-    says = []
-    if "paused" not in change and _paused_differs(unit, want):
-        says.append("Active on the box but paused in the services config." if want.get("paused")
-                    else "Paused on the box but not in the services config.")
-    if "schedule" not in change and _timer_edited(unit, want):
-        says.append(f"The timer fires {_loaded_words(unit['triggers'])}; "
-                    f"the services config says {_words(want['schedule'])}.")
-    return " ".join(says) or None
+    says = [_paused_says(unit, change, want), _schedule_says(unit, change, want)]
+    return " ".join(filter(None, says)) or None
+
+
+def _paused_says(unit: dict, change: dict, want: dict) -> str | None:
+    if "paused" in change or not _paused_differs(unit, want):
+        return None
+    return ("Active on the box but paused in the services config." if want.get("paused")
+            else "Paused on the box but not in the services config.")
+
+
+def _schedule_says(unit: dict, change: dict, want: dict) -> str | None:
+    if "schedule" in change or not _timer_edited(unit, want):
+        return None
+    return (f"The timer fires {_loaded_words(unit['triggers'])}; "
+            f"the services config says {_words(want['schedule'])}.")
 
 
 def _paused_differs(unit: dict, want: dict) -> bool:
@@ -212,12 +228,18 @@ def _live(job: Job, unit: dict, mine: list[dict], changes: dict, installed: dict
     the installed config (the timer's Description until one is installed)."""
     key = job.id.removeprefix(USER_JOB_PREFIX)
     running = bool(mine) and mine[-1]["result"] is None
-    about = (installed or {}).get(key) or {}
     return job.model_copy(update={
-        "name": about.get("name") or job.name, "description": about.get("description") or job.description,
+        **_about(job, (installed or {}).get(key)),
         "recent_runs": _recent(mine), "change": _change(changes.get(key)),
         "warning": _warning(unit, key, changes, installed),
-        "running": running, "current_schedule": schedule_of(unit), "state": "running" if running and job.state == "active" else job.state})
+        "running": running, "current_schedule": schedule_of(unit),
+        "state": "running" if running and job.state == "active" else job.state})
+
+
+def _about(job: Job, entry: dict | None) -> dict:
+    """Name and description from the job's installed config entry, else the timer's."""
+    entry = entry or {}
+    return {"name": entry.get("name") or job.name, "description": entry.get("description") or job.description}
 
 
 def _managed(t: dict) -> bool:
