@@ -163,11 +163,25 @@ def _chat_doc(adir: Path, turn: dict) -> dict:
 
 
 def _submitted(adir: Path, q: str) -> dict:
-    """The attempt's side of a question once it is submitted: {"submitted": the answer}, and once
-    graded its "points" and, for a missed free-text one, its "feedback"; else {}."""
+    """The attempt's side of a question once it is submitted (answers.json is written only then):
+    {"submitted": the answer as text}, and once graded its "points" and, for a missed free-text
+    one, its "feedback"; {} before submit."""
     path = adir / "answers.json"
-    answer = json.loads(path.read_text()).get(q) if path.exists() else None
-    return {"submitted": answer, **_graded(adir, q)} if isinstance(answer, str) else {}
+    if not path.exists():
+        return {}
+    return {"submitted": _answer_text(adir, q, json.loads(path.read_text()).get(q)), **_graded(adir, q)}
+
+
+def _answer_text(adir: Path, q: str, answer) -> str:
+    """A submitted answer as `context` takes it, a string: a text answer as written, a choice
+    answer as its option, and a bypassed question's missing answer said so."""
+    if isinstance(answer, str):
+        return answer
+    if answer is None:
+        return "(no answer: the question was bypassed)"
+    exam = json.loads((adir / "exam.json").read_text())
+    options = next((x.get("options") or [] for x in exam["questions"] if x["id"] == q), [])
+    return f"option {answer}: {options[answer]}" if 0 <= answer < len(options) else f"option {answer}"
 
 
 def _graded(adir: Path, q: str) -> dict:

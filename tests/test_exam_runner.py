@@ -145,3 +145,37 @@ def test_pr_reads_the_fields_exam_work_needs():
     pr = _github(lambda argv, **kw: SimpleNamespace(stdout=json.dumps(doc))).pr("o/r", 7)
     assert pr == {"head_sha": "abc", "base_ref": "main", "title": "T", "body": None,
                   "state": "closed", "merged": True, "labels": ["exam:defer"]}
+
+
+def _chat_turn(tmp_path, answers, result=None):
+    """The turn.json `PrExam.context` hands the skill for a question message about each of q1, q2 and q3."""
+    adir = tmp_path / "attempts" / "1"
+    adir.mkdir(parents=True)
+    (adir / "exam.json").write_text(json.dumps({"questions": [
+        {"id": "q1", "type": "choice", "options": ["a", "b"]}, {"id": "q2", "type": "text"},
+        {"id": "q3", "type": "text"}]}))
+    (adir / "answers.json").write_text(json.dumps(answers))
+    if result:
+        (adir / "result.json").write_text(json.dumps(result))
+    seen = []
+
+    def run(argv, **kw):
+        seen.append(json.loads(Path(argv[argv.index("--turn") + 1]).read_text()))
+        return subprocess.CompletedProcess(argv, 0, "PROMPT", "")
+    for q in ("q1", "q2", "q3"):
+        exam_runner.PrExam(run=run).context(adir, {"kind": "question", "question": q, "message": "why?"})
+    return {t["question"]: t for t in seen}
+
+
+def test_a_chat_turn_gets_every_submitted_answer_as_text_with_its_points(tmp_path):
+    result = {"questions": [{"id": "q1", "points": 0}, {"id": "q2", "points": 0.5, "feedback": "FB"},
+                            {"id": "q3", "help": "bypassed"}]}
+    turns = _chat_turn(tmp_path, {"q1": 1, "q2": "the token is random"}, result)
+    assert (turns["q1"]["submitted"], turns["q1"]["points"]) == ("option 1: b", 0)
+    assert (turns["q2"]["submitted"], turns["q2"]["points"], turns["q2"]["feedback"]) == ("the token is random", 0.5, "FB")
+    assert turns["q3"]["submitted"] == "(no answer: the question was bypassed)" and "points" not in turns["q3"]
+
+
+def test_a_chat_turn_while_grading_gets_the_choice_answer_and_no_points(tmp_path):
+    turns = _chat_turn(tmp_path, {"q1": 0, "q2": "x"})
+    assert turns["q1"]["submitted"] == "option 0: a" and "points" not in turns["q1"]
