@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -169,7 +169,7 @@ describe('services page: the schedule editor', () => {
     serve(job('agent-ops-dispatcher', 'Dispatcher pass', { change: { state: 'failed', pr: 12, url: PR_URL } }))
     await open('Dispatcher pass')
 
-    expect(await screen.findByText(/change failed/i)).toBeInTheDocument()
+    expect(await within(await screen.findByRole('region', { name: 'Job detail' })).findByText(/change failed/i)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /#12/ })).toHaveAttribute('href', PR_URL)
     expect(screen.getByRole('button', { name: /^retry$/i })).toBeInTheDocument()
     expect(screen.getByText('every 5 min')).toBeInTheDocument()

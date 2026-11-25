@@ -156,6 +156,18 @@ function Detail({ job, now, locked }: { job: ServiceJob; now: string; locked: bo
   )
 }
 
+/** Why a row sorts first, as [word, colour]: paused, a run in progress, a change, a drift warning. */
+function rowStatus(j: ServiceJob): [string, string][] {
+  const parts: [string, string][] = []
+  if (j.read_only) return parts
+  if (j.state === 'paused') parts.push(['paused', 'text-ink-muted'])
+  if (j.running) parts.push(['running', 'text-ink-muted'])
+  if (j.change?.state === 'applying') parts.push(['applying', 'text-ink-muted'])
+  if (j.change?.state === 'failed') parts.push(['change failed', 'text-failed-fg'])
+  if (j.warning) parts.push(['drift', 'text-waiting-fg'])
+  return parts
+}
+
 function Group({ title, jobs, selected, onSelect }: {
   title: string; jobs: ServiceJob[]; selected: string | null; onSelect: (id: string) => void
 }) {
@@ -169,9 +181,14 @@ function Group({ title, jobs, selected, onSelect }: {
               type="button"
               aria-pressed={selected === j.id}
               onClick={() => onSelect(j.id)}
-              className={`w-full rounded px-2 py-1.5 text-left text-sm hover:bg-surface-raised ${selected === j.id ? 'bg-surface-raised font-semibold' : ''}`}
+              className={`flex w-full items-baseline justify-between gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-surface-raised ${selected === j.id ? 'bg-surface-raised font-semibold' : ''}`}
             >
-              {j.name}
+              <span className="min-w-0 truncate">{j.name}</span>
+              <span className="shrink-0 text-xs font-normal">
+                {rowStatus(j).map(([word, tone], i) => (
+                  <span key={word}>{i > 0 && <span className="text-ink-muted"> · </span>}<span className={tone}>{word}</span></span>
+                ))}
+              </span>
             </button>
           </li>
         ))}

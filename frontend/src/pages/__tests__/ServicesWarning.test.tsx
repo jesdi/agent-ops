@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react'
+import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
@@ -30,7 +30,7 @@ describe('services page: a job that differs from the config', () => {
     await userEvent.click(await screen.findByText('Stale worktree sweep'))
 
     expect(await screen.findByText(WARNING)).toBeInTheDocument()
-    expect(screen.getAllByText('paused').length).toBeGreaterThan(0)
+    expect(within(await screen.findByRole('region', { name: 'Job detail' })).getByText('paused')).toBeInTheDocument()
   })
 
   it('shows no warning once a paused job that is not flagged is selected', async () => {

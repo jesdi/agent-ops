@@ -58,7 +58,7 @@ describe('services page actions: run now and stop run', () => {
 
     await userEvent.click(await screen.findByRole('button', { name: /run now/i }))
 
-    expect(await screen.findByText('running')).toBeInTheDocument()
+    expect(await within(await screen.findByRole('region', { name: 'Job detail' })).findByText('running')).toBeInTheDocument()
   })
 
   it('Stop run on a running job posts to its stop endpoint with no confirmation', async () => {

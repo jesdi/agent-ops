@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { Route, Routes } from 'react-router'
@@ -54,7 +54,7 @@ describe('services page', () => {
     renderWithProviders(<ServicesPage />)
     await userEvent.click(await screen.findByText('Dispatcher pass'))
 
-    expect(await screen.findByText('active')).toBeInTheDocument()
+    expect(within(await screen.findByRole('region', { name: 'Job detail' })).getByText('active')).toBeInTheDocument()
     expect(screen.getByText('every 5 min')).toBeInTheDocument()
     expect(screen.getByText('10:08 · 27 s')).toBeInTheDocument()
     expect(screen.getByText('in 1 min')).toBeInTheDocument()
@@ -65,7 +65,7 @@ describe('services page', () => {
     renderWithProviders(<ServicesPage />)
     await userEvent.click(await screen.findByText('Backlog triage'))
 
-    expect(await screen.findByText('paused')).toBeInTheDocument()
+    expect(within(await screen.findByRole('region', { name: 'Job detail' })).getByText('paused')).toBeInTheDocument()
     expect(screen.getByText('never ran')).toBeInTheDocument()
     expect(screen.getByText('—')).toBeInTheDocument()
   })
@@ -78,7 +78,8 @@ describe('services page', () => {
     expect(await screen.findByText(/read-only/i)).toBeInTheDocument()
     expect(screen.getByText('00:00, 12:00 UTC')).toBeInTheDocument()
     expect(screen.getByText('00:00 · 3 s')).toBeInTheDocument()
-    await waitFor(() => expect(screen.queryAllByRole('button', { name: BUTTONS })).toHaveLength(0))
+    const detail = screen.getByRole('region', { name: 'Job detail' })
+    await waitFor(() => expect(within(detail).queryAllByRole('button', { name: BUTTONS })).toHaveLength(0))
     expect(screen.queryByRole('textbox')).toBeNull()
     expect(screen.queryByRole('spinbutton')).toBeNull()
   })
@@ -147,5 +148,38 @@ describe('services page detail: runs', () => {
     await userEvent.click(await screen.findByText('Subject job'))
 
     expect(await screen.findByText(/no runs (are )?scheduled/i)).toBeInTheDocument()
+  })
+})
+
+describe('services page list: each row says why it sorts first', () => {
+  const rows = [
+    job('agent-ops-sweep', 'Stale worktree sweep', { state: 'paused', warning: 'Paused on the box but not in the services config.' }),
+    job('agent-ops-update', 'Deploy sync', { state: 'running', running: true }),
+    job('agent-ops-onboard', 'Onboarding pass', { change: { state: 'applying', pr: 12, url: null } }),
+    job('agent-ops-keepalive', 'Claude login keepalive', { change: { state: 'failed', pr: null, url: null } }),
+    job('agent-ops-triage', 'Backlog triage', { state: 'paused', running: true }),
+    job('agent-ops-digest', 'Daily digest', { state: 'paused' }),
+    job('agent-ops-dispatcher', 'Dispatcher pass'),
+  ]
+
+  it.each([
+    ['Stale worktree sweep', 'paused · drift'],
+    ['Deploy sync', 'running'],
+    ['Onboarding pass', 'applying'],
+    ['Claude login keepalive', 'change failed'],
+    ['Backlog triage', 'paused · running'],
+    ['Daily digest', 'paused'],
+    ['Dispatcher pass', ''],
+  ])('%s is labelled "%s"', async (name, label) => {
+    server.use(
+      http.get('/api/services', () => HttpResponse.json({
+        now: '2026-11-24T10:12:00+00:00', config_installed: true, managed: rows, read_only: [refresh],
+      })),
+      http.get('/api/exams', () => HttpResponse.json({ exams: [] })),
+    )
+    renderWithProviders(<ServicesPage />)
+
+    const row = (await screen.findByText(name)).closest('button')
+    expect(row).toHaveTextContent(new RegExp(`^${name}${label}$`))
   })
 })

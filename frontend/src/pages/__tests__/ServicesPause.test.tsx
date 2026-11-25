@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -48,7 +48,7 @@ describe('services page: pause and resume', () => {
 
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining('The Claude login expires if this stays paused.'))
     await waitFor(() => expect(posts).toEqual(['agent-ops-keepalive/pause']))
-    expect(await screen.findByText('paused')).toBeInTheDocument()
+    expect(await within(await screen.findByRole('region', { name: 'Job detail' })).findByText('paused')).toBeInTheDocument()
   })
 
   it.each([
@@ -86,7 +86,7 @@ describe('services page: pause and resume', () => {
 
     await waitFor(() => expect(posts).toEqual(['agent-ops-worktree-sweep/pause']))
     expect(confirm).not.toHaveBeenCalled()
-    expect(await screen.findByText('paused')).toBeInTheDocument()
+    expect(await within(await screen.findByRole('region', { name: 'Job detail' })).findByText('paused')).toBeInTheDocument()
   })
 
   it('Resume on a paused job posts to its resume endpoint and shows it active', async () => {

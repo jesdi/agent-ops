@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
@@ -44,7 +44,7 @@ describe('services page: a change that failed to record', () => {
     serve(job({ change: { state: 'failed', pr: 12, url: PR_URL } }))
     await open()
 
-    expect(await screen.findByText(/change failed/i)).toBeInTheDocument()
+    expect(await within(await screen.findByRole('region', { name: 'Job detail' })).findByText(/change failed/i)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /#12|pull request/i })).toHaveAttribute('href', PR_URL)
     expect(screen.getByRole('button', { name: /^retry$/i })).toBeInTheDocument()
   })
@@ -53,7 +53,7 @@ describe('services page: a change that failed to record', () => {
     serve(job({ change: { state: 'failed', pr: null, url: null } }))
     await open()
 
-    expect(await screen.findByText(/change failed/i)).toBeInTheDocument()
+    expect(await within(await screen.findByRole('region', { name: 'Job detail' })).findByText(/change failed/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /^retry$/i })).toBeInTheDocument()
     expect(screen.queryByRole('link', { name: /#\d+|pull request/i })).not.toBeInTheDocument()
   })
