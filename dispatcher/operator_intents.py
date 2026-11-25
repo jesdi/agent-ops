@@ -221,19 +221,14 @@ def _held(cfg: Config, intent: intents.Intent) -> bool:
     """An answers submission the pass leaves pending (answers.held). A task
     file that does not load holds nothing: the drain fails the intent."""
     try:
-        return intent.action == "answers" and answers.held(_task_for_intent(cfg, intent), intent)
+        return answers.held(intent, lambda i: _task_for_intent(cfg, i))
     except Exception:
         return False
 
 
-def _submission(intent: intents.Intent) -> dict | None:
-    """What the drop event of an answers submission records; None for a
-    draft or another action."""
-    submit = intent.payload.get("submit")
-    if intent.action != "answers" or submit not in answers.SUBMITS:
-        return None
-    return {"submit": submit, "revision": intent.payload.get("revision"),
-            "created_at": intent.created_at}
+def _drop_record(intent: intents.Intent) -> dict | None:
+    submission = answers.Submission.of(intent)
+    return submission.to_event() if submission else None
 
 
 def _apply_intents(cfg: Config, deps: Deps) -> None:
@@ -265,7 +260,7 @@ def _drain_one(cfg: Config, deps: Deps, by_name: dict, intent: intents.Intent) -
                               repository=_intent_repository(cfg, intent),
                               issue=intent.issue, model=dropped.model,
                               actor=intent.actor, detail=str(dropped),
-                              submission=_submission(intent))
+                              submission=_drop_record(intent))
     except Exception as exc:
         print(f"[warn] intent {intent.path.name} failed: {exc}",
               file=sys.stderr)

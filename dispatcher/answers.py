@@ -12,8 +12,9 @@ import json
 import os
 import stat
 import sys
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable, Iterable, TypedDict
+from typing import Callable, Iterable, Literal, TypedDict, get_args
 
 from dispatcher import intents
 from dispatcher.state import TaskState, operator_request, read_regular
@@ -24,12 +25,54 @@ from dispatcher.workspace import remove_worktree_file, write_worktree_file
 ANSWERS_FILES = {"plan-approval": ("review-answers.json", "plan"),
                  "answers": ("questionnaire-answers.json", "spec")}
 # A submission, and the message that wakes the session with it.
-SUBMITS = ("changes", "approve")
+Submit = Literal["changes", "approve"]
+SUBMITS: tuple[Submit, ...] = get_args(Submit)
 WAKE = {"changes": "Apply them as feedback.", "approve": "Approved."}
 # The id of a question block (`data-q`) and of its answer key.
 QUESTION_ID = r"[a-z0-9_-]{1,64}"
 # Twice the console's 64 KiB body cap, plus room for the envelope.
 ANSWERS_FILE_MAX_BYTES = 256 * 1024
+
+
+# Why an answers intent is dropped (request_reason, drop_reason), besides an
+# unknown submit, which no submission has.
+DropReason = Literal["no open request", "stale revision", "already submitted",
+                     "session busy"]
+
+
+@dataclass(frozen=True)
+class Submission:
+    """An answers intent that submits (not a draft): what its drop event
+    records, and what the console reads back as a delivery."""
+    submit: Submit
+    revision: str | None
+    created_at: str
+
+    @classmethod
+    def of(cls, intent: intents.Intent) -> Submission | None:
+        """The intent's submission; None for a draft or another action."""
+        p = intent.payload if isinstance(intent.payload, dict) else {}
+        submit, revision = p.get("submit"), p.get("revision")
+        if (intent.action != "answers" or submit not in SUBMITS
+                or not isinstance(revision, (str, type(None)))):
+            return None
+        return cls(submit, revision, str(intent.created_at))
+
+    def to_event(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_event(cls, raw: object) -> Submission | None:
+        """The submission of an event line; None when the line holds none
+        or a hand-edited one of the wrong shape."""
+        if not isinstance(raw, dict):
+            return None
+        submit, revision, created_at = (raw.get("submit"), raw.get("revision"),
+                                        raw.get("created_at"))
+        if (submit not in SUBMITS or not isinstance(revision, (str, type(None)))
+                or not isinstance(created_at, str)):
+            return None
+        return cls(submit, revision, created_at)
 
 
 class AnswersDoc(TypedDict, total=False):
@@ -120,11 +163,14 @@ def waits_for_operator(task: TaskState) -> bool:
 _LIVE = frozenset({Kind.RUNNING, Kind.WAKING, Kind.HELD_LOGIN})
 
 
-def held(task: TaskState | None, intent: intents.Intent) -> bool:
+def held(intent: intents.Intent,
+         task_for: Callable[[intents.Intent], TaskState | None]) -> bool:
     """A submission made while the session is live: it stays pending until
     the task waits for the operator again, then drains as any other."""
-    return (task is not None and task.status.kind in _LIVE
-            and intent.payload.get("submit") in SUBMITS)
+    if Submission.of(intent) is None:
+        return False
+    task = task_for(intent)
+    return task is not None and task.status.kind in _LIVE
 
 
 def disk_revision(task: TaskState | None) -> str:
