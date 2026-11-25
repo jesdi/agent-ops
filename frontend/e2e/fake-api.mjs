@@ -72,7 +72,7 @@ const replyTo = (body) => (body.message?.includes('long diff') ? LONG_DIFF : REP
 const seedExam = () => ({
   state: 'open', bypassed: null, general: [], attempts: [], turns: 0, hold: false, held: [], waiting: [],
   questions: [
-    { id: 'q1', type: 'choice', prompt: 'Which SHA does the lease compare?', options: ['the head SHA', 'the base SHA'], tips: 0, assisted: false, thread: [] },
+    { id: 'q1', type: 'choice', prompt: 'Which SHA does the lease compare? Say whether it is the head SHA or the base SHA.', options: ['the head SHA', 'the base SHA'], tips: 0, assisted: false, thread: [] },
     { id: 'q2', type: 'text', prompt: 'Why is the base SHA rechecked before merging?', tips: 0, assisted: false, thread: [] },
   ],
 })
@@ -114,7 +114,9 @@ function examTurn(body) {
   if (body.kind === 'general') e.general.push(turn)
   else if (q) {
     q.thread.push(turn)
-    if (body.kind === 'tip') { q.tips += 1; q.assisted = true }
+    // A tip or a thread reply marks the question assisted (spec requirement 6).
+    if (body.kind === 'tip') q.tips += 1
+    q.assisted = true
   }
   return turn
 }

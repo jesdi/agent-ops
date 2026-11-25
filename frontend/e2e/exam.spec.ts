@@ -3,7 +3,7 @@ import { expect, test, type Page } from '@playwright/test'
 // The whole exam page against the fake API (pr-exam-host-assist requirement 12).
 // Interface under test (defined here, built into e2e/fake-api.mjs by the ticket):
 //   after POST /__control__/reset the fake serves, at /api/exam/jesdi/general-skills/240, an open attempt 1 with
-//   q1 (choice "Which SHA does the lease compare?", options "the head SHA" / "the base SHA", answer: the base SHA)
+//   q1 (choice "Which SHA does the lease compare? Say whether it is the head SHA or the base SHA.", options "the head SHA" / "the base SHA", answer: the base SHA)
 //   and q2 (text "Why is the base SHA rechecked before merging?");
 //   POST .../turns {kind:'tip'|'question'|'general', ...} starts a turn and its stream answers
 //   a tip with "Look at what the lease stores.", a question with "Because main may have moved.",
