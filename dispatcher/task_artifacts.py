@@ -26,6 +26,8 @@ ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,79}\Z")
 # The artifact each answers kind is captured as.
 ANSWERS_ARTIFACTS = {"plan-approval": ("review-answers", "Review answers"),
                      "answers": ("questionnaire-answers", "Questionnaire answers")}
+# The page a text answer of each kind is captured on when no request of its kind is open.
+DEFAULT_PAGES = {"plan-approval": ".agent/review.html", "answers": ".agent/questionnaire.html"}
 
 
 @dataclass(frozen=True)
@@ -150,7 +152,9 @@ def _manifest(task: TaskState) -> list[Registration]:
         entries = [Registration.parse(entry) for entry in raw]
         if len({entry.id for entry in entries}) != len(entries):
             raise ValueError("duplicate artifact IDs")
-        return entries
+        # The answers ids belong to the capture, never to a session's copy.
+        reserved = {artifact_id for artifact_id, _ in ANSWERS_ARTIFACTS.values()}
+        return [entry for entry in entries if entry.id not in reserved]
     except (OSError, ValueError, KeyError, TypeError) as exc:
         log.warning("Invalid artifact manifest for %s/%s: %s", task.repository, task.issue, exc)
         return []
@@ -230,6 +234,15 @@ class Collector:
             except (OSError, ValueError) as exc:
                 log.warning("Cannot collect artifact %s/%s/%s: %s", self.task.repository, self.task.issue, entry.id, exc)
         index.items = list(items.values())
+        for kind, (artifact_id, _) in ANSWERS_ARTIFACTS.items():
+            before = index.items
+            try:
+                page = _capture(index, self.task, kind, self.now)
+                if page is not None:
+                    _copy_content(self.root / "content" / artifact_id, page)
+            except (OSError, ValueError) as exc:
+                index.items = before
+                log.warning("Cannot capture artifact %s/%s/%s: %s", self.task.repository, self.task.issue, artifact_id, exc)
 
 
 def _copy_content(dest: Path, content: bytes) -> None:
@@ -272,13 +285,16 @@ def _capture(index: ArtifactIndex, task: TaskState, kind: str, now: datetime) ->
     items = {item.id: item for item in index.items}
     if artifact_id in items and items[artifact_id].digest == digest:
         return None
-    page = state.read_regular(Path(task.worktree) / operator_request(task).path, REVIEW_PAGE_MAX_BYTES)
+    request = operator_request(task)
+    page_path = request.path if getattr(request, "kind", None) == kind else DEFAULT_PAGES[kind]
+    page = state.read_regular(Path(task.worktree) / page_path, REVIEW_PAGE_MAX_BYTES)
     if page is None:
         raise OSError("request page is not a readable regular file")
+    rendered = answered_page.render(page.decode(), doc.get("answers")).encode()
     items[artifact_id] = StoredArtifact(artifact_id, artifact_name, path, "text/html", digest,
                                         task.stage.value, now.isoformat())
     index.items = list(items.values())
-    return answered_page.render(page.decode(), doc.get("answers")).encode()
+    return rendered
 
 
 def capture_answers(state_dir, task: TaskState, now: datetime | None = None) -> None:
