@@ -358,16 +358,25 @@ def _grading_request(job: Path, doc, sha: str, diff: str, key: dict, answers: di
 
 
 def _grades(out: Path, texts: list) -> tuple[dict | None, str]:
-    """The grading session's grades of `texts`; (None, error) unless every one is well formed."""
+    """The grading session's grades of `texts`, normalized to {id: {"grade", "feedback"}}
+    with the feedback a capped line or ""; (None, error) unless every grade is well formed.
+    The session's file is untrusted: nothing else of it goes further."""
     if out.is_symlink() or not out.is_file():
         return None, "the grading session wrote no regular grades file"
     try:
-        grades = json.loads(out.read_text())
-        if all(grades[q["id"]]["grade"] in ("pass", "partial", "fail") for q in texts):
+        raw = json.loads(out.read_text())
+        grades = {q["id"]: {"grade": raw[q["id"]]["grade"], "feedback": _line(raw[q["id"]].get("feedback"))}
+                  for q in texts}
+        if all(g["grade"] in ("pass", "partial", "fail") for g in grades.values()):
             return grades, ""
     except (ValueError, KeyError, TypeError):
         pass
     return None, "the grading session's grades are malformed"
+
+
+def _line(feedback) -> str:
+    """The grader's feedback on one question, capped; "" when it is not text."""
+    return feedback[:1000] if isinstance(feedback, str) else ""
 
 
 def _grade(cfg, doc, sha, diff: str, model, io) -> tuple[dict | None, str]:
@@ -394,16 +403,10 @@ def _score(d: Path, grades: dict, pr_exam) -> tuple[dict | None, str]:
     except (ValueError, KeyError, subprocess.SubprocessError, OSError) as exc:
         return None, f"scoring failed: {exc}"
     for q in scored["questions"]:   # the grader's line rides along with each free-text question
-        if feedback := _feedback(grades.get(q["id"])):
-            q["feedback"] = feedback
+        if q["id"] in grades:
+            q["feedback"] = grades[q["id"]]["feedback"]
     (d / "result.json").write_text(json.dumps(scored))
     return scored, ""
-
-
-def _feedback(grade) -> str:
-    """The grader's feedback on one question, capped; "" when it gave none as text."""
-    feedback = grade.get("feedback") if isinstance(grade, dict) else None
-    return feedback[:1000] if isinstance(feedback, str) else ""
 
 
 def _result(doc, scored: dict) -> dict:

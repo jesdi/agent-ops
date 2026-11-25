@@ -112,7 +112,16 @@ def test_grades_must_be_a_regular_file_with_a_grade_for_every_text_question(tmp_
         out.write_text(bad)
         assert exams._grades(out, texts) == (None, "the grading session's grades are malformed")
     out.write_text('{"q1": {"grade": "partial"}}')
-    assert exams._grades(out, texts) == ({"q1": {"grade": "partial"}}, "")
+    assert exams._grades(out, texts) == ({"q1": {"grade": "partial", "feedback": ""}}, "")
+
+
+def test_grades_keep_only_the_text_questions_and_a_capped_feedback_line(tmp_path):
+    out = tmp_path / "grades.json"
+    out.write_text(json.dumps({"q1": {"grade": "pass", "feedback": ["not", "a line"], "extra": 1},
+                               "q2": {"grade": "fail", "feedback": "y" * 5000},
+                               "q3": {"grade": "pass", "feedback": "not a text question"}}))
+    assert exams._grades(out, [{"id": "q1"}, {"id": "q2"}]) == (
+        {"q1": {"grade": "pass", "feedback": ""}, "q2": {"grade": "fail", "feedback": "y" * 1000}}, "")
 
 
 def test_label_events_reads_every_page_and_keeps_only_label_changes():

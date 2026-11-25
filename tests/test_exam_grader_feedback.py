@@ -4,7 +4,17 @@ Interface under test (defined here, built by the ticket), on top of test_exam_gr
     GET .../ `results[].questions[]` of a missed or partial free-text question also carries
     "feedback": the grader's one line for it. A choice question and a passed question carry none.
 """
-from tests.test_exam_grading import FAIL_SPEC, answers_for, box_for, graded_once, opened, result_of
+import json
+from pathlib import Path
+
+import pytest
+
+from dispatcher import exam_runner
+from tests.test_exam_generation import REPO
+from tests.test_exam_grading import (
+    FAIL_SPEC, Exam, Scoring, Session, answers_for, box_for, graded_once, opened, result_of, submit,
+)
+from tests.test_exam_jobs import SCRIPT
 
 
 def graded(tmp_path, monkeypatch):
@@ -27,3 +37,40 @@ def test_a_choice_question_and_a_passed_question_carry_no_feedback(tmp_path, mon
     assert questions["q0"]["points"] == 0 and questions["t0"]["points"] == 1
     assert not questions["q0"].get("feedback")
     assert not questions["t0"].get("feedback")
+
+
+class Malformed(Session):
+    """A grading session whose feedback is a list on t0 and far too long on t1."""
+    def __call__(self, request, *, model, timeout):
+        super().__call__(request, model=model, timeout=timeout)
+        req = json.loads(Path(request).read_text())
+        if req["mode"] == "grade":
+            Path(req["out"]).write_text(json.dumps({
+                "t0": {"grade": "partial", "feedback": ["not", "a line"]},
+                "t1": {"grade": "partial", "feedback": "y" * 5000}}))
+
+
+class Installed(Scoring):
+    """The pinned pr_exam.py scores, as it does on the box: it copies the grades file's feedback."""
+    def score(self, exam, answers, grades):
+        return exam_runner.PrExam(SCRIPT).score(exam, answers, grades)
+
+
+@pytest.mark.skipif(not SCRIPT.is_file(), reason="the pinned pr-exam skill is not installed")
+def test_malformed_feedback_never_reaches_the_result_through_the_installed_scorer(tmp_path, monkeypatch):
+    box = Exam(tmp_path, monkeypatch, session=Malformed(FAIL_SPEC))
+    box.pr_exam = Installed()
+    first = opened(box)
+    response = submit(box, first)
+    assert response.status_code == 202
+    box.work()
+    response = box.read()
+    assert response.status_code == 200
+    questions = {q["id"]: q for q in result_of(response.json(), 1)["questions"]}
+    assert not questions["t0"].get("feedback")
+    assert questions["t1"]["feedback"] == "y" * 1000
+    attempt = Path(box.cfg.state_dir) / "exams" / REPO / "240" / "attempts" / "1"
+    assert json.loads((attempt / "grades.json").read_text()) == {
+        "t0": {"grade": "partial", "feedback": ""}, "t1": {"grade": "partial", "feedback": "y" * 1000}}
+    result = {q["id"]: q for q in json.loads((attempt / "result.json").read_text())["questions"]}
+    assert (result["t0"]["feedback"], result["t1"]["feedback"]) == ("", "y" * 1000)
