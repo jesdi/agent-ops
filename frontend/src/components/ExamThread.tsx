@@ -81,7 +81,7 @@ function useDraft(quote: Quote | null, onQuote: () => void) {
 
 function Turn({ turn, onRetry }: { turn: Pick<ExamTurn, 'kind' | 'message' | 'text'> & { error: string | null }; onRetry?: () => void }) {
   return (
-    <div className="space-y-1 rounded border border-border p-2 text-sm">
+    <div className="space-y-1 rounded border border-border p-2 text-sm wrap-anywhere">
       {turn.kind !== 'tip' && <p className="text-ink-muted">{turn.message}</p>}
       {turn.text && <p className="whitespace-pre-wrap">{turn.text}</p>}
       {turn.error && (
@@ -129,7 +129,7 @@ export function GeneralChat({ target, thread, earlier }: { target: ChatTarget; t
       </button>
       {open && (
         <aside data-chat aria-label="General chat"
-          className="fixed inset-x-0 bottom-0 z-20 max-h-[70vh] space-y-2 overflow-y-auto border-t border-border bg-surface p-4 shadow md:inset-y-0 md:left-auto md:max-h-none md:w-96 md:border-l md:border-t-0">
+          className="fixed inset-x-0 bottom-0 z-20 max-h-[70vh] space-y-2 overflow-y-auto border-t border-border bg-surface-raised p-4 shadow md:inset-y-0 md:left-auto md:max-h-none md:w-96 md:border-l md:border-t-0">
           <div className="flex items-center justify-between">
             <h2 className="font-medium">General chat</h2>
             <button type="button" onClick={() => setOpen(false)} className="rounded border px-2 py-1 text-sm">Close</button>

@@ -1,16 +1,18 @@
 import { expect, test } from '@playwright/test'
 
 // The general chat on a narrow screen (pr-exam-host-assist requirement 12): a bottom sheet, and no
-// horizontal scroll. The exam view is routed here; the fake backend has no exam.
+// horizontal scroll. The exam view is routed here. A reply quoting a long diff hunk has no break opportunity.
 const SHA = 'a'.repeat(40)
-const question = (id: string, prompt: string) => ({ id, type: 'text', prompt, tips: 0, assisted: false, thread: [] })
+const HUNK = '+' + 'leaseCompareHeadShaAgainstBaseShaBeforeMerging'.repeat(8)
+const reply = (id: string, kind: string, text: string) => ({ id, kind, message: 'show the long diff', text, status: 'done', error: null })
+const question = (id: string, prompt: string) => ({ id, type: 'text', prompt, tips: 0, assisted: true, thread: [reply(`${id}t`, 'question', HUNK)] })
 const view = {
   repo: 'jesdi/general-skills', pr: 240, state: 'open', head_sha: SHA, debt: false, detail: 'attempt 1, 2 questions',
   attempt: 1, bypassed: null, attempts: [],
   exam: {
     version: 1, repo: 'jesdi/general-skills', pr: 240, head_sha: SHA,
     questions: [question('q1', 'Why does the lease compare the head SHA?'), question('q2', 'Why is the base SHA rechecked before merging?')],
-    general: [{ id: 'g1', kind: 'general', message: 'what is the riskiest change?', text: 'The lease expiry.', status: 'done', error: null }],
+    general: [{ id: 'g1', kind: 'general', message: 'what is the riskiest change?', text: 'The lease expiry.', status: 'done', error: null }, reply('g2', 'general', HUNK)],
   },
 }
 
@@ -28,6 +30,8 @@ test('the general chat is a bottom sheet at 390 px with no horizontal scroll', a
   expect(box.y + box.height).toBe(844)
   expect(box.height).toBeLessThan(844)
   expect(await page.evaluate<number>('document.documentElement.scrollWidth')).toBeLessThanOrEqual(390)
+  // nor does the sheet scroll sideways inside itself
+  expect(await sheet.evaluate((el) => el.scrollWidth - el.clientWidth)).toBe(0)
 })
 
 test('the general chat is a drawer on the right on a desktop', async ({ page, isMobile }) => {

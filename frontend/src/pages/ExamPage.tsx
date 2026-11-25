@@ -278,7 +278,6 @@ function Chat({ data }: { data: ExamView }) {
 
 /** The quote of the operator's last selection: inside a question or its result it is for that question's thread, elsewhere on
  *  the page for the general chat. A selection inside a text box or the general chat quotes nothing. */
-/** The quote of the page's selection, or null when it is empty or inside a text box or the general chat. */
 function selectedQuote(attempt: number): Quote | null {
   const selection = document.getSelection()
   const text = selection?.toString().trim()
@@ -312,7 +311,7 @@ function ExamBody({ data, answer }: ViewProps) {
   const quote = useSelectionQuote(chattingAttempt(data))
   return (
     <QuoteContext.Provider value={quote}>
-      <main className="mx-auto max-w-2xl space-y-4 p-4 pb-20">
+      <main className="mx-auto w-full max-w-2xl space-y-4 p-4 pb-20">
         <h1 className="text-lg font-semibold">Exam for {data.repo} #{data.pr}</h1>
         <Notices debt={data.debt} answer={answer} />
         {View && <View data={data} answer={answer} />}
