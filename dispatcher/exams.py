@@ -140,9 +140,9 @@ def _submitted(doc: dict) -> list[tuple[int, dict | None]]:
 def _attempt(state_dir, doc: dict, n: int) -> dict:
     """Attempt `n`'s served questions with their chat, its general chat and what it takes now."""
     adir = attempt_dir(state_dir, doc["repo"], doc["pr"], n)
-    served, turns, tips = public(state_dir, doc["repo"], doc["pr"], n), exam_threads.turns(adir), _taking(doc, n)
-    return {**served, "chat": _chatting(adir, doc, n), "bypass": tips, "general": exam_threads.general_view(turns),
-            "questions": [{**q, **exam_threads.question_view(q["id"], turns, tips)} for q in served["questions"]]}
+    served, turns, open_ = public(state_dir, doc["repo"], doc["pr"], n), exam_threads.turns(adir), _taking(doc, n)
+    return {**served, "chat": _chatting(adir, doc, n), "general": exam_threads.general_view(turns),
+            "questions": [{**q, **exam_threads.question_view(q["id"], turns, open_)} for q in served["questions"]]}
 
 
 def _taking(doc: dict, n: int) -> bool:
@@ -152,10 +152,9 @@ def _taking(doc: dict, n: int) -> bool:
 
 def _chatting(adir: Path, doc: dict, n: int) -> bool:
     """Attempt `n` takes question and general turns: it is one of this head's attempts (open,
-    grading or graded) while the exam is in a state that chats. A turn is built from the
-    attempt's exam, so one whose exam was not kept takes none."""
+    grading or graded) while the exam is in a state that chats."""
     kept = [m for m, _ in _submitted(doc)] + ([doc["attempt"]] if _taking(doc, doc["attempt"]) else [])
-    return doc["state"] in CHATTING and n in kept and (adir / "exam.json").is_file()
+    return doc["state"] in CHATTING and n in kept and not exam_migration.lost(adir)
 
 
 def app(state_dir: str | Path) -> dict | None:
@@ -789,7 +788,42 @@ def prepare_turn(state_dir, repo: str, pr: int, ask: Ask) -> Prompt:
     with state_lock(state_dir, LOCK):
         adir = _admit(state_dir, _load(state_dir, repo, pr), ask)
         d = _dir(state_dir, repo, pr)
-        return Prompt(adir / "exam.json", d / "diff.patch", d / "body.md", exam_threads.document(adir, ask))
+        answered = {} if ask.question is None else _answered(adir, ask.question)
+        return Prompt(adir / "exam.json", d / "diff.patch", d / "body.md", exam_threads.document(adir, ask, answered))
+
+
+def _answered(adir: Path, question: str) -> dict:
+    """The attempt's side of `question` once submitted (answers.json is written only then): the
+    answer as text, and once graded its points and the grader's feedback; {} before submit."""
+    answers = adir / "answers.json"
+    if not answers.exists():
+        return {}
+    answer = json.loads(answers.read_text()).get(question)
+    return {"submitted": _answer_text(adir, question, answer), **_scored(adir, question)}
+
+
+def _answer_text(adir: Path, question: str, answer) -> str:
+    """A text answer as written, a choice answer as its option, a bypassed question's missing
+    answer said so."""
+    if isinstance(answer, str):
+        return answer
+    if answer is None:
+        return "(no answer: the question was bypassed)"
+    options = _options(adir, question)
+    return f"option {answer}: {options[answer]}" if 0 <= answer < len(options) else f"option {answer}"
+
+
+def _options(adir: Path, question: str) -> list[str]:
+    exam = json.loads((adir / "exam.json").read_text())
+    return next(q.get("options") or [] for q in exam["questions"] if q["id"] == question)
+
+
+def _scored(adir: Path, question: str) -> dict:
+    """The points and the grader's feedback of `question` once graded; {} before."""
+    result = adir / "result.json"
+    got = next((r for r in json.loads(result.read_text())["questions"] if r["id"] == question), {}) \
+        if result.exists() else {}
+    return {k: got[k] for k in ("points", "feedback") if got.get(k) not in (None, "")}
 
 
 def start_turn(state_dir, repo: str, pr: int, ask: Ask) -> str:
@@ -798,16 +832,15 @@ def start_turn(state_dir, repo: str, pr: int, ask: Ask) -> str:
         return exam_threads.reserve(_admit(state_dir, _load(state_dir, repo, pr), ask), ask)
 
 
-def end_turn(state_dir, repo: str, pr: int, attempt: int, turn_id: str, text: str, error: str) -> str:
-    """Store a turn's reply, "done" or "failed" by `error`; "exam changed" when its attempt is
-    gone (the head moved or the exam was deleted) and the reply is dropped. A turn that ends
-    once its attempt is no longer open is `after_submit`: it marks nothing."""
+def end_turn(state_dir, repo: str, pr: int, attempt: int, turn_id: str, text: str, error: str | None) -> bool:
+    """Store a turn's reply, "done", or "failed" with `error`; False when the reply is dropped:
+    its attempt is gone (the head moved or the exam was deleted), or the turn no longer runs
+    (a console restart failed it). A turn that ends once its attempt is no longer open is
+    `after_submit`: it marks nothing."""
     with state_lock(state_dir, LOCK):
         doc = _load(state_dir, repo, pr)
         adir = attempt_dir(state_dir, repo, pr, attempt)
-        if doc is None or not exam_threads.end(adir, turn_id, text, error, not _taking(doc, attempt)):
-            return "exam changed"
-        return ""
+        return doc is not None and exam_threads.end(adir, turn_id, text, error, not _taking(doc, attempt))
 
 
 def fail_running_turns(state_dir) -> None:

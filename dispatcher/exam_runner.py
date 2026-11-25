@@ -85,7 +85,9 @@ class Github:
         return {"slug": info["slug"], "id": info["id"]}
 
 
-TOO_LONG = "-character limit"   # how `pr_exam.py context` refuses a prompt over its limit
+# `pr_exam.py context` exits 1 for every refusal; only its stderr tells a prompt over its limit,
+# as "prompt is N characters, over the PROMPT_LIMIT-character limit" (pr_exam.py `context`).
+TOO_LONG = "-character limit"
 
 
 class PromptTooLong(ValueError):

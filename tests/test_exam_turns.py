@@ -441,6 +441,29 @@ def test_a_reply_that_cannot_be_stored_ends_its_stream_failed_and_frees_its_thre
     assert (after["tips"], [t["status"] for t in after["thread"]]) == (1, ["failed", "done"])
 
 
+def test_a_reply_that_ends_after_a_startup_failed_its_turn_is_dropped_and_counts_nothing(box):
+    body = opened(box)
+    box.hold()
+
+    async def go():
+        async with box.aclient() as c:
+            r = await box.ask(c, body, "tip", "q5", "late")
+            assert r.status_code == 202, r.text
+            _, q, _, wait = await box.stream(r.json()["id"])
+            await first_delta(q)
+            async with started(box.make_app()):   # a console starting fails every running turn
+                pass
+            box.release()
+            final = (await follow(q))[1]
+            await wait()
+            return final, question(await box.view(c), "q5")
+
+    final, q5 = asyncio.run(go())
+    assert final["status"] == "failed" and "dropped" in final["error"]
+    assert (q5["tips"], q5["tips_left"], q5["assisted"]) == (0, 3, False)
+    assert [(t["status"], t["error"], t["text"]) for t in q5["thread"]] == [("failed", "console restarted", "")]
+
+
 def test_a_console_restart_fails_the_running_tip_and_frees_its_slot(box):
     body = opened(box)
 

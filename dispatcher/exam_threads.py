@@ -1,9 +1,10 @@
 """An attempt's chat: `attempts/<n>/threads.json` is {"turns": [Turn, ...]}, oldest first.
 
 A turn is a tip, a message in a question's thread, or a message in the general chat. This
-module reads and writes the file and builds the document `pr_exam.py context` takes for a
-turn. It knows nothing of the exam's state: `exams` decides, under the exams lock, which
-attempt may take which turn, and holds that lock around every call here that writes."""
+module reads and writes that file, and only that file, and builds the document
+`pr_exam.py context` takes for a turn from it and from what `exams` hands it of the attempt.
+It knows nothing of the exam's state: `exams` decides, under the exams lock, which attempt may
+take which turn, and holds that lock around every call here that writes."""
 from __future__ import annotations
 
 import json
@@ -11,7 +12,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, TypedDict
+from typing import ClassVar, Literal, TypedDict
 
 from dispatcher.state import write_json_atomic
 
@@ -35,13 +36,26 @@ class Turn(TypedDict):
 
 
 @dataclass(frozen=True)
-class Ask:
-    """A turn as the operator asks for it, on attempt `attempt` of the exam on `head_sha`."""
+class QuestionAsk:
+    """A tip on `question`, or a message in its thread, on attempt `attempt` of the exam on `head_sha`."""
     attempt: int
     head_sha: str
-    kind: Kind
-    question: str | None   # None exactly for a general turn
+    kind: Literal["tip", "question"]
+    question: str
+    message: str   # the draft of a tip, else the operator's message
+
+
+@dataclass(frozen=True)
+class GeneralAsk:
+    """A message in the general chat of attempt `attempt` of the exam on `head_sha`."""
+    attempt: int
+    head_sha: str
     message: str
+    kind: Literal["general"] = "general"
+    question: ClassVar[None] = None   # the general chat is the thread of no question
+
+
+Ask = QuestionAsk | GeneralAsk
 
 
 @dataclass(frozen=True)
@@ -117,14 +131,15 @@ def reserve(adir: Path, ask: Ask) -> str:
     return turn["id"]
 
 
-def end(adir: Path, turn_id: str, text: str, error: str, after_submit: bool) -> bool:
-    """Store the reply of a running turn, "done", or "failed" with `error`; False when the
-    attempt has no such turn."""
+def end(adir: Path, turn_id: str, text: str, error: str | None, after_submit: bool) -> bool:
+    """Store the reply of a running turn, "done", or "failed" with `error`; False, changing
+    nothing, when the attempt has no such turn still running (startup failed it, or the attempt
+    is gone)."""
     all_turns = turns(adir)
-    turn = next((t for t in all_turns if t["id"] == turn_id), None)
+    turn = next((t for t in all_turns if t["id"] == turn_id and t["status"] == "running"), None)
     if turn is None:
         return False
-    turn.update(status="failed" if error else "done", text=text, error=error or None, after_submit=after_submit)
+    turn.update(status="failed" if error else "done", text=text, error=error, after_submit=after_submit)
     _save(adir, all_turns)
     return True
 
@@ -139,54 +154,20 @@ def fail_running(adir: Path) -> None:
         _save(adir, all_turns)
 
 
-def document(adir: Path, ask: Ask) -> dict:
+def document(adir: Path, ask: Ask, answered: dict) -> dict:
     """The turn document `pr_exam.py context` takes for `ask` on the attempt at `adir`, with the
-    finished turns of its thread."""
+    finished turns of its thread. `answered` is the attempt's side of a question turn's
+    question, as `exams` read it: its submitted answer, points and feedback ({} before submit)."""
     done = [t for t in _of(turns(adir), ask.question) if t["status"] == "done"]
-    return _tip_document(ask, done) if ask.kind == "tip" else _chat_document(adir, ask, done)
+    return _tip_document(ask, done) if ask.kind == "tip" else _chat_document(ask, done, answered)
 
 
-def _tip_document(ask: Ask, done: list[Turn]) -> dict:
+def _tip_document(ask: QuestionAsk, done: list[Turn]) -> dict:
     tips = [t["text"] for t in done if t["kind"] == "tip"]
     return {"kind": "tip", "question": ask.question, "draft": ask.message, "tip": 1 + len(tips), "tips": tips}
 
 
-def _chat_document(adir: Path, ask: Ask, done: list[Turn]) -> dict:
-    doc = {"kind": ask.kind, "message": ask.message,
-           "thread": [{"role": r, "text": t[k]} for t in done for r, k in (("user", "message"), ("assistant", "text"))]}
-    if ask.question is not None:
-        doc.update(question=ask.question, **_answered(adir, ask.question))
-    return doc
-
-
-def _answered(adir: Path, question: str) -> dict:
-    """The attempt's side of `question` once submitted (answers.json is written only then): the
-    answer as text, and once graded its points and the grader's feedback; {} before submit."""
-    answers = adir / "answers.json"
-    if not answers.exists():
-        return {}
-    answer = json.loads(answers.read_text()).get(question)
-    return {"submitted": _answer_text(adir, question, answer), **_scored(adir, question)}
-
-
-def _answer_text(adir: Path, question: str, answer) -> str:
-    """A text answer as written, a choice answer as its option, a bypassed question's missing
-    answer said so."""
-    if isinstance(answer, str):
-        return answer
-    if answer is None:
-        return "(no answer: the question was bypassed)"
-    options = _options(adir, question)
-    return f"option {answer}: {options[answer]}" if 0 <= answer < len(options) else f"option {answer}"
-
-
-def _options(adir: Path, question: str) -> list[str]:
-    exam = json.loads((adir / "exam.json").read_text())
-    return next(q.get("options") or [] for q in exam["questions"] if q["id"] == question)
-
-
-def _scored(adir: Path, question: str) -> dict:
-    result = adir / "result.json"
-    got = next((r for r in json.loads(result.read_text())["questions"] if r["id"] == question), {}) \
-        if result.exists() else {}
-    return {k: got[k] for k in ("points", "feedback") if got.get(k) not in (None, "")}
+def _chat_document(ask: Ask, done: list[Turn], answered: dict) -> dict:
+    thread = [{"role": r, "text": t[k]} for t in done for r, k in (("user", "message"), ("assistant", "text"))]
+    target = {} if ask.question is None else {"question": ask.question, **answered}
+    return {"kind": ask.kind, "message": ask.message, "thread": thread, **target}

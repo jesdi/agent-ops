@@ -200,8 +200,8 @@ class Sources:
         except (ValueError, OSError, subprocess.SubprocessError) as exc:
             raise exams.Refused(exams.Refusal.UNAVAILABLE, f"the chat prompt could not be built: {exc}") from None
 
-    def end_turn(self, repo: str, pr: int, attempt: int, turn_id: str, text: str, error: str) -> str:
-        """Store a turn's reply; "" or why it was dropped (exams.end_turn)."""
+    def end_turn(self, repo: str, pr: int, attempt: int, turn_id: str, text: str, error: str | None) -> bool:
+        """Store a turn's reply; False when it was dropped (exams.end_turn)."""
         return exams.end_turn(self.state_dir, repo, pr, attempt, turn_id, text, error)
 
     def exams(self) -> list[dict]:

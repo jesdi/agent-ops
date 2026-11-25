@@ -18,7 +18,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from dispatcher.config import Config
-from dispatcher.exam_threads import Ask
+from dispatcher.exam_threads import GeneralAsk, QuestionAsk
 from web.auth import Operator, current_operator
 from web.exams import Owner, Pr
 from web.sources import StartedTurn
@@ -39,11 +39,17 @@ class QuestionTurn(_Turn):
     kind: Literal["tip", "question"]
     question: str
 
+    def ask(self) -> QuestionAsk:
+        return QuestionAsk(self.attempt, self.head_sha, self.kind, self.question, self.message)
+
 
 class GeneralTurn(_Turn):
     """A message in the attempt's general chat."""
     kind: Literal["general"]
     question: None = None
+
+    def ask(self) -> GeneralAsk:
+        return GeneralAsk(self.attempt, self.head_sha, self.message)
 
 
 TurnBody = Annotated[QuestionTurn | GeneralTurn, Field(discriminator="kind")]
@@ -62,9 +68,9 @@ def _event(doc: dict) -> str:
     return "data: " + json.dumps(doc) + "\n\n"
 
 
-async def _converse(live: Live, turn: StartedTurn) -> str:
+async def _converse(live: Live, turn: StartedTurn) -> str | None:
     """Run the model command with the prompt on stdin, feeding every text chunk to `live`;
-    "" when it exited 0 with a reply, else why it did not."""
+    None when it exited 0 with a reply, else why it did not."""
     proc = await asyncio.create_subprocess_exec(*turn.argv, stdin=asyncio.subprocess.PIPE,
                                                 stdout=asyncio.subprocess.PIPE,
                                                 stderr=asyncio.subprocess.PIPE, limit=1 << 22)
@@ -77,7 +83,7 @@ async def _converse(live: Live, turn: StartedTurn) -> str:
             if chunk := _chunk(line, turn.text_of):
                 live.chunks.append(chunk)
         stopped = _stopped(await proc.wait(), await errors)
-        return stopped or ("" if "".join(live.chunks).strip() else "the model sent no reply")
+        return stopped or (None if "".join(live.chunks).strip() else "the model sent no reply")
     finally:
         errors.cancel()
         if proc.returncode is None:
@@ -92,14 +98,24 @@ def _chunk(line: bytes, text_of: Callable[[dict], str]) -> str:
         return ""
 
 
-def _stopped(code: int, stderr: bytes) -> str:
-    """"" for exit 0, else the exit code and the last line of stderr."""
+def _stopped(code: int, stderr: bytes) -> str | None:
+    """None for exit 0, else the exit code and the last line of stderr."""
     tail = stderr.decode(errors="replace").strip().splitlines()[-1:]
-    return f"the model stopped: exit {code}" + (f": {tail[0]}" if tail else "") if code else ""
+    return f"the model stopped: exit {code}" + (f": {tail[0]}" if tail else "") if code else None
 
 
-async def _reply(live: Live, turn: StartedTurn) -> str:
-    """The turn's model run; "" or why it failed. Never raises."""
+DROPPED = "the exam changed: the reply was dropped"
+
+
+def _final(error: str | None, stored: bool) -> dict:
+    """How a turn's stream ends: a dropped reply, a model failure, or done."""
+    if not stored:
+        return {"status": "failed", "error": DROPPED}
+    return {"status": "failed", "error": error} if error else {"status": "done"}
+
+
+async def _reply(live: Live, turn: StartedTurn) -> str | None:
+    """The turn's model run; None, or why it failed. Never raises."""
     try:
         async with asyncio.timeout(turn.timeout):
             return await _converse(live, turn)
@@ -119,9 +135,9 @@ def router(sources, cfg: Callable[[], Config], now: Callable[[], datetime]) -> A
         final = {"status": "failed", "error": "the turn stopped"}
         try:
             error = await _reply(live, turn)
-            error = await asyncio.to_thread(sources.end_turn, live.repo, live.pr, attempt, turn.id,
-                                            "".join(live.chunks), error) or error
-            final = {"status": "failed", "error": error} if error else {"status": "done"}
+            stored = await asyncio.to_thread(sources.end_turn, live.repo, live.pr, attempt, turn.id,
+                                             "".join(live.chunks), error)
+            final = _final(error, stored)
         except Exception as exc:   # the reply could not be stored: fail the turn, best effort
             final = {"status": "failed", "error": f"the reply could not be stored: {exc}"}
             with contextlib.suppress(Exception):
@@ -132,7 +148,7 @@ def router(sources, cfg: Callable[[], Config], now: Callable[[], datetime]) -> A
     @routes.post("/api/exam/{owner}/{name}/{pr}/turns", status_code=202)
     async def start(body: TurnBody, owner: Owner, name: Owner, pr: Pr, op: Operator = Depends(current_operator)):
         repo = f"{owner}/{name}"
-        turn = await asyncio.to_thread(sources.start_turn, cfg(), now(), repo, pr, Ask(**body.model_dump()))
+        turn = await asyncio.to_thread(sources.start_turn, cfg(), now(), repo, pr, body.ask())
         live = lives[turn.id] = Live(repo, pr)
         while len(lives) > KEPT:
             del lives[next(iter(lives))]

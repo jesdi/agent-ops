@@ -83,12 +83,11 @@ class AttemptChat(BaseModel):
 
 
 class ExamQuestions(AttemptChat):
-    """The open attempt, as the skill's projection serves it; `bypass` while it takes one."""
+    """The open attempt, as the skill's projection serves it."""
     version: int
     repo: str
     pr: int
     head_sha: str
-    bypass: bool
 
 
 class ExamQuestionResult(BaseModel):
