@@ -41,6 +41,7 @@ describe('services page: no services config installed', () => {
     expect(await screen.findByText(/services config is not installed on the box yet/i)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /^pause$/i })).toBeDisabled()
     expect(screen.getByRole('button', { name: /save schedule/i })).toBeDisabled()
+    expect(screen.getByRole('combobox', { name: /schedule type/i })).toBeDisabled()
     await userEvent.click(screen.getByRole('button', { name: /^run now$/i }))
     await waitFor(() => expect(posts).toEqual(['agent-ops-digest/run']))
   })

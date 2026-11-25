@@ -24,7 +24,7 @@ export function ScheduleEditor({ job, locked }: { job: ServiceJob; locked: boole
   }
   return (
     <form onSubmit={submit} aria-label="Schedule editor" className="space-y-1.5 border-t border-border pt-3">
-      <div className="flex flex-wrap items-end gap-2">
+      <fieldset disabled={locked} className="flex flex-wrap items-end gap-2">
         <label className={LABEL}>Schedule type
           <select className={`${FIELD} text-ink`} value={kind} onChange={(e) => setKind(e.target.value as Kind)}>
             <option value="every">Every N minutes</option>
@@ -52,8 +52,8 @@ export function ScheduleEditor({ job, locked }: { job: ServiceJob; locked: boole
             <input className={`${FIELD} font-mono text-ink`} value={calendar} onChange={(e) => setCalendar(e.target.value)} placeholder="Mon..Fri *-*-* 09:00" />
           </label>
         )}
-        <button type="submit" className={PRIMARY} disabled={locked || job.change?.state === 'applying' || schedule.isPending}>Save schedule</button>
-      </div>
+        <button type="submit" className={PRIMARY} disabled={job.change?.state === 'applying' || schedule.isPending}>Save schedule</button>
+      </fieldset>
       {schedule.error && <p className="text-sm text-failed-fg">{schedule.error.message}</p>}
     </form>
   )

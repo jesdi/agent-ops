@@ -183,7 +183,7 @@ function Group({ title, jobs, selected, onSelect }: {
               onClick={() => onSelect(j.id)}
               className={`flex w-full items-baseline justify-between gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-surface-raised ${selected === j.id ? 'bg-surface-raised font-semibold' : ''}`}
             >
-              <span className="min-w-0 truncate">{j.name}</span>
+              <span className="min-w-0 break-words">{j.name}</span>
               <span className="shrink-0 text-xs font-normal">
                 {rowStatus(j).map(([word, tone], i) => (
                   <span key={word}>{i > 0 && <span className="text-ink-muted"> · </span>}<span className={tone}>{word}</span></span>
