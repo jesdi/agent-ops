@@ -2,7 +2,7 @@
 and the managed group ordered by need of a look. Black-box: `GET /api/services` through TestClient.
 
 Interface defined here (the ticket leaves it open): every managed job of the response carries
-`warning`: null, or a message mentioning "config" when the box differs from the installed
+`warning`: null, or a message saying how the box differs from the installed
 services config (`<state_dir>/services.yaml`) and no console change (an entry of
 `<state_dir>/services-changes.yaml`) is behind it. Job ids are `agent-ops-<config key>`."""
 import yaml
@@ -36,7 +36,16 @@ def test_a_timer_switched_off_by_hand_shows_paused_with_a_warning_that_the_box_d
     j = job(client, SWEEP)
 
     assert j["state"] == "paused"
-    assert j["warning"] and "config" in j["warning"]
+    assert j["warning"] == "Paused on the box but not in the services config."
+
+
+def test_a_timer_switched_on_by_hand_says_the_config_has_it_paused(tmp_path):
+    cfg = base_config()
+    cfg["triage"]["paused"] = True
+    _, client = box(tmp_path, [user_timer("agent-ops-triage")])
+    (tmp_path / "services.yaml").write_text(yaml.safe_dump(cfg))
+
+    assert warning_of(client, TRIAGE) == "Active on the box but paused in the services config."
 
 
 def test_a_pause_still_being_recorded_shows_paused_with_no_warning(tmp_path):

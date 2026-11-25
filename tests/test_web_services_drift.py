@@ -48,11 +48,13 @@ def test_a_timer_firing_on_the_configured_interval_has_no_warning(tmp_path):
 
 
 def test_a_loaded_interval_other_than_the_config_has_a_warning(tmp_path):
-    assert "config" in warning(tmp_path, loaded(SWEEP, every_seconds=600))
+    assert warning(tmp_path, loaded(SWEEP, every_seconds=600)) == (
+        "The timer fires every 10 min; the services config says every 5 min.")
 
 
 def test_a_loaded_calendar_on_an_interval_job_has_a_warning(tmp_path):
-    assert "config" in warning(tmp_path, loaded(SWEEP, ["*-*-* 06:00:00 UTC"], every_seconds=300))
+    assert warning(tmp_path, loaded(SWEEP, ["*-*-* 06:00:00 UTC"], every_seconds=300)) == (
+        "The timer fires daily at 06:00 UTC and every 5 min; the services config says every 5 min.")
 
 
 def test_a_calendar_spelled_another_way_for_the_same_schedule_has_no_warning(tmp_path, monkeypatch):
@@ -62,17 +64,20 @@ def test_a_calendar_spelled_another_way_for_the_same_schedule_has_no_warning(tmp
 
 def test_a_loaded_calendar_firing_at_another_time_has_a_warning(tmp_path, monkeypatch):
     analyze(monkeypatch)
-    assert "config" in warning(tmp_path, loaded(DIGEST, ["*-*-* 06:00:00 UTC"]))
+    assert warning(tmp_path, loaded(DIGEST, ["*-*-* 06:00:00 UTC"])) == (
+        "The timer fires daily at 06:00 UTC; the services config says daily at 08:00 UTC.")
 
 
 def test_a_loaded_calendar_agreeing_on_the_next_runs_but_not_the_schedule_has_a_warning(tmp_path, monkeypatch):
     """Daily vs weekdays at 08:00 share their next three runs before Monday 08:00."""
     analyze(monkeypatch)
-    assert "config" in warning(tmp_path, loaded(DIGEST, ["Mon..Fri *-*-* 08:00:00 UTC"]))
+    assert warning(tmp_path, loaded(DIGEST, ["Mon..Fri *-*-* 08:00:00 UTC"])) == (
+        "The timer fires on Mon..Fri *-*-* 08:00:00 UTC; the services config says daily at 08:00 UTC.")
 
 
 def test_a_drop_in_adding_a_second_calendar_has_a_warning(tmp_path):
-    assert "config" in warning(tmp_path, loaded(DIGEST, ["*-*-* 08:00:00 UTC", "*-*-* 20:00:00 UTC"]))
+    assert warning(tmp_path, loaded(DIGEST, ["*-*-* 08:00:00 UTC", "*-*-* 20:00:00 UTC"])) == (
+        "The timer fires daily at 08:00 UTC and daily at 20:00 UTC; the services config says daily at 08:00 UTC.")
 
 
 def test_a_probe_reporting_no_triggers_tells_nothing(tmp_path):
@@ -84,3 +89,9 @@ def test_a_probe_reporting_no_triggers_tells_nothing(tmp_path):
 def test_a_console_schedule_change_still_applying_has_no_warning(tmp_path):
     t = loaded(SWEEP, every_seconds=600)
     assert warning(tmp_path, t, changes={"sweep": {"schedule": {"every": 10}}}) is None
+
+
+def test_a_timer_switched_off_by_hand_on_another_schedule_says_both(tmp_path):
+    assert warning(tmp_path, loaded(SWEEP, every_seconds=600, active_state="inactive")) == (
+        "Paused on the box but not in the services config. "
+        "The timer fires every 10 min; the services config says every 5 min.")

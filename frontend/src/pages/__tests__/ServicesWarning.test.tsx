@@ -6,8 +6,8 @@ import { renderWithProviders } from '../../test/render'
 import { server } from '../../test/msw-server'
 import { ServicesPage } from '../ServicesPage'
 
-// A job's `warning` is the message the API gives when the box differs from the services config.
-const WARNING = 'The box differs from the services config.'
+// A job's `warning` says how the box differs from the services config.
+const WARNING = 'Paused on the box but not in the services config.'
 
 const job = (id: string, name: string, warning: string | null) => ({
   id, name, description: `${name} does its work`, state: 'paused', schedule: 'daily at 03:00 UTC',

@@ -137,21 +137,20 @@ def _change(entry: dict | None) -> Change | None:
                   pr=link.get("pr"), url=link.get("url"))
 
 
-DIFFERS = "The box differs from the services config."
-
-
 def _warning(unit: dict, key: str, changes: dict, installed: dict | None) -> str | None:
-    """The box differs from the installed config with no console change behind it: its
+    """How the box differs from the installed config with no console change behind it: its
     paused state, or the schedule its loaded timer fires on."""
     if installed is None:
         return None
-    return DIFFERS if _differs(unit, key, changes.get(key) or {}, installed.get(key) or {}) else None
-
-
-def _differs(unit: dict, key: str, change: dict, want: dict) -> bool:
+    change, want = changes.get(key) or {}, installed.get(key) or {}
+    says = []
     if "paused" not in change and _paused_differs(unit, want):
-        return True
-    return "schedule" not in change and _timer_edited(unit, want)
+        says.append("Active on the box but paused in the services config." if want.get("paused")
+                    else "Paused on the box but not in the services config.")
+    if "schedule" not in change and _timer_edited(unit, want):
+        says.append(f"The timer fires {_loaded_words(unit['triggers'])}; "
+                    f"the services config says {_words(want['schedule'])}.")
+    return " ".join(says) or None
 
 
 def _paused_differs(unit: dict, want: dict) -> bool:
@@ -168,6 +167,20 @@ def _timer_edited(unit: dict, want: dict) -> bool:
         return bool(loaded["calendar"]) or loaded["every_seconds"] != sched["every"] * 60
     return loaded["every_seconds"] is not None or not _same_calendar(
         loaded["calendar"], services_config.calendar(sched))
+
+
+def _words(sched: dict) -> str:
+    """A config schedule as the page words it."""
+    return f"every {sched['every']} min" if "every" in sched else describe_schedule(services_config.calendar(sched))
+
+
+def _loaded_words(loaded: dict) -> str:
+    """What a loaded timer fires on: each OnCalendar, then its interval."""
+    parts = [describe_schedule(c) for c in loaded["calendar"]]
+    if seconds := loaded["every_seconds"]:
+        parts.append(f"every {seconds // 60} min" if seconds % 60 == 0 else f"every {seconds} s")
+    text = " and ".join(parts)
+    return text if text.startswith(("every ", "daily ")) else f"on {text}"
 
 
 def _same_calendar(loaded: list[str], want: str) -> bool:
