@@ -34,6 +34,20 @@ def _update(root: Path, job: str, edit) -> None:
     write_atomic(file, yaml.safe_dump(changes))
 
 
+def failed(entry: dict) -> bool:
+    """Whether the recorder marked the entry's recording failed."""
+    return bool((entry.get("record") or {}).get("failed"))
+
+
+def _kept_record(entry: dict) -> dict:
+    """The entry's record without its failed mark: a new change clears it."""
+    return {k: v for k, v in (entry.get("record") or {}).items() if k != "failed"}
+
+
+def _with_record(entry: dict, rec: dict) -> dict:
+    return {**entry, "record": rec} if rec else entry
+
+
 def set_paused(state_dir: str, job: str, paused: bool, apply) -> None:
     """Run `apply()` (the systemctl call), then record `paused` for `job`, all under
     one lock. An entry equal to the installed config is dropped, unless the recorder
@@ -42,16 +56,14 @@ def set_paused(state_dir: str, job: str, paused: bool, apply) -> None:
     root = Path(state_dir)
     with state_lock(state_dir, "services-changes.lock", None):
         apply()
-        installed = (root / "services.yaml")
-        base = (yaml.safe_load(installed.read_text()) or {}) if installed.exists() else {}
-        same = paused == bool((base.get(job) or {}).get("paused", False))
+        same = paused == bool((_read(root / "services.yaml").get(job) or {}).get("paused", False))
 
         def edit(entry: dict) -> dict:
-            rec = {k: v for k, v in (entry.get("record") or {}).items() if k != "failed"}
+            rec = _kept_record(entry)
             keep = {k: v for k, v in entry.items() if k == "schedule"}
             if same and not rec:
                 return keep
-            return {**keep, "paused": paused, **({"record": rec} if rec else {})}
+            return _with_record({**keep, "paused": paused}, rec)
         _update(root, job, edit)
 
 
@@ -64,9 +76,8 @@ def set_schedule(state_dir: str, job: str, schedule: dict) -> None:
     change is not yet installed (a second save is refused, never merged); a failed one is replaced."""
     with state_lock(state_dir, "services-changes.lock", None):
         def edit(entry: dict) -> dict:
-            rec = {k: v for k, v in (entry.get("record") or {}).items() if k != "failed"}
-            if entry and not (entry.get("record") or {}).get("failed"):
+            if entry and not failed(entry):
                 raise Applying()
-            return {**{k: v for k, v in entry.items() if k != "record"}, "schedule": schedule,
-                    **({"record": rec} if rec else {})}
+            return _with_record({**{k: v for k, v in entry.items() if k != "record"}, "schedule": schedule},
+                                _kept_record(entry))
         _update(Path(state_dir), job, edit)

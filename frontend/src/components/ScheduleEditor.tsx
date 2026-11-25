@@ -12,8 +12,7 @@ export function ScheduleEditor({ job }: { job: ServiceJob }) {
   const [time, setTime] = useState('')
   const [tz, setTz] = useState('')
   const [calendar, setCalendar] = useState('')
-  const body = kind === 'every' ? { every: Number(every) }
-    : kind === 'daily' ? { daily: time, tz } : { calendar }
+  const body = { every: { every: Number(every) }, daily: { daily: time, tz }, calendar: { calendar } }[kind]
   const submit = (e: React.FormEvent) => {
     e.preventDefault()
     schedule.mutate({ job: job.id, body })
