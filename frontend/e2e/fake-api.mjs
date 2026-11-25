@@ -66,8 +66,11 @@ const queued = () => state.board.columns.find((c) => c.key === 'queued')
 const EXAM = '/api/exam/jesdi/general-skills/240'
 const SHA = 'a'.repeat(40)
 const REPLIES = { tip: 'Look at what the lease stores.', question: 'Because main may have moved.', general: 'The lease expiry.' }
+// A message that asks for the long diff gets an unbroken diff hunk, which overflows a narrow screen unless wrapped.
+const LONG_DIFF = '+' + 'leaseCompareHeadShaAgainstBaseShaBeforeMerging'.repeat(8)
+const replyTo = (body) => (body.message?.includes('long diff') ? LONG_DIFF : REPLIES[body.kind])
 const seedExam = () => ({
-  state: 'open', bypassed: null, general: [], attempts: [], turns: 0,
+  state: 'open', bypassed: null, general: [], attempts: [], turns: 0, hold: false, held: [], waiting: [],
   questions: [
     { id: 'q1', type: 'choice', prompt: 'Which SHA does the lease compare?', options: ['the head SHA', 'the base SHA'], tips: 0, assisted: false, thread: [] },
     { id: 'q2', type: 'text', prompt: 'Why is the base SHA rechecked before merging?', tips: 0, assisted: false, thread: [] },
@@ -103,7 +106,10 @@ function submitExam() {
 
 function examTurn(body) {
   const e = state.exam
-  const turn = { id: `t${++e.turns}`, kind: body.kind, message: body.message ?? '', text: REPLIES[body.kind], status: 'done', error: null }
+  // Held (POST /__control__/hold-turns): the turn is running with no stored reply until /__control__/release-turns.
+  const held = !!e.hold
+  const turn = { id: `t${++e.turns}`, kind: body.kind, message: body.message ?? '', text: held ? '' : replyTo(body), full: replyTo(body), status: held ? 'running' : 'done', error: null }
+  if (held) e.held.push(turn)
   const q = e.questions.find((x) => x.id === body.question)
   if (body.kind === 'general') e.general.push(turn)
   else if (q) {
@@ -414,6 +420,15 @@ const server = createServer(async (req, res) => {
     if (streamMatch && req.method === 'GET') {
       const turn = [...state.exam.general, ...state.exam.questions.flatMap((q) => q.thread)].find((t) => t.id === streamMatch[1])
       res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' })
+      if (turn && state.exam.held.includes(turn)) {
+        const full = turn.full
+        res.write(`data: ${JSON.stringify({ delta: full.slice(0, 9) })}\n\n`)
+        state.exam.waiting.push(() => {
+          turn.text = full; turn.status = 'done'
+          res.end(`data: ${JSON.stringify({ delta: full.slice(9) })}\n\ndata: ${JSON.stringify({ status: 'done' })}\n\n`)
+        })
+        return
+      }
       res.end(`data: ${JSON.stringify({ delta: turn?.text ?? '' })}\n\ndata: ${JSON.stringify({ status: 'done' })}\n\n`)
       return
     }
@@ -438,6 +453,15 @@ const server = createServer(async (req, res) => {
   if (url.pathname === '/__control__/reset' && req.method === 'POST') {
     Object.assign(state, seedState())
     push(['board', 'usage'])
+    return json(200, { ok: true })
+  }
+  if (url.pathname === '/__control__/hold-turns' && req.method === 'POST') {
+    state.exam.hold = true
+    return json(200, { ok: true })
+  }
+  if (url.pathname === '/__control__/release-turns' && req.method === 'POST') {
+    state.exam.hold = false
+    state.exam.waiting.splice(0).forEach((finish) => finish())
     return json(200, { ok: true })
   }
   if (url.pathname === '/__control__/seed-pinned' && req.method === 'POST') {

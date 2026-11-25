@@ -51,12 +51,34 @@ test('a tip and a question thread stream their replies into the question', async
   await expect(q2.getByText('Because main may have moved.')).toBeVisible()
 })
 
-test('a general chat message streams a reply in the chat', async ({ page }) => {
+test('a general chat message streams a reply in the chat', async ({ page, request }) => {
+  await request.post('/__control__/hold-turns')
   await page.goto(PAGE)
   await page.getByRole('button', { name: 'Chat', exact: true }).click()
   await drawer(page).getByRole('textbox', { name: /message/i }).fill('what is the riskiest change?')
   await drawer(page).getByRole('button', { name: /^send$/i }).click()
+  // The turn is held: its stored reply is empty, so only the streamed delta can put text in the chat.
+  await expect(drawer(page).getByText('The lease', { exact: true })).toBeVisible()
+  await expect(drawer(page).getByText('The lease expiry.')).toHaveCount(0)
+  await request.post('/__control__/release-turns')
   await expect(drawer(page).getByText('The lease expiry.')).toBeVisible()
+})
+
+test('the general chat is a bottom sheet at 390 px with no horizontal scroll, even with a long diff reply', async ({ page, request, isMobile }) => {
+  test.skip(!isMobile, 'the phone project covers the narrow screen')
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto(PAGE)
+  await page.getByRole('button', { name: 'Chat', exact: true }).click()
+  const sheet = drawer(page)
+  await sheet.getByRole('textbox', { name: /message/i }).fill('show the long diff')
+  await sheet.getByRole('button', { name: /^send$/i }).click()
+  await expect(sheet.getByText('leaseCompareHeadShaAgainstBaseShaBeforeMerging', { exact: false }).first()).toBeVisible()
+  const box = (await sheet.boundingBox())!
+  expect(box.x).toBe(0)
+  expect(box.width).toBe(390)
+  expect(box.y + box.height).toBe(844)
+  expect(box.height).toBeLessThan(844)
+  expect(await page.evaluate<number>('document.documentElement.scrollWidth')).toBeLessThanOrEqual(390)
 })
 
 test('selecting text quotes it into the question thread, or into the general chat from the header', async ({ page }) => {
