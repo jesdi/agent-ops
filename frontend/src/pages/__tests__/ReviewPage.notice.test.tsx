@@ -36,3 +36,22 @@ test('a dropped approve takes back the approved notice', async () => {
   await waitFor(() => expect(screen.getByTestId('review-delivery')).toHaveTextContent('dropped: no open request'))
   expect(screen.queryByTestId('review-notice')).not.toBeInTheDocument()
 })
+
+test('the approved notice waits for the POST to be accepted, not the press', async () => {
+  let accept = () => {}
+  const accepted = new Promise<void>((resolve) => { accept = resolve })
+  server.use(http.post('/api/task/widget/42/answers', async () => {
+    await accepted
+    return HttpResponse.json({ status: 'pending', intent: 'x' }, { status: 202 })
+  }))
+  renderWithProviders(
+    <Routes><Route path="/task/:repository/:issue/review" element={<ReviewPage />} /></Routes>,
+    { route: '/task/widget/42/review' },
+  )
+  await screen.findByTestId('review-frame')
+  fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Tap again to approve' }))
+  expect(screen.queryByTestId('review-notice')).not.toBeInTheDocument()
+  accept()
+  await waitFor(() => expect(screen.getByTestId('review-notice')).toHaveTextContent('approved'))
+})

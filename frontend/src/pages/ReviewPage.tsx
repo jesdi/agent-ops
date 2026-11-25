@@ -12,9 +12,10 @@ const PAGE_CHANGED = 'page changed, check and resend'
 const BUTTON = 'min-h-11 flex-1 rounded-md border px-3 text-sm font-medium'
 
 type Shown = { revision: string; text: string }
-type Submit = NonNullable<AnswersBody['submit']>
+type Submit = Delivery['submit']
+type Submitted = AnswersBody & { submit: Submit }
 /** The tab's last submission, and when its POST was accepted. */
-type Sent = { body: AnswersBody; at: number }
+type Sent = { body: Submitted; at: number }
 type Status = { text: string; resend: Submit | null }
 
 /** The review page of the open request, full screen: the sandboxed iframe, the
@@ -28,13 +29,15 @@ export function ReviewPage() {
   const [notice, setNotice] = useState<string | null>(null)
   const shown = useShownPage(req.data, () => setNotice(CHANGED))
   const { status, dropped, wasDropped, onSent } = useDeliveryStatus(repository, Number(issue), shown)
-  const bridge = useBridge(frameRef, shown, dropped ?? req.data?.answers ?? {}, repository, Number(issue), setNotice, onSent)
+  // The approved notice waits for the POST to be accepted, never the press alone.
+  const onAccepted = (body: Submitted) => {
+    onSent(body)
+    if (body.submit === 'approve') setNotice(APPROVED)
+  }
+  const bridge = useBridge(frameRef, shown, dropped ?? req.data?.answers ?? {}, repository, Number(issue), setNotice, onAccepted)
   useDeliveryNotices(bridge, dropped, wasDropped, setNotice)
   useNoticeTimer(notice, setNotice)
-  const onSubmit = (submit: Submit) => {
-    bridge.current?.submit(submit)
-    if (submit === 'approve') setNotice(APPROVED)
-  }
+  const onSubmit = (submit: Submit) => bridge.current?.submit(submit)
 
   return (
     <>
@@ -62,7 +65,7 @@ function useDeliveryStatus(repository: string, issue: number, shown: Shown | nul
   // gets the dropped answers it still has questions for, not the saved ones.
   const changed = pageChanged(state, sent, shown)
   const dropped = useMemo(() => (changed ? fit(sent!.body.answers, shown!.text) : null), [changed, sent, shown])
-  const onSent = (body: AnswersBody) => {
+  const onSent = (body: Submitted) => {
     setSent({ body, at: Date.now() })
     void delivery.refetch()
   }
@@ -78,7 +81,7 @@ function statusOf(state: Delivery | null, changed: boolean): Status | null {
   if (!state) return null
   return {
     text: changed ? PAGE_CHANGED : state.state === 'dropped' ? `dropped: ${state.reason}` : state.state,
-    resend: state.state === 'dropped' ? state.submit as Submit : null,
+    resend: state.state === 'dropped' ? state.submit : null,
   }
 }
 
@@ -158,7 +161,7 @@ function DeliveryLine({ status, className }: { status: Status; className: string
 function deliveryOf(sent: Sent | null, data: Delivery | null | undefined, updatedAt: number): Delivery | null {
   if (!sent) return null
   if (!data || updatedAt < sent.at || data.revision !== sent.body.revision) {
-    return { state: 'queued', reason: '', submit: sent.body.submit!, revision: sent.body.revision }
+    return { state: 'queued', reason: '', submit: sent.body.submit, revision: sent.body.revision }
   }
   return data
 }
@@ -195,7 +198,7 @@ function useShownPage(data: OperatorRequest | null | undefined, onChanged: () =>
 /** One bridge per page on screen, bound to the iframe's window and revision. */
 function useBridge(frameRef: RefObject<HTMLIFrameElement | null>, shown: Shown | null,
   restoring: Answers, repository: string, issue: number,
-  onNotice: (notice: string) => void, onSent: (body: AnswersBody) => void) {
+  onNotice: (notice: string) => void, onSent: (body: Submitted) => void) {
   // restore sends the latest answers to restore, not the ones of the first load.
   const latest = useRef({ restoring, onNotice, onSent })
   latest.current = { restoring, onNotice, onSent }
@@ -209,7 +212,7 @@ function useBridge(frameRef: RefObject<HTMLIFrameElement | null>, shown: Shown |
       revision: shown.revision,
       post: (body) => {
         api.answers(repository, issue, body).then(
-          () => { if (body.submit) latest.current.onSent(body) },
+          () => { if (body.submit) latest.current.onSent({ ...body, submit: body.submit }) },
           () => latest.current.onNotice(UNSAVED))
       },
       onNotice: () => latest.current.onNotice(NEWER),
