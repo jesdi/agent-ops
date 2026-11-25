@@ -308,3 +308,24 @@ def test_a_flat_result_of_an_attempt_with_no_summary_backfills_nothing(tmp_path)
     doc = {"results": [{"attempt": 2, "questions": [{"id": "t1", "points": 0}]}]}
     assert exams._backfill(doc, 1, result) is False
     assert "feedback" not in doc["results"][0]["questions"][0]
+
+
+def test_a_flat_result_of_an_interrupted_follow_up_grading_stays_with_the_follow_up(tmp_path, monkeypatch):
+    # attempt 2's grading wrote grades.json and result.json over attempt 1's, then stopped
+    # before its summary: they are attempt 2's, and attempt 1's summary gains none of their feedback
+    box, _, second = failed_once(tmp_path, monkeypatch)
+    assert submit(box, second).status_code == 202
+    flatten(box, {"exam.json": 2, "public.json": 2, "answers.json": 2,
+                  "grades.json": 1, "result.json": 1})
+    interrupted = {"passed": True, "score": 5, "max": 5, "missed": [],
+                   "questions": [{"id": "t1", "concept": "c", "points": 0, "feedback": "FB-second"}]}
+    (exam_dir(box) / "grades.json").write_text(json.dumps({"t1": {"grade": "fail", "feedback": "FB-second"}}))
+    (exam_dir(box) / "result.json").write_text(json.dumps(interrupted))
+    body = box.read().json()
+    assert body["state"] == "grading"
+    assert names(box, 2) == ["answers.json", "exam.json", "grades.json", "public.json", "result.json"]
+    assert not attempt_dir(box, 1).exists() or names(box, 1) == []
+    assert json.loads((attempt_dir(box, 2) / "result.json").read_text()) == interrupted
+    assert all(q.get("feedback") != "FB-second" for q in result_of(body, 1)["questions"])
+    box.work()
+    assert box.read().json()["state"] == "passed"

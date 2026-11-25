@@ -62,14 +62,22 @@ FLAT_STEPS = {"exam.json": "opened", "public.json": "opened", "answers.json": "s
               "grades.json": "graded", "result.json": "graded"}
 
 
-def _flat_owner(doc: dict, name: str) -> int:
+def _flat_owner(doc: dict, name: str, after_submit: bool = False) -> int:
     """The attempt the flat file `name` belongs to: the current one once it reached the step
     that writes the file, else the one before, which did. Attempt 1 has none before it, so a
-    file it wrote in a step that then failed (grades or result of an errored grading) is its."""
+    file it wrote in a step that then failed (grades or result of an errored grading) is its.
+    `after_submit`: the file was written after the current attempt's answers, so a grading of
+    it that stopped before its summary wrote it, not the attempt before."""
     n = doc["attempt"]
     graded = any(r["attempt"] == n for r in doc["results"])
-    reached = {"opened": True, "submitted": graded or bool(doc["grading"]), "graded": graded}
+    grading = bool(doc["grading"])
+    reached = {"opened": True, "submitted": graded or grading, "graded": graded or grading and after_submit}
     return n if reached[FLAT_STEPS[name]] else max(n - 1, 1)
+
+
+def _written_after(path: Path, answers: Path) -> bool:
+    """`path` was written after `answers`; renames keep both times."""
+    return answers.exists() and path.stat().st_mtime_ns > answers.stat().st_mtime_ns
 
 
 def _backfill(doc: dict, n: int, result: Path) -> bool:
@@ -105,7 +113,8 @@ def _migrate(state_dir, doc: dict) -> None:
         flat = d / name
         if not flat.exists():
             continue
-        n = _flat_owner(doc, name)
+        current = attempt_dir(state_dir, doc["repo"], doc["pr"], doc["attempt"])
+        n = _flat_owner(doc, name, _written_after(flat, current / "answers.json"))   # answers.json moved first
         if name == "result.json" and _backfill(doc, n, flat):
             _write(state_dir, doc)
         target = attempt_dir(state_dir, doc["repo"], doc["pr"], n)
