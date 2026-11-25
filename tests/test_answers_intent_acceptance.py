@@ -196,7 +196,8 @@ def test_a_stale_revision_writes_nothing(tmp_path, monkeypatch):
     _dropped(c, "stale revision")
 
 
-def test_an_intent_while_the_session_works_on_the_feedback_is_dropped(tmp_path, monkeypatch):
+def test_an_intent_while_the_session_works_on_the_feedback_is_held_until_it_ends(
+        tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
     wt = _gate(c)
     _intent(c, {"format": "a"}, submit="changes", ms=1)
@@ -213,8 +214,18 @@ def test_an_intent_while_the_session_works_on_the_feedback_is_dropped(tmp_path, 
     main.run_pass(c, deps(sess=sess))
 
     assert _file(wt) is None
+    assert not _events(c, "intent-dropped")   # the live session holds the submission
+    (i,) = intents.list_intents(c.state_dir)
+    assert i.payload["submit"] == "approve"
+    assert len(_events(c, "intent-applied")) == before
+    _set_status(c, DONE)
+
+    _drain(c)
+
+    assert _file(wt) is None
+    assert intents.list_intents(c.state_dir) == []
     (e,) = _events(c, "intent-dropped")
-    assert "no open request" in e["detail"]   # the rework cleared the request
+    assert "no open request" in e["detail"]   # the task ended without a request
     assert len(_events(c, "intent-applied")) == before
 
 
