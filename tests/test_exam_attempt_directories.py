@@ -15,7 +15,7 @@ import os
 import shutil
 from pathlib import Path
 
-from dispatcher import exams
+from dispatcher import exam_migration, exams
 from dispatcher.state import state_lock
 from tests.test_exam_debt import Gh, request
 from tests.test_exam_generation import HEAD, REPO
@@ -300,14 +300,14 @@ def test_the_view_reads_every_attempt_file_under_the_exams_lock(tmp_path, monkey
 
 def test_a_flat_file_of_an_errored_first_grading_stays_with_attempt_one():
     errored = {"attempt": 1, "results": [], "grading": {"attempt": 1}}
-    assert {name: exams._flat_owner(errored, name) for name in FILES} == dict.fromkeys(FILES, 1)
+    assert {name: exam_migration.flat_owner(errored, name) for name in FILES} == dict.fromkeys(FILES, 1)
 
 
 def test_a_flat_result_of_an_attempt_with_no_summary_backfills_nothing(tmp_path):
     result = tmp_path / "result.json"
     result.write_text(json.dumps({"questions": [{"id": "t1", "points": 0, "feedback": "FB"}]}))
     doc = {"results": [{"attempt": 2, "questions": [{"id": "t1", "points": 0}]}]}
-    assert exams._backfill(doc, 1, result) is False
+    assert exam_migration.backfill(doc, 1, result, exams._line) is False
     assert "feedback" not in doc["results"][0]["questions"][0]
 
 
@@ -347,7 +347,7 @@ def test_a_flat_result_whose_time_equals_the_follow_ups_answers_is_kept_aside_an
         os.utime(exam_dir(box) / name, ns=(stamp, stamp))
     body = box.read().json()
     assert body["state"] == "grading"
-    assert sorted(p.name for p in (exam_dir(box) / exams.UNATTRIBUTED).iterdir()) == ["grades.json", "result.json"]
+    assert sorted(p.name for p in (exam_dir(box) / exam_migration.UNATTRIBUTED).iterdir()) == ["grades.json", "result.json"]
     assert names(box, 2) == ["answers.json", "exam.json", "public.json"]
     assert not attempt_dir(box, 1).exists() or names(box, 1) == []
     assert all(q.get("feedback") != "FB-unknown" for q in result_of(body, 1)["questions"])
