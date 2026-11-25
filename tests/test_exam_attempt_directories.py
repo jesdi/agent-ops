@@ -295,3 +295,8 @@ def test_the_view_reads_every_attempt_file_under_the_exams_lock(tmp_path, monkey
     body = box.read().json()
     assert [a["attempt"] for a in body["attempts"]] == [1] and body["exam"]
     assert held == [True, True]
+
+
+def test_a_flat_file_of_an_errored_first_grading_stays_with_attempt_one():
+    errored = {"attempt": 1, "results": [], "grading": {"attempt": 1}}
+    assert {name: exams._flat_owner(errored, name) for name in FILES} == dict.fromkeys(FILES, 1)

@@ -59,11 +59,12 @@ FLAT_STEPS = {"exam.json": "opened", "public.json": "opened", "answers.json": "s
 
 def _flat_owner(doc: dict, name: str) -> int:
     """The attempt the flat file `name` belongs to: the current one once it reached the step
-    that writes the file, else the one before, which did."""
+    that writes the file, else the one before, which did. Attempt 1 has none before it, so a
+    file it wrote in a step that then failed (grades or result of an errored grading) is its."""
     n = doc["attempt"]
     graded = any(r["attempt"] == n for r in doc["results"])
     reached = {"opened": True, "submitted": graded or bool(doc["grading"]), "graded": graded}
-    return n if reached[FLAT_STEPS[name]] else n - 1
+    return n if reached[FLAT_STEPS[name]] else max(n - 1, 1)
 
 
 def _backfill(doc: dict, n: int, result: Path) -> bool:
