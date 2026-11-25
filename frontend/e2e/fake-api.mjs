@@ -62,6 +62,57 @@ const seedGhosts = () => [
 
 const queued = () => state.board.columns.find((c) => c.key === 'queued')
 
+// The exam of jesdi/general-skills#240 (exam.spec.ts): an open attempt 1 with a choice and a text question.
+const EXAM = '/api/exam/jesdi/general-skills/240'
+const SHA = 'a'.repeat(40)
+const REPLIES = { tip: 'Look at what the lease stores.', question: 'Because main may have moved.', general: 'The lease expiry.' }
+const seedExam = () => ({
+  state: 'open', bypassed: null, general: [], attempts: [], turns: 0,
+  questions: [
+    { id: 'q1', type: 'choice', prompt: 'Which SHA does the lease compare?', options: ['the head SHA', 'the base SHA'], tips: 0, assisted: false, thread: [] },
+    { id: 'q2', type: 'text', prompt: 'Why is the base SHA rechecked before merging?', tips: 0, assisted: false, thread: [] },
+  ],
+})
+
+function examView() {
+  const e = state.exam
+  return {
+    repo: 'jesdi/general-skills', pr: 240, state: e.state, head_sha: SHA, debt: false, detail: '',
+    attempt: 1, bypassed: e.bypassed, attempts: e.attempts,
+    exam: e.state === 'open' ? { version: 1, repo: 'jesdi/general-skills', pr: 240, head_sha: SHA, questions: e.questions, general: e.general } : null,
+  }
+}
+
+// Submitted: grading first, then a failed result that gives q2 half the points (a bypassed q2 is left out of them).
+function submitExam() {
+  const e = state.exam
+  const bypassed = e.bypassed === 'q2'
+  const questions = [
+    { id: 'q1', concept: 'the lease SHA', points: 1, help: e.questions[0].assisted ? 'assisted' : null },
+    bypassed
+      ? { id: 'q2', concept: 'the base recheck', points: null, help: 'bypassed' }
+      : { id: 'q2', concept: 'the base recheck', points: 0.5, help: e.questions[1].assisted ? 'assisted' : null, feedback: 'misses that main may have moved' },
+  ]
+  e.attempts = [{ attempt: 1, general: e.general, questions: e.questions, result: null }]
+  e.state = 'grading'
+  setTimeout(() => {
+    e.attempts[0].result = { passed: bypassed, score: bypassed ? 1 : 1.5, max: bypassed ? 1 : 2, questions }
+    e.state = bypassed ? 'passed' : 'generating'
+  }, 300)
+}
+
+function examTurn(body) {
+  const e = state.exam
+  const turn = { id: `t${++e.turns}`, kind: body.kind, message: body.message ?? '', text: REPLIES[body.kind], status: 'done', error: null }
+  const q = e.questions.find((x) => x.id === body.question)
+  if (body.kind === 'general') e.general.push(turn)
+  else if (q) {
+    q.thread.push(turn)
+    if (body.kind === 'tip') { q.tips += 1; q.assisted = true }
+  }
+  return turn
+}
+
 // Fresh objects on every call: startup and reset share it, so mutations
 // never leak into a later seed.
 const seedState = () => ({
@@ -137,6 +188,7 @@ const seedState = () => ({
       recent_runs: [], upcoming: ['2026-11-24T12:00:00+00:00'],
     }],
   },
+  exam: seedExam(),
 })
 
 const state = seedState()
@@ -355,6 +407,30 @@ const server = createServer(async (req, res) => {
   }
   if (url.pathname === '/api/queue/ready' && req.method === 'POST') {
     return json(200, { ok: true, reason: 'marked ready' })
+  }
+  if (url.pathname.startsWith(EXAM)) {
+    const sub = url.pathname.slice(EXAM.length)
+    const streamMatch = sub.match(/^\/turns\/([^/]+)\/stream$/)
+    if (streamMatch && req.method === 'GET') {
+      const turn = [...state.exam.general, ...state.exam.questions.flatMap((q) => q.thread)].find((t) => t.id === streamMatch[1])
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' })
+      res.end(`data: ${JSON.stringify({ delta: turn?.text ?? '' })}\n\ndata: ${JSON.stringify({ status: 'done' })}\n\n`)
+      return
+    }
+    if (sub === '' && req.method === 'GET') return json(200, examView())
+    let body = ''
+    req.on('data', (c) => { body += c })
+    req.on('end', () => {
+      const b = JSON.parse(body || '{}')
+      if (sub === '/turns') return json(202, { id: examTurn(b).id })
+      if (sub === '/bypass') {
+        state.exam.bypassed = req.method === 'POST' ? b.question : null
+        return json(200, examView())
+      }
+      if (sub === '/answers') { submitExam(); return json(200, examView()) }
+      json(404, { detail: 'not found' })
+    })
+    return
   }
   if (url.pathname.startsWith('/api/')) {
     return json(404, { detail: 'not found' })
