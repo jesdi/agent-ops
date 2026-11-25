@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type RefObject } from 'react'
+import { useEffect, useMemo, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from 'react'
 import { useParams } from 'react-router'
 import { useTaskDelivery, useTaskRequest } from '../hooks/useResources'
 import { api, type Delivery, type OperatorRequest } from '../lib/api'
@@ -26,64 +26,93 @@ export function ReviewPage() {
   const req = useTaskRequest(repository, Number(issue), 5000)
   const frameRef = useRef<HTMLIFrameElement>(null)
   const [notice, setNotice] = useState<string | null>(null)
-  const delivery = useTaskDelivery(repository, Number(issue), 5000)
-  const [sent, setSent] = useState<Sent | null>(null)
   const shown = useShownPage(req.data, () => setNotice(CHANGED))
-  const state = deliveryOf(sent, delivery.data, delivery.dataUpdatedAt)
-  // The tab's submission was dropped because the page changed: the new page
-  // gets the dropped answers it still has questions for, not the saved ones.
-  const changed = state?.state === 'dropped' && state.reason === 'stale revision'
-    && !!shown && shown.revision !== sent?.body.revision
-  const dropped = useMemo(() => (changed ? fit(sent!.body.answers, shown!.text) : null), [changed, sent, shown])
-  const status: Status | null = state && {
-    text: changed ? PAGE_CHANGED : state.state === 'dropped' ? `dropped: ${state.reason}` : state.state,
-    resend: state.state === 'dropped' ? state.submit as Submit : null,
-  }
-  const onSent = (body: AnswersBody) => {
-    setSent({ body, at: Date.now() })
-    void delivery.refetch()
-  }
+  const { status, dropped, wasDropped, onSent } = useDeliveryStatus(repository, Number(issue), shown)
   const bridge = useBridge(frameRef, shown, dropped ?? req.data?.answers ?? {}, repository, Number(issue), setNotice, onSent)
-  useEffect(() => {
-    if (!dropped) return
-    bridge.current?.restore(dropped)
-    setNotice((n) => (n === CHANGED ? null : n))
-  }, [dropped, bridge])
-  // A drop takes back the approved notice: the approval never reached the session.
-  const wasDropped = state?.state === 'dropped'
-  useEffect(() => {
-    if (wasDropped) setNotice((n) => (n === APPROVED ? null : n))
-  }, [wasDropped])
-  // The changed and unsaved notices cover the page's top: they go after a
-  // while or on tap (the page keeps its selections). The newer-console notice
-  // is an error and stays.
-  const dismiss = () => setNotice((n) => (n === NEWER ? n : null))
-  useEffect(() => {
-    if (!notice || notice === NEWER) return
-    const timer = setTimeout(() => setNotice(null), 6000)
-    return () => clearTimeout(timer)
-  }, [notice])
+  useDeliveryNotices(bridge, dropped, wasDropped, setNotice)
+  useNoticeTimer(notice, setNotice)
+  const onSubmit = (submit: Submit) => {
+    bridge.current?.submit(submit)
+    if (submit === 'approve') setNotice(APPROVED)
+  }
 
   return (
     <>
-      {!shown && <Empty data={req.data} status={status} />}
-      {shown && (
+      {shown ? (
         <div className="fixed inset-0 flex flex-col">
           {/* A new window per revision: a late message of the old page then
               fails the bridge's source check instead of posting on the new one. */}
           <iframe key={shown.revision} ref={frameRef} data-testid="review-frame" title="review" sandbox="allow-scripts"
             srcDoc={shown.text} className="min-h-0 w-full flex-1 border-0" />
           <SubmitBar key={`bar-${shown.revision}`} plan={req.data?.kind === 'plan-approval'} status={status}
-            onSubmit={(submit) => { bridge.current?.submit(submit); if (submit === 'approve') setNotice(APPROVED) }} />
+            onSubmit={onSubmit} />
         </div>
-      )}
-      {notice && (
-        <p data-testid="review-notice" role="status" onClick={dismiss}
-          className="fixed inset-x-2 top-2 rounded border border-border bg-surface-raised px-3 py-2 text-center text-sm text-ink shadow">
-          {notice}
-        </p>
-      )}
+      ) : <Empty data={req.data} status={status} />}
+      <Notice notice={notice} setNotice={setNotice} />
     </>
+  )
+}
+
+/** The delivery of the tab's last submission, as the Send bar shows it. */
+function useDeliveryStatus(repository: string, issue: number, shown: Shown | null) {
+  const delivery = useTaskDelivery(repository, issue, 5000)
+  const [sent, setSent] = useState<Sent | null>(null)
+  const state = deliveryOf(sent, delivery.data, delivery.dataUpdatedAt)
+  // The tab's submission was dropped because the page changed: the new page
+  // gets the dropped answers it still has questions for, not the saved ones.
+  const changed = pageChanged(state, sent, shown)
+  const dropped = useMemo(() => (changed ? fit(sent!.body.answers, shown!.text) : null), [changed, sent, shown])
+  const onSent = (body: AnswersBody) => {
+    setSent({ body, at: Date.now() })
+    void delivery.refetch()
+  }
+  return { status: statusOf(state, changed), dropped, wasDropped: state?.state === 'dropped', onSent }
+}
+
+function pageChanged(state: Delivery | null, sent: Sent | null, shown: Shown | null): boolean {
+  return state?.state === 'dropped' && state.reason === 'stale revision'
+    && !!shown && shown.revision !== sent?.body.revision
+}
+
+function statusOf(state: Delivery | null, changed: boolean): Status | null {
+  if (!state) return null
+  return {
+    text: changed ? PAGE_CHANGED : state.state === 'dropped' ? `dropped: ${state.reason}` : state.state,
+    resend: state.state === 'dropped' ? state.submit as Submit : null,
+  }
+}
+
+function useDeliveryNotices(bridge: RefObject<ReturnType<typeof createBridge> | null>, dropped: Answers | null,
+  wasDropped: boolean, setNotice: Dispatch<SetStateAction<string | null>>) {
+  useEffect(() => {
+    if (!dropped) return
+    bridge.current?.restore(dropped)
+    setNotice((n) => (n === CHANGED ? null : n))
+  }, [dropped, bridge, setNotice])
+  // A drop takes back the approved notice: the approval never reached the session.
+  useEffect(() => {
+    if (wasDropped) setNotice((n) => (n === APPROVED ? null : n))
+  }, [wasDropped, setNotice])
+}
+
+// The changed and unsaved notices cover the page's top: they go after a
+// while or on tap (the page keeps its selections). The newer-console notice
+// is an error and stays.
+function useNoticeTimer(notice: string | null, setNotice: Dispatch<SetStateAction<string | null>>) {
+  useEffect(() => {
+    if (!notice || notice === NEWER) return
+    const timer = setTimeout(() => setNotice(null), 6000)
+    return () => clearTimeout(timer)
+  }, [notice, setNotice])
+}
+
+function Notice({ notice, setNotice }: { notice: string | null; setNotice: Dispatch<SetStateAction<string | null>> }) {
+  if (!notice) return null
+  return (
+    <p data-testid="review-notice" role="status" onClick={() => setNotice((n) => (n === NEWER ? n : null))}
+      className="fixed inset-x-2 top-2 rounded border border-border bg-surface-raised px-3 py-2 text-center text-sm text-ink shadow">
+      {notice}
+    </p>
   )
 }
 
