@@ -254,7 +254,7 @@ def router(sources, now: Callable[[], datetime], state_dir: Callable[[], str]) -
         try:
             services_config.check_schedule(name, schedule)
         except ValueError as e:
-            raise HTTPException(422, str(e)) from e
+            raise HTTPException(422, str(e).removeprefix(f"{name}: ")) from e
         if _deploy_sync_paused(sources.service_timers(), services_changes.read(state_dir())):
             raise HTTPException(409, "The deploy sync is paused: a schedule change cannot be applied.")
         try:

@@ -213,6 +213,12 @@ def test_every_0_minutes_for_the_onboarding_pass_is_refused_and_writes_nothing(w
     assert world.nothing_recorded()
 
 
+def test_a_refusal_reads_without_the_config_key_of_the_job(world):
+    res = world.put(ONBOARD, {"every": 0})
+
+    assert res.json()["detail"] == "every must be a whole number of at least 1"
+
+
 def test_an_invalid_custom_expression_is_refused_and_the_schedule_is_unchanged(world):
     res = world.put(DIGEST, {"calendar": "every tuesday-ish"})
 
