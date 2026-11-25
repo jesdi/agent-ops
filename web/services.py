@@ -174,10 +174,13 @@ def _job(unit: dict, runs: dict[str, list[dict]], *, read_only: bool,
 
 
 def _live(job: Job, unit: dict, mine: list[dict], changes: dict, installed: dict | None) -> Job:
-    """A managed job's runs, console change and warning."""
+    """A managed job's runs, console change and warning, and its name and description from
+    the installed config (the timer's Description until one is installed)."""
     key = job.id.removeprefix(USER_JOB_PREFIX)
     running = bool(mine) and mine[-1]["result"] is None
+    about = (installed or {}).get(key) or {}
     return job.model_copy(update={
+        "name": about.get("name") or job.name, "description": about.get("description") or job.description,
         "recent_runs": _recent(mine), "change": _change(changes.get(key)),
         "warning": _warning(unit, key, changes, installed),
         "running": running, "state": "running" if running and job.state == "active" else job.state})

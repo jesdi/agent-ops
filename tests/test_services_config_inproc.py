@@ -8,7 +8,7 @@ JOBS = sc.JOBS
 
 
 def cfg(**over):
-    c = {j: {"schedule": {"every": 5}, "paused": False} for j in JOBS}
+    c = {j: {"name": j, "description": f"The {j} job.", "schedule": {"every": 5}, "paused": False} for j in JOBS}
     c.update(over)
     return c
 
@@ -44,15 +44,17 @@ def test_invalid(sched):
 
 
 @pytest.mark.parametrize("bad", [
-    "[]", {"bogus": 1}, cfg(dispatcher=None), cfg(dispatcher={"schedule": {"every": 5}})])
+    "[]", {"bogus": 1}, cfg(dispatcher=None), cfg(dispatcher={"schedule": {"every": 5}}),
+    cfg(dispatcher={"name": "d", "schedule": {"every": 5}, "paused": False})])
 def test_load_refuses(tmp_path, bad):
     with pytest.raises(ValueError):
         sc.load(write(tmp_path, "c.yaml", bad))
 
 
 def test_render_and_main(tmp_path, capsys):
-    c = cfg(digest={"schedule": {"daily": "09:00", "tz": "UTC"}, "paused": True},
-            triage={"schedule": {"calendar": "daily"}, "paused": False})
+    about = {"name": "j", "description": "The job."}
+    c = cfg(digest={**about, "schedule": {"daily": "09:00", "tz": "UTC"}, "paused": True},
+            triage={**about, "schedule": {"calendar": "daily"}, "paused": False})
     units = tmp_path / "u"
     units.mkdir()
     args = [write(tmp_path, "c.yaml", c), write(tmp_path, "ch.yaml", {"triage": {"paused": True}}), str(units)]

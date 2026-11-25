@@ -25,8 +25,22 @@ ROOT = Path(__file__).resolve().parent.parent
 JOBS = ["dispatcher", "update", "onboard", "keepalive", "codex-keepalive", "sweep", "digest", "triage"]
 
 
+# What the page shows for each managed job: its name, and what it does.
+ABOUT = {
+    "dispatcher": ("Dispatcher pass", "Claims ready issues and drives the running tasks."),
+    "update": ("Deploy sync", "Brings the box up to date with the latest agent-ops and infra config."),
+    "onboard": ("Onboarding pass", "Moves the projects being onboarded to their next step."),
+    "keepalive": ("Claude login keepalive", "Refreshes the Claude login before it expires."),
+    "codex-keepalive": ("Codex login keepalive", "Refreshes the Codex login before it expires."),
+    "sweep": ("Stale worktree sweep", "Removes the worktrees of tasks that have ended."),
+    "digest": ("Daily digest", "Sends the daily summary of what the box did."),
+    "triage": ("Backlog triage", "Scores and ranks the open issues of the backlog."),
+}
+
+
 def base_config() -> dict:
-    cfg = {j: {"schedule": {"every": 5}, "paused": False} for j in JOBS}
+    cfg = {j: {"name": ABOUT[j][0], "description": ABOUT[j][1], "schedule": {"every": 5}, "paused": False}
+           for j in JOBS}
     cfg["digest"]["schedule"] = {"daily": "08:00", "tz": "UTC"}
     return cfg
 
@@ -97,7 +111,12 @@ REFUSED = {
         schedule={"calendar": "*-*-* 09:00\nExecStart=/bin/true"})),
     "two-kinds": bad(lambda c: c["digest"].update(schedule={"every": 5, "calendar": "*-*-* 09:00"})),
     "no-paused": bad(_drop_paused),
-    "unknown-job": bad(lambda c: c.update(bogus={"schedule": {"every": 5}, "paused": False})),
+    "no-name": bad(lambda c: c["digest"].pop("name")),
+    "blank-name": bad(lambda c: c["digest"].update(name=" ")),
+    "name-newline": bad(lambda c: c["digest"].update(name="Daily digest\nExecStart=/bin/true")),
+    "no-description": bad(lambda c: c["digest"].pop("description")),
+    "description-not-text": bad(lambda c: c["digest"].update(description=5)),
+    "unknown-job": bad(lambda c: c.update(bogus={**c["digest"], "schedule": {"every": 5}})),
 }
 
 
@@ -163,3 +182,9 @@ def test_rendering_twice_is_byte_identical(env, tmp_path):
     assert r1.returncode == 0 and r2.returncode == 0, r1.stderr + r2.stderr
     assert first and first == {p.name: p.read_bytes() for p in units.iterdir()}
     assert r1.stdout == r2.stdout
+
+
+def test_the_timer_is_described_by_the_job_name(env, tmp_path):
+    r, units = render(env, tmp_path, base_config())
+    assert r.returncode == 0, r.stderr
+    assert re.search(r"^Description=Daily digest$", timer(units, "digest"), re.M)

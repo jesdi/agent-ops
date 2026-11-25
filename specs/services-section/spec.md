@@ -11,8 +11,9 @@ Terms used below:
   stale worktree sweep, daily digest, backlog triage.
 - **Read-only job**: a job that runs as root. Today there are five: secret cache refresh and
   the four tracker jobs (deploy check, reminders, scanner, backup).
-- **Services config**: one file in `agent-ops-infra` holding, per managed job, its schedule and
-  whether it is paused.
+- **Services config**: one file in `agent-ops-infra` holding, per managed job, its name, what it
+  does, its schedule and whether it is paused. The timer generated for a job is described by its
+  name.
 - **Recording pull request**: a pull request on `agent-ops-infra` that the console opens to
   change the services config and that merges by itself once its checks pass.
 

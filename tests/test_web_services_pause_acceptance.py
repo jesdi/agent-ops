@@ -177,3 +177,19 @@ def test_the_page_is_told_whether_a_services_config_is_installed(tmp_path):
     assert missing.get("/api/services", headers=HEADERS).json()["config_installed"] is False
     (tmp_path / "services.yaml").write_text(yaml.safe_dump(base_config()))
     assert missing.get("/api/services", headers=HEADERS).json()["config_installed"] is True
+
+
+def test_a_managed_job_is_named_and_described_by_the_installed_services_config(tmp_path):
+    """The timer's own Description (here a stale one) is not what the page shows."""
+    digest = user_timer(DIGEST, description="Daily agent-ops digest at 08:00")
+    _, client = box(tmp_path, [digest])
+
+    j = job(client, DIGEST)
+    assert (j["name"], j["description"]) == ("Daily digest", "Sends the daily summary of what the box did.")
+
+
+def test_with_no_services_config_installed_a_managed_job_falls_back_to_its_timer_description(tmp_path):
+    _, client = box(tmp_path, [user_timer(DIGEST, description="Daily agent-ops digest")], installed=False)
+
+    j = job(client, DIGEST)
+    assert (j["name"], j["description"]) == ("Daily agent-ops digest", "Daily agent-ops digest")

@@ -19,12 +19,12 @@ from fastapi.testclient import TestClient
 import dispatcher.main as main
 from dispatcher.config import load_config
 from tests.dispatchfakes import deps, freeze_clock, patch_usage
+from tests.test_services_config import base_config
 from tests.webfakes import HEADERS
 from web.app import create_app
 from web.sources import Sources
 
 FINISHED = datetime(2026, 11, 24, 10, 0, tzinfo=timezone.utc)
-JOBS = ["dispatcher", "update", "onboard", "keepalive", "codex-keepalive", "sweep", "digest", "triage"]
 
 TARGETS = """\
 state_dir: {state}
@@ -55,7 +55,7 @@ def fake_systemd_analyze(tmp_path, monkeypatch):
 
 
 def install(tmp_path, dispatcher_schedule):
-    config = {j: {"schedule": {"every": 5}, "paused": False} for j in JOBS}
+    config = base_config()
     config["dispatcher"]["schedule"] = dispatcher_schedule
     state = tmp_path / "state"
     state.mkdir(exist_ok=True)

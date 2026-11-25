@@ -266,7 +266,7 @@ def test_a_pause_made_while_a_schedule_change_applies_travels_in_the_same_entry_
     assert world.job(DIGEST)["change"]["state"] == "applying"
     assert world.put(DIGEST, {"every": 15}).status_code in REFUSED
     world.settle(passes=10)
-    assert world.merged("digest") == {"schedule": {"every": 10}, "paused": True}
+    assert world.merged("digest") == {**world.cfg["digest"], "schedule": {"every": 10}, "paused": True}
 
 
 def test_once_the_change_has_applied_the_editor_can_be_saved_again(world):
