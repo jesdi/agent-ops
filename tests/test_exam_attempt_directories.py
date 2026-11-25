@@ -11,6 +11,7 @@ Interface under test (defined here, built by the ticket), on top of test_exam_gr
         on the first read or work, once.
 """
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -327,6 +328,29 @@ def test_a_flat_result_of_an_interrupted_follow_up_grading_stays_with_the_follow
     assert not attempt_dir(box, 1).exists() or names(box, 1) == []
     assert json.loads((attempt_dir(box, 2) / "result.json").read_text()) == interrupted
     assert all(q.get("feedback") != "FB-second" for q in result_of(body, 1)["questions"])
+    box.work()
+    assert box.read().json()["state"] == "passed"
+
+
+def test_a_flat_result_whose_time_equals_the_follow_ups_answers_is_kept_aside_and_backfills_nothing(
+        tmp_path, monkeypatch):
+    # a restore that lost timestamp precision: grades.json and result.json carry the same time
+    # as attempt 2's answers, so they may be attempt 1's or an interrupted grading of attempt 2's
+    box, _, second = failed_once(tmp_path, monkeypatch)
+    assert submit(box, second).status_code == 202
+    flatten(box, {"exam.json": 2, "public.json": 2, "answers.json": 2,
+                  "grades.json": 1, "result.json": 1})
+    (exam_dir(box) / "result.json").write_text(json.dumps(
+        {"questions": [{"id": "t1", "concept": "c", "points": 0, "feedback": "FB-unknown"}]}))
+    stamp = (exam_dir(box) / "answers.json").stat().st_mtime_ns
+    for name in ("grades.json", "result.json"):
+        os.utime(exam_dir(box) / name, ns=(stamp, stamp))
+    body = box.read().json()
+    assert body["state"] == "grading"
+    assert sorted(p.name for p in (exam_dir(box) / exams.UNATTRIBUTED).iterdir()) == ["grades.json", "result.json"]
+    assert names(box, 2) == ["answers.json", "exam.json", "public.json"]
+    assert not attempt_dir(box, 1).exists() or names(box, 1) == []
+    assert all(q.get("feedback") != "FB-unknown" for q in result_of(body, 1)["questions"])
     box.work()
     assert box.read().json()["state"] == "passed"
 

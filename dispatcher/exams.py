@@ -54,12 +54,14 @@ def attempt_dir(state_dir, repo: str, pr: int, n: int) -> Path:
 # The flat-layout migration (pr-exam-host-assist ticket 01): before attempts/<n>/, each of
 # these files sat at the exam level and held the last attempt that reached the step writing
 # it. Delete it once the deploy has run and every exam on the box has been read, as ADR 0004
-# does for task files: FLAT_STEPS, _flat_owner, _backfill, _summary, _feedback_lines,
-# _migrate, their call in `_load`, and the flat-layout tests in
+# does for task files: FLAT_STEPS, UNATTRIBUTED, _flat_owner, _written_after, _owner,
+# _backfill, _summary, _feedback_lines, _migrate, their call in `_load`, and the flat-layout
+# tests in
 # tests/test_exam_attempt_directories.py. `read` takes the exams
 # lock only for this migration, so it can drop it then.
 FLAT_STEPS = {"exam.json": "opened", "public.json": "opened", "answers.json": "submitted",
               "grades.json": "graded", "result.json": "graded"}
+UNATTRIBUTED = "unattributed"   # where a flat file whose attempt the times cannot tell is kept
 
 
 def _flat_owner(doc: dict, name: str, after_submit: bool = False) -> int:
@@ -75,9 +77,19 @@ def _flat_owner(doc: dict, name: str, after_submit: bool = False) -> int:
     return n if reached[FLAT_STEPS[name]] else max(n - 1, 1)
 
 
-def _written_after(path: Path, answers: Path) -> bool:
-    """`path` was written after `answers`; renames keep both times."""
-    return answers.exists() and path.stat().st_mtime_ns > answers.stat().st_mtime_ns
+def _written_after(path: Path, answers: Path) -> bool | None:
+    """`path` was written after `answers`; None when the times cannot tell (no answers, or
+    the same time, as a restore that lost their precision leaves). Renames keep both times."""
+    if not answers.exists() or path.stat().st_mtime_ns == answers.stat().st_mtime_ns:
+        return None
+    return path.stat().st_mtime_ns > answers.stat().st_mtime_ns
+
+
+def _owner(doc: dict, name: str, flat: Path, answers: Path) -> int | None:
+    """`_flat_owner` of the flat file, or None when it hangs on an order the times cannot tell."""
+    after = _written_after(flat, answers)
+    owners = {_flat_owner(doc, name, a) for a in ((True, False) if after is None else (after,))}
+    return owners.pop() if len(owners) == 1 else None
 
 
 def _backfill(doc: dict, n: int, result: Path) -> bool:
@@ -114,10 +126,11 @@ def _migrate(state_dir, doc: dict) -> None:
         if not flat.exists():
             continue
         current = attempt_dir(state_dir, doc["repo"], doc["pr"], doc["attempt"])
-        n = _flat_owner(doc, name, _written_after(flat, current / "answers.json"))   # answers.json moved first
-        if name == "result.json" and _backfill(doc, n, flat):
+        n = _owner(doc, name, flat, current / "answers.json")   # answers.json moved first
+        if n is not None and name == "result.json" and _backfill(doc, n, flat):
             _write(state_dir, doc)
-        target = attempt_dir(state_dir, doc["repo"], doc["pr"], n)
+        # an ambiguous file is kept aside, in no attempt, rather than credited to the wrong one
+        target = d / UNATTRIBUTED if n is None else attempt_dir(state_dir, doc["repo"], doc["pr"], n)
         target.mkdir(parents=True, exist_ok=True)
         flat.replace(target / name)
 
