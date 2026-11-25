@@ -59,9 +59,11 @@ function useChat(target: ChatTarget, question: string | null, thread: ExamTurn[]
       return false
     }
   }
-  const busy = live !== null && live.error === null || running !== undefined
-  return { live, refusal, busy, run }
+  return { live, refusal, busy: isBusy(live, running), run }
 }
+
+/** A turn is running here: one this page watches, or one the stored thread still shows running. */
+const isBusy = (live: Live | null, running: ExamTurn | undefined) => (live !== null && live.error === null) || running !== undefined
 
 /** A message box whose draft survives closing it and a refused send, and takes a quote when one is meant for it. */
 function useDraft(quote: Quote | null, onQuote: () => void) {

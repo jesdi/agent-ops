@@ -112,6 +112,16 @@ describe('exam page selection quotes', () => {
     expect(within(drawer()).getByRole('textbox', { name: /message/i })).toHaveValue('> Exam for\n\n')
   })
 
+  it('quotes nothing for a selection inside the general chat, or an empty one', async () => {
+    serve({ ...open, exam: { ...open.exam, general: [general] } })
+    renderExam()
+    await screen.findByText(q5.prompt)
+    await userEvent.click(screen.getByRole('button', { name: /^chat$/i }))
+    select(within(drawer()).getByText('The lease expiry.').firstChild!)
+    act(() => { document.getSelection()!.removeAllRanges(); document.dispatchEvent(new Event('selectionchange')) })
+    expect(within(drawer()).getByRole('textbox', { name: /message/i })).toHaveValue('')
+  })
+
   it('pre-fills the thread of a graded question from a selection in its result', async () => {
     const explanation = 'The token only ever grows.'
     serve({

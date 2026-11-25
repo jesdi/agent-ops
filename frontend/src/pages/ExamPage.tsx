@@ -278,20 +278,28 @@ function Chat({ data }: { data: ExamView }) {
 
 /** The quote of the operator's last selection: inside a question or its result it is for that question's thread, elsewhere on
  *  the page for the general chat. A selection inside a text box or the general chat quotes nothing. */
+/** The quote of the page's selection, or null when it is empty or inside a text box or the general chat. */
+function selectedQuote(attempt: number): Quote | null {
+  const selection = document.getSelection()
+  const text = selection?.toString().trim()
+  const at = selectedElement(selection?.anchorNode)
+  if (!text || !at || at.closest('textarea, input, [data-chat]')) return null
+  return quoteIn(at.closest<HTMLElement>('[data-quote-question]'), attempt, text)
+}
+
+/** A quote for the question `holder` marks, or for the general chat of `attempt` when none does. */
+const quoteIn = (holder: HTMLElement | null, attempt: number, text: string): Quote =>
+  holder ? { attempt: Number(holder.dataset.quoteAttempt), question: holder.dataset.quoteQuestion!, text } : { attempt, question: null, text }
+
+const selectedElement = (node: Node | null | undefined) => (node instanceof Element ? node : node?.parentElement)
+
 function useSelectionQuote(attempt: number | undefined) {
   const [quote, setQuote] = useState<Quote | null>(null)
   useEffect(() => {
     if (attempt === undefined) return
     const onSelect = () => {
-      const selection = document.getSelection()
-      const text = selection?.toString().trim()
-      const node = selection?.anchorNode
-      const at = node instanceof Element ? node : node?.parentElement
-      if (!text || !at || at.closest('textarea, input, [data-chat]')) return
-      const holder = at.closest<HTMLElement>('[data-quote-question]')
-      setQuote(holder
-        ? { attempt: Number(holder.dataset.quoteAttempt), question: holder.dataset.quoteQuestion ?? null, text }
-        : { attempt, question: null, text })
+      const quote = selectedQuote(attempt)
+      if (quote) setQuote(quote)
     }
     document.addEventListener('selectionchange', onSelect)
     return () => document.removeEventListener('selectionchange', onSelect)

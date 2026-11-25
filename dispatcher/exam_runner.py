@@ -179,9 +179,13 @@ def _answer_text(adir: Path, q: str, answer) -> str:
         return answer
     if answer is None:
         return "(no answer: the question was bypassed)"
-    exam = json.loads((adir / "exam.json").read_text())
-    options = next((x.get("options") or [] for x in exam["questions"] if x["id"] == q), [])
+    options = _options(adir, q)
     return f"option {answer}: {options[answer]}" if 0 <= answer < len(options) else f"option {answer}"
+
+
+def _options(adir: Path, q: str) -> list[str]:
+    exam = json.loads((adir / "exam.json").read_text())
+    return next((x.get("options") or [] for x in exam["questions"] if x["id"] == q), [])
 
 
 def _graded(adir: Path, q: str) -> dict:
