@@ -7,11 +7,11 @@ lock: it moves each flat file into its attempt, then, once per exam (a state.jso
 the code reads one shape:
 - `bypassed` in state.json;
 - `flags.json` (nothing bypassed or assisted) for every submitted attempt;
-- the exam's `diff.patch` and `body.md` the chat is given: the passed diff when there is one,
-  else a line saying it was not kept;
+- the exam's `diff.patch` and `body.md` the chat is given: the passed diff, else the last
+  job's inputs, else a line saying it was not kept;
 - `public.json` for a graded attempt whose questions the flat layout replaced, built from its
   result summary, each prompt saying the question was not kept. Such an attempt has no
-  exam.json, so it takes no turn.
+  exam.json, so it takes no turn: `lost`, which `exams._chatting` calls.
 
 Once the deploy has run and every exam on the box has been read, delete this module, its call
 in `exams._load` and the flat-layout tests in tests/test_exam_attempt_directories.py, as
@@ -129,11 +129,13 @@ def _fill(d: Path, doc: dict) -> None:
 
 
 def _fill_chat_inputs(d: Path) -> None:
-    passed = d / "passed.diff"
-    texts = {**NOT_KEPT, **({"diff.patch": passed.read_text()} if passed.exists() else {})}
-    for name, text in texts.items():
+    """The exam's chat diff and body from what the exam kept: the passed diff, else the last
+    job's inputs (`job/` stays after a job), else a line saying it was not kept. A symlink in
+    `job/`, which the session could write, is never followed."""
+    kept = {"diff.patch": (d / "passed.diff", d / "job" / "diff.patch"), "body.md": (d / "job" / "body.md",)}
+    for name, found in kept.items():
         if not (d / name).exists():
-            write_atomic(d / name, text)
+            write_atomic(d / name, next((p.read_text() for p in found if p.is_file() and not p.is_symlink()), NOT_KEPT[name]))
 
 
 def _fill_attempt(adir: Path, doc: dict, n: int) -> None:
@@ -146,3 +148,9 @@ def _fill_attempt(adir: Path, doc: dict, n: int) -> None:
             "version": 1, "repo": doc["repo"], "pr": doc["pr"], "head_sha": doc["head_sha"],
             "questions": [{"id": q["id"], "type": "text", "prompt": f"{q['concept']}: this question was not kept."}
                           for q in summary["questions"]]})
+
+
+def lost(adir: Path) -> bool:
+    """Attempt `adir` lost its exam to the flat layout (`_fill_attempt` kept only its result), so
+    no turn can be built from it."""
+    return not (adir / "exam.json").is_file()

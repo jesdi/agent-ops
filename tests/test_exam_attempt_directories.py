@@ -20,7 +20,7 @@ from pathlib import Path
 from dispatcher import exam_migration, exams
 from dispatcher.state import state_lock
 from tests.test_exam_debt import Gh, request
-from tests.test_exam_generation import HEAD, REPO
+from tests.test_exam_generation import BODY, DIFF, HEAD, REPO
 from tests.test_exam_grading import (
     FAIL_SPEC, answers_for, box_for, graded_once, opened, result_of, submit,
 )
@@ -378,3 +378,22 @@ def test_the_general_chat_of_each_attempt_is_in_the_view_and_stays_once_submitte
     assert submit(box, first).status_code == 202
     [grading] = box.read().json()["attempts"]
     assert grading["general"] == [shown]
+
+
+def test_a_flat_exam_chats_with_the_diff_and_body_its_last_job_kept_else_says_they_were_not_kept(tmp_path, monkeypatch):
+    for kept in (True, False):
+        box = box_for(tmp_path / str(kept), monkeypatch)
+        opened(box)
+        root = exam_dir(box)
+        for f in attempt_dir(box, 1).iterdir():   # the box before deploy: flat, and job/ left by the generation
+            shutil.move(str(f), root / f.name)
+        shutil.rmtree(root / "attempts")
+        before_assist(root)
+        if not kept:
+            shutil.rmtree(root / "job")
+        assert box.read().json()["exam"]["chat"] is True
+        diff, body = (root / "diff.patch").read_text(), (root / "body.md").read_text()
+        if kept:
+            assert (diff, body) == (DIFF, BODY)
+        else:
+            assert (diff, body) == (exam_migration.NOT_KEPT["diff.patch"], exam_migration.NOT_KEPT["body.md"])
