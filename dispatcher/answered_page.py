@@ -46,24 +46,33 @@ class _Renderer(HTMLParser):
         self.body_end: int | None = None
 
     def _control(self, tag: str, attrs: list, close: str) -> str:
-        values, text = dict(attrs), ""
+        values = dict(attrs)
+        text = self._note(values) if tag == "textarea" else ""
         if tag == "input" and (values.get("type") or "").lower() == "radio":
-            attrs = [(k, v) for k, v in attrs if k != "checked"]
-            value = values.get("value")
-            if value is not None and self.answers.get(values.get("name")) == value:
-                attrs.append(("checked", None))
-                self.matched.add(values.get("name"))
-        textarea_id = values.get("id") or ""
-        if tag == "textarea" and textarea_id.startswith("note-"):
-            key = textarea_id.removeprefix("note-") + ".note"
-            note = self.answers.get(key)
-            if isinstance(note, str):
-                self.matched.add(key)
-                self.skipping = True
-                text = escape(note, quote=False)
+            attrs = self._radio(attrs, values)
         if "disabled" not in values:
             attrs = [*attrs, ("disabled", None)]
         return _tag(tag, attrs, close) + text
+
+    def _radio(self, attrs: list, values: dict) -> list:
+        attrs = [(k, v) for k, v in attrs if k != "checked"]
+        value = values.get("value")
+        if value is not None and self.answers.get(values.get("name")) == value:
+            attrs.append(("checked", None))
+            self.matched.add(values.get("name"))
+        return attrs
+
+    def _note(self, values: dict) -> str:
+        textarea_id = values.get("id") or ""
+        if not textarea_id.startswith("note-"):
+            return ""
+        key = textarea_id.removeprefix("note-") + ".note"
+        note = self.answers.get(key)
+        if not isinstance(note, str):
+            return ""
+        self.matched.add(key)
+        self.skipping = True
+        return escape(note, quote=False)
 
     def handle_starttag(self, tag, attrs):
         if tag in _CONTROLS:
