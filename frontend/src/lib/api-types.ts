@@ -1186,6 +1186,7 @@ export interface components {
         /** Job */
         Job: {
             change?: components["schemas"]["Change"] | null;
+            current_schedule?: components["schemas"]["Schedule"] | null;
             /** Description */
             description: string;
             /** Id */
@@ -1761,6 +1762,20 @@ export interface components {
              * @default
              */
             model: string;
+        };
+        /**
+         * Schedule
+         * @description A schedule in the services config's shape: `every`, `daily` with `tz`, or `calendar`.
+         */
+        Schedule: {
+            /** Calendar */
+            calendar?: string | null;
+            /** Daily */
+            daily?: string | null;
+            /** Every */
+            every?: number | null;
+            /** Tz */
+            tz?: string | null;
         };
         /** ServicesView */
         ServicesView: {

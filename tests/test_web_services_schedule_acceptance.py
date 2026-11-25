@@ -373,3 +373,22 @@ def test_a_pause_still_being_recorded_is_not_an_applying_change_and_leaves_the_e
     entry = world.changes()["digest"]
     assert entry["schedule"] == {"every": 10} and entry["paused"] is True
     assert world.job(DIGEST)["change"]["state"] == "applying"
+
+
+SPEC = {"every": None, "daily": None, "tz": None, "calendar": None}
+
+
+@pytest.mark.parametrize("job,timer_fields,spec", [
+    (DISPATCHER, {}, {"every": 5}),
+    (DIGEST, {}, {"daily": "08:00", "tz": "UTC"}),
+    (TRIAGE, {}, {"daily": "04:00", "tz": "Europe/Madrid"}),
+    (DIGEST, {"on_calendar": "Mon..Fri *-*-* 09:00"}, {"calendar": "Mon..Fri *-*-* 09:00"}),
+    (DIGEST, {"on_calendar": "*-*-* 00,12:00:00"}, {"calendar": "*-*-* 00,12:00:00"}),
+    (DISPATCHER, {"on_calendar": "every 2h", "interval_seconds": 7200}, {"every": 120}),
+])
+def test_the_job_carries_its_current_schedule_in_the_editor_shape(world, job, timer_fields, spec):
+    for t in world.sources.box_timers:
+        if t["unit"] == f"{job}.timer":
+            t.update(timer_fields)
+
+    assert world.job(job)["current_schedule"] == {**SPEC, **spec}

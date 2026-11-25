@@ -7,15 +7,16 @@ type Kind = 'every' | 'daily' | 'calendar'
 
 const LABEL = 'flex flex-col gap-0.5 text-xs text-ink-muted'
 
-/** Schedule editor of a managed job: locked while a change applies, or when `locked` (no
- * services config installed); a refusal shows its message. */
+/** Schedule editor of a managed job, opened on its current schedule: locked while a change
+ * applies, or when `locked` (no services config installed); a refusal shows its message. */
 export function ScheduleEditor({ job, locked }: { job: ServiceJob; locked: boolean }) {
   const { schedule } = useServiceActions()
-  const [kind, setKind] = useState<Kind>('every')
-  const [every, setEvery] = useState('')
-  const [time, setTime] = useState('')
-  const [tz, setTz] = useState('')
-  const [calendar, setCalendar] = useState('')
+  const now = job.current_schedule
+  const [kind, setKind] = useState<Kind>(now?.daily ? 'daily' : now?.calendar ? 'calendar' : 'every')
+  const [every, setEvery] = useState(now?.every?.toString() ?? '')
+  const [time, setTime] = useState(now?.daily ?? '')
+  const [tz, setTz] = useState(now?.tz ?? '')
+  const [calendar, setCalendar] = useState(now?.calendar ?? '')
   const body = { every: { every: Number(every) }, daily: { daily: time, tz }, calendar: { calendar } }[kind]
   const submit = (e: React.FormEvent) => {
     e.preventDefault()

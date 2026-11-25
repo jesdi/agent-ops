@@ -36,6 +36,14 @@ class Change(BaseModel):
     url: str | None = None
 
 
+class Schedule(BaseModel):
+    """A schedule in the services config's shape: `every`, `daily` with `tz`, or `calendar`."""
+    every: int | None = None
+    daily: str | None = None
+    tz: str | None = None
+    calendar: str | None = None
+
+
 class Job(BaseModel):
     id: str
     name: str
@@ -43,6 +51,7 @@ class Job(BaseModel):
     state: str          # "active" | "paused" | "running" (an active job's run in progress)
     running: bool       # a run is in progress, also on a paused job run by hand
     schedule: str
+    current_schedule: Schedule | None = None  # a managed job's schedule, for its editor
     last_run: Run | None
     next_run: str | None
     read_only: bool
@@ -73,6 +82,18 @@ def describe_schedule(calendar: str | None) -> str:
     if m := re.fullmatch(r"\*-\*-\* ([\d,]+):(\d\d)(?::00)?(?: ([A-Za-z0-9_+\-/]+))?", calendar):
         return _daily(m[1], m[2], m[3])
     return calendar
+
+
+def schedule_of(unit: dict) -> Schedule | None:
+    """The schedule a managed job's timer fires on, in the services config's shape."""
+    calendar, seconds = unit["on_calendar"] or "", unit.get("interval_seconds")
+    if seconds:
+        return Schedule(every=seconds // 60) if seconds % 60 == 0 else None
+    if m := re.fullmatch(r"\*:0/(\d+)", calendar):
+        return Schedule(every=int(m[1]))
+    if m := re.fullmatch(r"\*-\*-\* (\d{1,2}):(\d\d)(?::00)?(?: ([A-Za-z0-9_+\-/]+))?", calendar):
+        return Schedule(daily=f"{int(m[1]):02d}:{m[2]}", tz=m[3] or "UTC")
+    return Schedule(calendar=calendar) if calendar else None
 
 
 RECENT, UPCOMING = 5, 3
@@ -183,7 +204,7 @@ def _live(job: Job, unit: dict, mine: list[dict], changes: dict, installed: dict
         "name": about.get("name") or job.name, "description": about.get("description") or job.description,
         "recent_runs": _recent(mine), "change": _change(changes.get(key)),
         "warning": _warning(unit, key, changes, installed),
-        "running": running, "state": "running" if running and job.state == "active" else job.state})
+        "running": running, "current_schedule": schedule_of(unit), "state": "running" if running and job.state == "active" else job.state})
 
 
 def _managed(t: dict) -> bool:

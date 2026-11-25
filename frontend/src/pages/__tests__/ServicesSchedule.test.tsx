@@ -176,3 +176,38 @@ describe('services page: the schedule editor', () => {
     expect(await save()).toBeEnabled()
   })
 })
+
+describe('services page: the schedule editor opens on the current schedule', () => {
+  const none = { every: null, daily: null, tz: null, calendar: null }
+
+  it('every N minutes', async () => {
+    serve(job('agent-ops-dispatcher', 'Dispatcher pass', { current_schedule: { ...none, every: 5 } }))
+    await open('Dispatcher pass')
+
+    expect(await kind()).toHaveValue('every')
+    expect(screen.getByLabelText(/minutes/i)).toHaveValue('5')
+  })
+
+  it('daily at a time in a timezone', async () => {
+    serve(job('agent-ops-triage', 'Backlog triage', {
+      schedule: 'daily at 04:00 Europe/Madrid', current_schedule: { ...none, daily: '04:00', tz: 'Europe/Madrid' },
+    }))
+    await open('Backlog triage')
+
+    expect(await kind()).toHaveValue('daily')
+    expect(screen.getByLabelText(/^time$/i)).toHaveValue('04:00')
+    expect(screen.getByLabelText(/timezone/i)).toHaveValue('Europe/Madrid')
+  })
+
+  it('a custom expression, and saving it unchanged sends it as is', async () => {
+    const { puts } = serve(job('agent-ops-codex-keepalive', 'Codex login keepalive', {
+      schedule: '*:0/2:30', current_schedule: { ...none, calendar: '*:0/2:30' },
+    }))
+    await open('Codex login keepalive')
+
+    expect(await kind()).toHaveValue('calendar')
+    expect(screen.getByLabelText(/expression/i)).toHaveValue('*:0/2:30')
+    await userEvent.click(await save())
+    await waitFor(() => expect(puts).toEqual(['agent-ops-codex-keepalive: {"calendar":"*:0/2:30"}']))
+  })
+})
