@@ -176,4 +176,13 @@ describe('exam page turns', () => {
     expect(q.getByText('Look here:')).not.toHaveClass('font-mono')
     expect(q.getByText(/Then compare\./)).not.toHaveClass('font-mono')
   })
+
+  it('shows a bare hunk with context lines in the monospace font, and an indented line of prose in the body font', async () => {
+    const reply = '@@ -40,2 +40,3 @@ def merge(pr):\n     lease = take_lease(pr)\n+    recheck_base(pr.base_sha)\n     push(pr)\n\n  only indented prose'
+    serve(view({ ...q2, tips: 1, tips_left: 2, assisted: true, thread: [{ ...done, text: reply }] }))
+    renderExam()
+    const q = within(await screen.findByText(q2.prompt).then(() => questionOf(q2.prompt)))
+    expect(q.getByText(/recheck_base\(pr\.base_sha\)/)).toHaveClass('font-mono')
+    expect(q.getByText(/only indented prose/)).not.toHaveClass('font-mono')
+  })
 })

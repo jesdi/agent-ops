@@ -98,11 +98,15 @@ type Block = { code: boolean; text: string }
 function blocksOf(text: string): Block[] {
   return text.split(FENCE).flatMap((part, i) => (i % 2   // prose, code, prose, code, …
     ? [{ code: true, text: part.replace(/\n+$/, '') }]
-    : part.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean).map((p) => ({ code: isDiff(p), text: p }))))
+    : part.split(/\n\s*\n/).map((p) => p.replace(/^\n+/, '').trimEnd()).filter((p) => p.trim()).map((p) => ({ code: isDiff(p), text: p }))))
 }
 
-/** A paragraph that is a diff left unfenced: every line a diff line. */
-const isDiff = (text: string) => text.split('\n').every((line) => /^(@@|\+|-|diff --git)/.test(line))
+/** A paragraph that is a diff left unfenced: every line a diff line (a hunk's context
+ * lines start with a space), and at least one of them a header or a change. */
+const isDiff = (text: string) => {
+  const lines = text.split('\n')
+  return lines.every((line) => /^(@@|\+|-| |diff --git)/.test(line)) && lines.some((line) => /^(@@|\+|-|diff --git)/.test(line))
+}
 
 /** A reply's text: its prose as written, its code in the console's monospace. */
 function ReplyText({ text }: { text: string }) {
