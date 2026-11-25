@@ -16,7 +16,8 @@ from tests.test_exam_question_bypass import GRADES, SIX, Box, bypass, without
 # The pr_exam.py of the pinned skills package, by its sha256 (from the published
 # @jesdi/skills tarball). Moving the pin in .my-skills.json fails this suite until it is
 # re-verified here against the new package's script.
-PINNED = {"0.0.103": "84732ab6a13fd1680f144d56b29741796522a0259bd95cdadae6b9ba430484b0"}
+PINNED = {"0.0.103": "84732ab6a13fd1680f144d56b29741796522a0259bd95cdadae6b9ba430484b0",
+          "0.0.104": "84732ab6a13fd1680f144d56b29741796522a0259bd95cdadae6b9ba430484b0"}   # pr-exam 0.1.1 in both
 PIN = json.loads((Path(__file__).parent.parent / ".my-skills.json").read_text())["skills"]["pr-exam"]["package"]
 SCRIPT = exam_runner.SCRIPT   # the installation the console runs
 
