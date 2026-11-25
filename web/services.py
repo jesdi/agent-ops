@@ -86,9 +86,11 @@ def _calendar_interval(calendar: str | None) -> int:
 def _upcoming(unit: dict) -> list[str]:
     if unit["active_state"] != "active" or not unit["next_run"]:
         return []
+    if unit.get("upcoming"):  # the probe's calendar walk, by systemd itself
+        return unit["upcoming"][:UPCOMING]
     first = datetime.fromisoformat(unit["next_run"])
     step = unit.get("interval_seconds") or _calendar_interval(unit["on_calendar"])
-    count = UPCOMING if step else 1  # ponytail: multi-time schedules list one run, add a calendar walk if needed
+    count = UPCOMING if step else 1  # no walk from the probe: only the next run is known
     return [(first + timedelta(seconds=step * i)).isoformat() for i in range(count)]
 
 

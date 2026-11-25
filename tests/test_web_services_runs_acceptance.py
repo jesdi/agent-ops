@@ -89,3 +89,13 @@ def test_a_read_only_job_lists_upcoming_runs_but_no_recent_runs(tmp_path):
 
     assert job["upcoming"][0] == "2026-11-25T00:00:00+00:00"
     assert not job.get("recent_runs")
+
+
+def test_calendar_jobs_list_the_three_runs_the_probe_walked(tmp_path):
+    walk = ["2026-11-25T08:00:00+00:00", "2026-11-25T20:00:00+00:00", "2026-11-26T08:00:00+00:00"]
+    managed = user_timer("agent-ops-digest", on_calendar="Mon..Fri *-*-* 09:00 Europe/Madrid",
+                         next_run=walk[0], upcoming=walk)
+    root = root_timer("secrets-refresh", next_run=walk[0], upcoming=walk)
+
+    assert job_of(tmp_path, [managed], {})["upcoming"] == walk
+    assert job_of(tmp_path, [root], {}, group="read_only")["upcoming"] == walk

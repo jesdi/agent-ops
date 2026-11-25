@@ -92,3 +92,33 @@ def test_upcoming_follows_the_probed_interval_not_the_words():
             "on_calendar": "every 2h", "interval_seconds": 7200}
     assert _upcoming(unit) == ["2026-11-18T12:00:00+00:00", "2026-11-18T14:00:00+00:00",
                                "2026-11-18T16:00:00+00:00"]
+
+
+ANALYZE = """  Original form: Mon..Fri *-*-* 09:00 Europe/Madrid
+Normalized form: Mon..Fri *-*-* 09:00:00 Europe/Madrid
+    Next elapse: Fri 2026-11-27 08:00:00 UTC
+       From now: 2 days left
+       Iter. #2: Mon 2026-11-30 08:00:00 UTC
+       From now: 5 days left
+       Iter. #3: Tue 2026-12-01 08:00:00 UTC
+       From now: 6 days left
+"""
+
+
+def test_calendar_runs_walks_the_expression_with_systemd_analyze(monkeypatch):
+    seen = []
+
+    def run(cmd, **kw):
+        seen.append((cmd, kw["env"]["TZ"]))
+        return SimpleNamespace(returncode=0, stdout=ANALYZE, stderr="")
+    monkeypatch.setattr(box_status.subprocess, "run", run)
+
+    assert box_status.calendar_runs("Mon..Fri *-*-* 09:00 Europe/Madrid") == [
+        "2026-11-27T08:00:00+00:00", "2026-11-30T08:00:00+00:00", "2026-12-01T08:00:00+00:00"]
+    assert seen == [(["systemd-analyze", "calendar", "--iterations=3", "Mon..Fri *-*-* 09:00 Europe/Madrid"], "UTC")]
+
+
+def test_calendar_runs_is_empty_when_systemd_analyze_fails(monkeypatch):
+    monkeypatch.setattr(box_status.subprocess, "run",
+                        lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="bad"))
+    assert box_status.calendar_runs("every tuesday-ish") == []
