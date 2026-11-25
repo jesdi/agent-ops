@@ -1042,6 +1042,11 @@ export interface components {
         ExamAttempt: {
             /** Attempt */
             attempt: number;
+            /**
+             * General
+             * @default []
+             */
+            general: components["schemas"]["ExamTurn"][];
             /** Questions */
             questions: components["schemas"]["ExamQuestion"][];
             result: components["schemas"]["ExamResult"] | null;
@@ -1113,6 +1118,11 @@ export interface components {
          * @description The served projection of an attempt: never a key entry or a rubric.
          */
         ExamQuestions: {
+            /**
+             * General
+             * @default []
+             */
+            general: components["schemas"]["ExamTurn"][];
             /** Head Sha */
             head_sha: string;
             /** Pr */

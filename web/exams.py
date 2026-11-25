@@ -79,6 +79,7 @@ class ExamQuestions(BaseModel):
     pr: int
     head_sha: str
     questions: list[ExamQuestion]
+    general: list[ExamTurn] = []   # the attempt's general chat; absent until it has a turn
 
 
 class ExamQuestionResult(BaseModel):
@@ -103,6 +104,7 @@ class ExamAttempt(BaseModel):
     once graded. `questions` is empty for an attempt kept from before attempts had their own."""
     attempt: int
     questions: list[ExamQuestion]
+    general: list[ExamTurn] = []   # the attempt's general chat; absent until it has a turn
     result: ExamResult | None
 
 

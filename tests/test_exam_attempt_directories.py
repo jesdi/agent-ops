@@ -329,3 +329,16 @@ def test_a_flat_result_of_an_interrupted_follow_up_grading_stays_with_the_follow
     assert all(q.get("feedback") != "FB-second" for q in result_of(body, 1)["questions"])
     box.work()
     assert box.read().json()["state"] == "passed"
+
+
+def test_the_general_chat_of_each_attempt_is_in_the_view_and_stays_once_submitted(tmp_path, monkeypatch):
+    box = box_for(tmp_path, monkeypatch)
+    first = opened(box)
+    turn = {"id": "g1", "kind": "general", "question": None, "message": "riskiest change?", "text": "the lease",
+            "status": "done", "error": None, "after_submit": False, "started": "2026-11-24T00:00:00+00:00"}
+    (attempt_dir(box, 1) / "threads.json").write_text(json.dumps({"turns": [turn]}))
+    shown = {k: turn[k] for k in ("id", "kind", "message", "text", "status", "error")}
+    assert box.read().json()["exam"]["general"] == [shown]
+    assert submit(box, first).status_code == 202
+    [grading] = box.read().json()["attempts"]
+    assert grading["general"] == [shown]

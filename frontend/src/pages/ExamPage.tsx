@@ -1,14 +1,25 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams } from 'react-router'
-import { api, ApiError, type ExamQuestion, type ExamResult, type ExamState, type ExamView } from '../lib/api'
+import { api, ApiError, type ExamAttempt, type ExamQuestion, type ExamResult, type ExamState, type ExamView } from '../lib/api'
 import { queryKeys } from '../hooks/queryKeys'
 import { useExam } from '../hooks/useResources'
-import { ExamThread, type ChatTarget } from '../components/ExamThread'
+import { ExamThread, GeneralChat, QuoteContext, type ChatTarget, type Quote } from '../components/ExamThread'
 
 type Answers = Record<string, number | string>
 
 type Bypassing = { bypassed: string | null; toggle: (question: string) => void }
+
+type ExamResultQuestion = ExamResult['questions'][number]
+
+/** The chat target of attempt `attempt` of the exam. */
+function chatTarget(data: ExamView, attempt: number): ChatTarget {
+  const [owner = '', name = ''] = data.repo.split('/')
+  return { owner, name, pr: String(data.pr), attempt, head_sha: data.head_sha ?? '' }
+}
+
+/** Marks an element whose selected text quotes that question of that attempt into its thread. */
+const quotes = (attempt: number, question: string) => ({ 'data-quote-attempt': attempt, 'data-quote-question': question })
 
 function Question({ q, value, onChange, bypassing, chat }: {
   q: ExamQuestion; value: number | string | undefined; onChange: (v: number | string) => void; bypassing: Bypassing; chat: ChatTarget
@@ -17,7 +28,7 @@ function Question({ q, value, onChange, bypassing, chat }: {
   const bypassed = bypassing.bypassed === q.id
   const draft = typeof value === 'string' ? value : ''
   return (
-    <li className="space-y-2">
+    <li className="space-y-2" {...quotes(chat.attempt, q.id)}>
       <p id={promptId} className="font-medium">{q.prompt}</p>
       {q.type === 'choice' ? (
         <div role="radiogroup" aria-labelledby={promptId} className="space-y-1">
@@ -50,16 +61,77 @@ function Assisted({ q }: { q: ExamQuestion }) {
   return q.assisted ? <p className="text-sm text-ink-muted">assisted</p> : null
 }
 
-/** The questions of `result` that lost points or were bypassed, each with its explanation, the grader's feedback and its hunk. */
+/** The questions of `result` that lost points or had help, each with its explanation, the grader's feedback and its hunk. */
 function Misses({ result }: { result: ExamResult }) {
-  return result.questions.filter((m) => m.help === 'bypassed' || (m.points ?? 1) < 1).map((m) => (
+  return result.questions.filter((m) => m.help || (m.points ?? 1) < 1).map((m) => (
     <article key={m.id} className="space-y-1">
       <h2 className="font-medium">{m.concept}</h2>
-      <p>{m.explanation}</p>
-      {m.feedback && <p className="text-sm">{m.feedback}</p>}
-      <pre className="overflow-x-auto rounded border border-border bg-surface p-2 text-sm">{m.hunk}</pre>
+      {m.help === 'assisted' && <p className="text-sm text-ink-muted">assisted</p>}
+      <Explained r={m} />
     </article>
   ))
+}
+
+/** A graded question's explanation, the grader's feedback under it, and its hunk: each only where the result has it. */
+function Explained({ r }: { r: ExamResultQuestion }) {
+  return (
+    <>
+      {r.explanation && <p>{r.explanation}</p>}
+      {r.feedback && <p className="text-sm">{r.feedback}</p>}
+      {r.hunk && <pre className="overflow-x-auto rounded border border-border bg-surface p-2 text-sm">{r.hunk}</pre>}
+    </>
+  )
+}
+
+/** A kept question's outcome: its points and help once graded (the flags sealed at submit), its assisted mark while grading. */
+function Outcome({ q, r }: { q: ExamQuestion; r: ExamResultQuestion | undefined }) {
+  const help = r ? r.help : q.assisted ? 'assisted' : null
+  const line = [r?.points != null ? `${r.points} / 1` : null, help].filter(Boolean).join(' · ')
+  return (
+    <>
+      {line && <p className="text-sm text-ink-muted">{line}</p>}
+      {r && <Explained r={r} />}
+    </>
+  )
+}
+
+/** A submitted attempt with its questions, each with its outcome and its thread, open to chat but taking no tip. */
+function AttemptReview({ data, kept }: { data: ExamView; kept: ExamAttempt }) {
+  const results = new Map((kept.result?.questions ?? []).map((r) => [r.id, r]))
+  const chat = chatTarget(data, kept.attempt)
+  const score = kept.result && !kept.result.passed ? ` · Score ${kept.result.score} / ${kept.result.max}` : ''
+  return (
+    <section className="space-y-3">
+      <h2 className="font-medium">Attempt {kept.attempt}{score}</h2>
+      <ol className="space-y-6">
+        {kept.questions.map((q) => (
+          <li key={q.id} className="space-y-2" {...quotes(kept.attempt, q.id)}>
+            <p className="font-medium">{q.prompt}</p>
+            <Outcome q={q} r={results.get(q.id)} />
+            <ExamThread q={q} draft="" target={chat} tips={false} />
+          </li>
+        ))}
+      </ol>
+    </section>
+  )
+}
+
+/** Every submitted attempt of this head, oldest first. One kept from before attempts had their own questions shows only
+ *  its misses, and only while it is the last. */
+function Kept({ data }: { data: ExamView }) {
+  const last = data.attempts.at(-1)
+  return data.attempts.map((a) => a.questions.length
+    ? <AttemptReview key={a.attempt} data={data} kept={a} />
+    : a === last && a.result ? <Summary key={a.attempt} result={a.result} /> : null)
+}
+
+function Summary({ result }: { result: ExamResult }) {
+  return (
+    <section className="space-y-3">
+      {!result.passed && <p>Score {result.score} / {result.max}{bypassedNote(result)}</p>}
+      <Misses result={result} />
+    </section>
+  )
 }
 
 function isStatus(error: unknown, status: number) {
@@ -75,8 +147,7 @@ function AttemptForm({ data, onSubmit, pending, bypassing }: {
 }) {
   const [answers, setAnswers] = useState<Answers>({})
   const questions = data.exam?.questions ?? []
-  const [owner = '', name = ''] = data.repo.split('/')
-  const chat = { owner, name, pr: String(data.pr), attempt: data.attempt, head_sha: data.head_sha ?? '' }
+  const chat = chatTarget(data, data.attempt)
   const ready = isAnswered(questions, answers, data.bypassed) && !pending
   return (
     <form onSubmit={(e) => { e.preventDefault(); if (ready) onSubmit(Object.fromEntries(Object.entries(answers).filter(([id]) => id !== data.bypassed))) }} className="space-y-4">
@@ -130,16 +201,6 @@ function lastResult(data: ExamView) {
   return data.attempts.findLast((a) => a.result)?.result
 }
 
-function LastMisses({ data }: { data: ExamView }) {
-  const last = lastResult(data)
-  return last && !last.passed ? (
-    <section className="space-y-3">
-      <p>Score {last.score} / {last.max}{bypassedNote(last)}</p>
-      <Misses result={last} />
-    </section>
-  ) : null
-}
-
 /** Which questions of `result` were bypassed, named in the one line that carries the score. */
 function bypassedNote(result: ExamResult) {
   const concepts = result.questions.filter((m) => m.help === 'bypassed').map((m) => m.concept)
@@ -147,28 +208,12 @@ function bypassedNote(result: ExamResult) {
 }
 
 function GeneratingView({ data }: ViewProps) {
-  return <><p>Generating the exam…</p><LastMisses data={data} /></>
+  return <><p>Generating the exam…</p><Kept data={data} /></>
 }
 
 /** The submitted attempt's questions stay open to chat while it is graded, but take no tip. */
 function GradingView({ data }: ViewProps) {
-  const [owner = '', name = ''] = data.repo.split('/')
-  const grading = data.attempts.findLast((a) => !a.result)
-  const chat = { owner, name, pr: String(data.pr), attempt: grading?.attempt ?? data.attempt, head_sha: data.head_sha ?? '' }
-  return (
-    <>
-      <p>Grading your answers…</p>
-      <ol className="space-y-6">
-        {(grading?.questions ?? []).map((q) => (
-          <li key={q.id} className="space-y-2">
-            <p className="font-medium">{q.prompt}</p>
-            <Assisted q={q} />
-            <ExamThread q={q} draft="" target={chat} tips={false} />
-          </li>
-        ))}
-      </ol>
-    </>
-  )
+  return <><p>Grading your answers…</p><Kept data={data} /></>
 }
 
 function ErrorView({ data }: ViewProps) {
@@ -184,7 +229,7 @@ function PassedView({ data }: ViewProps) {
         {!data.debt && <p>The exam status is posted as success.</p>}
       </section>
       {/* a passing attempt can still hold partial answers, with the grader's feedback */}
-      <section className="space-y-3"><Misses result={last} /></section>
+      <Kept data={data} />
     </>
   ) : null
 }
@@ -192,7 +237,7 @@ function PassedView({ data }: ViewProps) {
 function OpenView({ data, answer }: ViewProps) {
   return (
     <>
-      <LastMisses data={data} />
+      <Kept data={data} />
       {data.exam && (
         <AttemptForm key={`${data.attempt}-${data.head_sha}`} data={data} pending={answer.pending} onSubmit={answer.submit} bypassing={answer.bypassing} />
       )}
@@ -215,14 +260,57 @@ function Notices({ debt, answer }: { debt: boolean; answer: Answering }) {
   )
 }
 
+/** The attempt the general chat talks about: the open one, else the last submitted; none before the first opens. */
+function chattingAttempt(data: ExamView) {
+  return data.exam ? data.attempt : data.attempts.at(-1)?.attempt
+}
+
+const CHATTING: ExamState[] = ['generating', 'open', 'grading', 'passed']
+
+/** The general chat of the latest attempt, with every earlier attempt's kept above it. */
+function Chat({ data }: { data: ExamView }) {
+  const attempt = chattingAttempt(data)
+  if (attempt === undefined || !CHATTING.includes(data.state)) return null
+  const earlier = data.attempts.filter((a) => a.attempt !== attempt).map((a) => ({ attempt: a.attempt, thread: a.general ?? [] }))
+  const thread = (data.exam ? data.exam.general : data.attempts.at(-1)?.general) ?? []
+  return <GeneralChat key={`${attempt}-${data.head_sha}`} target={chatTarget(data, attempt)} thread={thread} earlier={earlier} />
+}
+
+/** The quote of the operator's last selection: inside a question or its result it is for that question's thread, elsewhere on
+ *  the page for the general chat. A selection inside a text box or the general chat quotes nothing. */
+function useSelectionQuote(attempt: number | undefined) {
+  const [quote, setQuote] = useState<Quote | null>(null)
+  useEffect(() => {
+    if (attempt === undefined) return
+    const onSelect = () => {
+      const selection = document.getSelection()
+      const text = selection?.toString().trim()
+      const node = selection?.anchorNode
+      const at = node instanceof Element ? node : node?.parentElement
+      if (!text || !at || at.closest('textarea, input, [data-chat]')) return
+      const holder = at.closest<HTMLElement>('[data-quote-question]')
+      setQuote(holder
+        ? { attempt: Number(holder.dataset.quoteAttempt), question: holder.dataset.quoteQuestion ?? null, text }
+        : { attempt, question: null, text })
+    }
+    document.addEventListener('selectionchange', onSelect)
+    return () => document.removeEventListener('selectionchange', onSelect)
+  }, [attempt])
+  return quote
+}
+
 function ExamBody({ data, answer }: ViewProps) {
   const View = STATE_VIEWS[data.state]
+  const quote = useSelectionQuote(chattingAttempt(data))
   return (
-    <main className="mx-auto max-w-2xl space-y-4 p-4">
-      <h1 className="text-lg font-semibold">Exam for {data.repo} #{data.pr}</h1>
-      <Notices debt={data.debt} answer={answer} />
-      {View && <View data={data} answer={answer} />}
-    </main>
+    <QuoteContext.Provider value={quote}>
+      <main className="mx-auto max-w-2xl space-y-4 p-4 pb-20">
+        <h1 className="text-lg font-semibold">Exam for {data.repo} #{data.pr}</h1>
+        <Notices debt={data.debt} answer={answer} />
+        {View && <View data={data} answer={answer} />}
+        <Chat data={data} />
+      </main>
+    </QuoteContext.Provider>
   )
 }
 

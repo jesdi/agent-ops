@@ -186,12 +186,15 @@ def view(state_dir: str | Path, repo: str, pr: int) -> dict | None:
 
 
 def _chatted(state_dir, doc: dict, n: int) -> dict | None:
-    """Attempt `n`'s served questions, each with its tips, assisted mark and thread."""
+    """Attempt `n`'s served questions, each with its tips, assisted mark and thread, and its
+    general chat once it has one."""
     served = public(state_dir, doc["repo"], doc["pr"], n)
     if served is None:
         return None
     turns = _turns(attempt_dir(state_dir, doc["repo"], doc["pr"], n))
-    return {**served, "questions": [{**q, **_help(q["id"], turns)} for q in served["questions"]]}
+    general = [_thread_entry(t) for t in turns if t["question"] is None]
+    return {**served, "questions": [{**q, **_help(q["id"], turns)} for q in served["questions"]],
+            **({"general": general} if general else {})}
 
 
 def _help(qid: str, turns: list[dict]) -> dict:
@@ -217,14 +220,15 @@ def _submitted(state_dir, doc: dict) -> list[dict]:
     """The graded attempts of this head with their result, then the one grading, if any."""
     graded = [(r["attempt"], r) for r in doc["results"]]
     grading = [(doc["grading"]["attempt"], None)] if doc["grading"] else []
-    return [{"attempt": n, "questions": _questions(state_dir, doc, n), "result": result}
+    return [{"attempt": n, **_questions(state_dir, doc, n), "result": result}
             for n, result in graded + grading]
 
 
-def _questions(state_dir, doc: dict, n: int) -> list[dict]:
-    """Attempt `n`'s served questions; [] for one whose questions the flat layout replaced."""
-    served = _chatted(state_dir, doc, n)
-    return served["questions"] if served else []
+def _questions(state_dir, doc: dict, n: int) -> dict:
+    """Attempt `n`'s served questions and its general chat once it has one; no questions for
+    one whose questions the flat layout replaced."""
+    served = _chatted(state_dir, doc, n) or {"questions": []}
+    return {k: served[k] for k in ("questions", "general") if k in served}
 
 
 def app(state_dir: str | Path) -> dict | None:
