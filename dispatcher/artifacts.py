@@ -132,12 +132,16 @@ def stamp_console_link(worktree: str | Path, artifact: str, console_url: str,
     stamped = _CONSOLE_META.sub(b"", raw).replace(marker, marker + meta, 1)
     if stamped == raw or len(stamped) > REVIEW_PAGE_MAX_BYTES:
         return
-    # Atomic, beside the page, with its mode: a symlink put there since the
-    # read is replaced, never written through.
+    _replace_page(page, stamped)
+
+
+def _replace_page(page: Path, data: bytes) -> None:
+    """Atomic, beside the page, with its mode: a symlink put there since the
+    read is replaced, never written through."""
     fd, tmp = tempfile.mkstemp(dir=page.parent, prefix=".console-meta-")
     try:
         with os.fdopen(fd, "wb") as f:
-            f.write(stamped)
+            f.write(data)
         os.chmod(tmp, stat.S_IMODE(os.lstat(page).st_mode))
         os.replace(tmp, page)
     except OSError:

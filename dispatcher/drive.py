@@ -328,13 +328,18 @@ def _reads(turn: _Turn, task: TaskState) -> Reads:
     reader = _READS.get(signal.status) if signal is not None else None
     if reader is None:
         return Reads()
+    _stamp_armed(turn, task, signal)
+    return reader(task, signal)
+
+
+def _stamp_armed(turn: _Turn, task: TaskState, signal: StageSignal) -> None:
+    """Stamp the console link into the page of a request about to be armed."""
     # An answers park without a page arms no request: nothing to stamp.
     armed = signal.status == "awaiting-review" or (
         signal.status == "awaiting-answers" and signal.artifact)
     if armed and not turn.dry_run:
         stamp_console_link(task.worktree, signal.artifact, turn.cfg.console_url,
                            task.repository, task.issue)
-    return reader(task, signal)
 
 
 def _ready_reads(task: TaskState, signal: StageSignal) -> Reads:
