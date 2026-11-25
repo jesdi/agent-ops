@@ -169,7 +169,7 @@ export function ServicesPage() {
         <Group title="Managed" jobs={data.managed} selected={selected} onSelect={setSelected} />
         <Group title="Root jobs" jobs={data.read_only} selected={selected} onSelect={setSelected} />
       </div>
-      {job ? <Detail job={job} now={data.now} /> : <p className="text-ink-muted">Select a job.</p>}
+      {job ? <Detail key={job.id} job={job} now={data.now} /> : <p className="text-ink-muted">Select a job.</p>}
     </div>
   )
 }
