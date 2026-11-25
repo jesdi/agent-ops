@@ -49,6 +49,11 @@ export function ReviewPage() {
     bridge.current?.restore(dropped)
     setNotice((n) => (n === CHANGED ? null : n))
   }, [dropped, bridge])
+  // A drop takes back the approved notice: the approval never reached the session.
+  const wasDropped = state?.state === 'dropped'
+  useEffect(() => {
+    if (wasDropped) setNotice((n) => (n === APPROVED ? null : n))
+  }, [wasDropped])
   // The changed and unsaved notices cover the page's top: they go after a
   // while or on tap (the page keeps its selections). The newer-console notice
   // is an error and stays.
