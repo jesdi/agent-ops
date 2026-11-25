@@ -62,11 +62,11 @@ def describe_schedule(calendar: str | None) -> str:
 RECENT, UPCOMING = 5, 3
 
 
-def _calendar_interval(calendar: str | None) -> int | None:
-    """Seconds between runs of a systemd OnCalendar that repeats evenly; None otherwise."""
+def _calendar_interval(calendar: str | None) -> int:
+    """Seconds between runs of a systemd OnCalendar that repeats evenly; 0 otherwise."""
     if m := re.fullmatch(r"\*:0/(\d+)", calendar or ""):
         return int(m[1]) * 60
-    return 86400 if re.fullmatch(r"\*-\*-\* \d{1,2}:\d\d(?::00)?", calendar or "") else None
+    return 86400 if re.fullmatch(r"\*-\*-\* \d{1,2}:\d\d(?::00)?", calendar or "") else 0
 
 
 def _upcoming(unit: dict) -> list[str]:
@@ -75,7 +75,7 @@ def _upcoming(unit: dict) -> list[str]:
     first = datetime.fromisoformat(unit["next_run"])
     step = unit.get("interval_seconds") or _calendar_interval(unit["on_calendar"])
     count = UPCOMING if step else 1  # ponytail: multi-time schedules list one run, add a calendar walk if needed
-    return [(first + timedelta(seconds=(step or 0) * i)).isoformat() for i in range(count)]
+    return [(first + timedelta(seconds=step * i)).isoformat() for i in range(count)]
 
 
 def _recent(runs: list[dict]) -> list[RecentRun]:
