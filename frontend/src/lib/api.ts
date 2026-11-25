@@ -45,6 +45,9 @@ export type TrackSetting = components['schemas']['TrackSetting']
 export type ExamView = components['schemas']['ExamView']
 export type ExamState = components['schemas']['ExamState']
 export type ExamQuestion = components['schemas']['ExamQuestion']
+export type ExamTurn = components['schemas']['ExamTurn']
+export type TurnBody = components['schemas']['TurnBody']
+export type TurnEnd = { status: 'done' } | { status: 'failed'; error: string }
 export type ExamAttempt = components['schemas']['ExamAttempt']
 export type ExamResult = components['schemas']['ExamResult']
 export type ExamsView = components['schemas']['ExamsView']
@@ -114,6 +117,40 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
+type TurnEvent = { delta: string } | TurnEnd
+
+/** Reads a turn's SSE stream: `onDelta` gets each chunk of the reply, and the result is how the turn ended. */
+async function followTurn(path: string, onDelta: (text: string) => void): Promise<TurnEnd> {
+  const res = await fetch(`/api${path}`)
+  if (!res.ok || !res.body) return { status: 'failed', error: `the reply stream is unavailable (${res.status})` }
+  return readTurn(res.body.pipeThrough(new TextDecoderStream()).getReader(), onDelta)
+}
+
+async function readTurn(reader: ReadableStreamDefaultReader<string>, onDelta: (text: string) => void): Promise<TurnEnd> {
+  let buffer = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) return { status: 'failed', error: 'the reply stream ended early' }
+    const blocks = (buffer + value).split('\n\n')
+    buffer = blocks.pop() as string   // an event not yet complete
+    const end = deliver(blocks.flatMap(eventsOf), onDelta)
+    if (end) return end
+  }
+}
+
+/** The event of an SSE block, if it has data. */
+const eventsOf = (block: string): TurnEvent[] =>
+  block.split('\n').filter((line) => line.startsWith('data:')).slice(0, 1).map((line) => JSON.parse(line.slice(5)) as TurnEvent)
+
+/** Feeds the deltas to `onDelta` up to the end of the turn, which it returns. */
+function deliver(events: TurnEvent[], onDelta: (text: string) => void): TurnEnd | undefined {
+  for (const event of events) {
+    if ('status' in event) return event
+    onDelta(event.delta)
+  }
+  return undefined
+}
+
 const post = <T>(path: string, body: unknown) =>
   request<T>(path, { method: 'POST', body: JSON.stringify(body) })
 const put = <T>(path: string, body: unknown) =>
@@ -135,6 +172,10 @@ export const api = {
   exam: (owner: string, name: string, pr: string) => request<ExamView>(examPath(owner, name, pr)),
   answerExam: (owner: string, name: string, pr: string, body: { attempt: number; head_sha: string; answers: Record<string, number | string> }) =>
     post<ExamView>(`${examPath(owner, name, pr)}/answers`, body),
+  startTurn: (owner: string, name: string, pr: string, body: TurnBody) =>
+    post<{ id: string }>(`${examPath(owner, name, pr)}/turns`, body),
+  followTurn: (owner: string, name: string, pr: string, id: string, onDelta: (text: string) => void) =>
+    followTurn(`${examPath(owner, name, pr)}/turns/${encodeURIComponent(id)}/stream`, onDelta),
   bypassExam: (owner: string, name: string, pr: string, on: boolean, body: { attempt: number; head_sha: string; question: string }) =>
     request<ExamView>(`${examPath(owner, name, pr)}/bypass`, { method: on ? 'POST' : 'DELETE', body: JSON.stringify(body) }),
   onboardings: () => request<OnboardingsView>('/onboarding'),

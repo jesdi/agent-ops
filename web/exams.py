@@ -53,11 +53,23 @@ class ExamAccepted(Exam):
     pending: bool
 
 
+class ExamTurn(BaseModel):
+    id: str
+    kind: Literal["tip", "question", "general"]
+    message: str
+    text: str
+    status: Literal["running", "done", "failed"]
+    error: str | None
+
+
 class ExamQuestion(BaseModel):
     id: str
     type: Literal["choice", "text"]
     prompt: str
     options: list[str] | None = None
+    tips: int = 0   # the open attempt's done and running tips of this question
+    assisted: bool = False
+    thread: list[ExamTurn] = []
 
 
 class ExamQuestions(BaseModel):

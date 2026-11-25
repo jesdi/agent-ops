@@ -141,6 +141,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/exam/{owner}/{name}/{pr}/turns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start */
+        post: operations["start_api_exam__owner___name___pr__turns_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/exam/{owner}/{name}/{pr}/turns/{turn_id}/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Stream */
+        get: operations["stream_api_exam__owner___name___pr__turns__turn_id__stream_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/exams": {
         parameters: {
             query?: never;
@@ -1030,12 +1064,27 @@ export interface components {
         };
         /** ExamQuestion */
         ExamQuestion: {
+            /**
+             * Assisted
+             * @default false
+             */
+            assisted: boolean;
             /** Id */
             id: string;
             /** Options */
             options?: string[] | null;
             /** Prompt */
             prompt: string;
+            /**
+             * Thread
+             * @default []
+             */
+            thread: components["schemas"]["ExamTurn"][];
+            /**
+             * Tips
+             * @default 0
+             */
+            tips: number;
             /**
              * Type
              * @enum {string}
@@ -1098,6 +1147,27 @@ export interface components {
          * @enum {string}
          */
         ExamState: "new" | "generating" | "open" | "grading" | "passed" | "skipped" | "disabled" | "error";
+        /** ExamTurn */
+        ExamTurn: {
+            /** Error */
+            error: string | null;
+            /** Id */
+            id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "tip" | "question" | "general";
+            /** Message */
+            message: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "running" | "done" | "failed";
+            /** Text */
+            text: string;
+        };
         /** ExamView */
         ExamView: {
             /** Attempt */
@@ -1967,6 +2037,22 @@ export interface components {
             /** When */
             when: string;
         };
+        /** TurnBody */
+        TurnBody: {
+            /** Attempt */
+            attempt: number;
+            /** Head Sha */
+            head_sha: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "tip" | "question" | "general";
+            /** Message */
+            message: string;
+            /** Question */
+            question?: string | null;
+        };
         /**
          * UnavailableContent
          * @description File exists as a request but cannot be read: missing, non-UTF-8, or containment
@@ -2283,6 +2369,77 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ExamView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_api_exam__owner___name___pr__turns_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                name: string;
+                pr: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TurnBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stream_api_exam__owner___name___pr__turns__turn_id__stream_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                name: string;
+                pr: number;
+                turn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

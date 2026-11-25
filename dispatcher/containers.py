@@ -239,17 +239,9 @@ def setup_cmd(name: str, worktree: str, setup: str, clone: str) -> list[str]:
     ]
 
 
-def inspection_cmd(name: str, clone: str, request_dir: str, state_dir: str,
-                   memory: str, cpus: str, model: str, effort: str = '') -> list[str]:
-    """Inspection's model-auth-only container, with no executable repository tools.
-
-    Issue 228 authorizes an authenticated model session without GitHub or
-    1Password credentials. Only that provider's auth file is mounted; its
-    settings, hooks, plugins and other runtime-home files are not exposed.
-    stdin supplies bounded text collected by our own reader. The read-only
-    clone is never the working directory and no repository program is run.
-    """
-    runtime = runtime_for(model)
+def _sandbox(name: str, state_dir: str, memory: str, cpus: str, runtime: Runtime) -> list[str]:
+    """A one-shot model-auth-only container: no GitHub or 1Password credential, only the
+    provider's auth file (its settings, hooks and plugins stay out), a throwaway home, stdin."""
     auth = runtime.auth_file
     return [*_wrapper(), 'podman', 'run', '--rm', '-i', '--name', name,
             '--memory', memory, '--cpus', cpus,
@@ -258,7 +250,29 @@ def inspection_cmd(name: str, clone: str, request_dir: str, state_dir: str,
             '-e', f'{runtime.home_var}={runtime.mount}',
             '-e', 'DISABLE_AUTOUPDATER=1',
             '-v', f'{state_dir}/{runtime.home}/{auth}:{runtime.mount}/{auth}:ro',
-            *_host_binary(runtime),
+            *_host_binary(runtime)]
+
+
+def inspection_cmd(name: str, clone: str, request_dir: str, state_dir: str,
+                   memory: str, cpus: str, model: str, effort: str = '') -> list[str]:
+    """Inspection's model-auth-only container, with no executable repository tools.
+
+    Issue 228 authorizes an authenticated model session without GitHub or
+    1Password credentials. stdin supplies bounded text collected by our own
+    reader. The read-only clone is never the working directory and no
+    repository program is run.
+    """
+    runtime = runtime_for(model)
+    return [*_sandbox(name, state_dir, memory, cpus, runtime),
             '-v', f'{clone}:/repository:ro,noexec,nosuid,nodev',
             '-v', f'{request_dir}/input:/inspection:ro', '-w', '/inspection',
             image(), *runtime.inspection(bare_model_id(model), effort)]
+
+
+def turn_cmd(name: str, state_dir: str, memory: str, cpus: str, model: str,
+             effort: str = '') -> list[str]:
+    """An exam chat turn: inspection's sandbox with no clone and no request mount, the
+    prompt on stdin and the reply streamed as JSON lines. The console runs it itself."""
+    runtime = runtime_for(model)
+    return [*_sandbox(name, state_dir, memory, cpus, runtime),
+            image(), *runtime.streaming(bare_model_id(model), effort)]

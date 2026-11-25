@@ -259,9 +259,13 @@ describe('exam page', () => {
     await userEvent.tab()
     await userEvent.keyboard('{ArrowDown}')
     expect(screen.getByRole('radio', { name: 'the base SHA' })).toBeChecked()
-    await userEvent.tab()   // each question's Bypass button follows its answer
+    await userEvent.tab()   // each question's Bypass, Tip and Ask buttons follow its answer
+    await userEvent.tab()
+    await userEvent.tab()
     await userEvent.tab()
     await userEvent.keyboard('Because main may have moved.')
+    await userEvent.tab()
+    await userEvent.tab()
     await userEvent.tab()
     await userEvent.tab()
     expect(submit()).toHaveFocus()

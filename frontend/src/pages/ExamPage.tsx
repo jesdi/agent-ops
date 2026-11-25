@@ -4,16 +4,18 @@ import { useParams } from 'react-router'
 import { api, ApiError, type ExamQuestion, type ExamResult, type ExamState, type ExamView } from '../lib/api'
 import { queryKeys } from '../hooks/queryKeys'
 import { useExam } from '../hooks/useResources'
+import { ExamThread, type ChatTarget } from '../components/ExamThread'
 
 type Answers = Record<string, number | string>
 
 type Bypassing = { bypassed: string | null; toggle: (question: string) => void }
 
-function Question({ q, value, onChange, bypassing }: {
-  q: ExamQuestion; value: number | string | undefined; onChange: (v: number | string) => void; bypassing: Bypassing
+function Question({ q, value, onChange, bypassing, chat }: {
+  q: ExamQuestion; value: number | string | undefined; onChange: (v: number | string) => void; bypassing: Bypassing; chat: ChatTarget
 }) {
   const promptId = `prompt-${q.id}`
   const bypassed = bypassing.bypassed === q.id
+  const draft = typeof value === 'string' ? value : ''
   return (
     <li className="space-y-2">
       <p id={promptId} className="font-medium">{q.prompt}</p>
@@ -30,7 +32,7 @@ function Question({ q, value, onChange, bypassing }: {
         <textarea
           aria-labelledby={promptId}
           rows={4}
-          value={typeof value === 'string' ? value : ''}
+          value={draft}
           onChange={(e) => onChange(e.target.value)}
           className="w-full rounded border border-ink-muted bg-transparent p-2"
         />
@@ -38,6 +40,7 @@ function Question({ q, value, onChange, bypassing }: {
       <button type="button" onClick={() => bypassing.toggle(q.id)} className="rounded border px-2 py-1 text-sm">
         {bypassed ? 'Undo bypass' : 'Bypass'}
       </button>
+      <ExamThread q={q} draft={draft} target={chat} />
     </li>
   )
 }
@@ -67,12 +70,14 @@ function AttemptForm({ data, onSubmit, pending, bypassing }: {
 }) {
   const [answers, setAnswers] = useState<Answers>({})
   const questions = data.exam?.questions ?? []
+  const [owner = '', name = ''] = data.repo.split('/')
+  const chat = { owner, name, pr: String(data.pr), attempt: data.attempt, head_sha: data.head_sha ?? '' }
   const ready = isAnswered(questions, answers, data.bypassed) && !pending
   return (
     <form onSubmit={(e) => { e.preventDefault(); if (ready) onSubmit(Object.fromEntries(Object.entries(answers).filter(([id]) => id !== data.bypassed))) }} className="space-y-4">
       <ol className="space-y-6">
         {questions.map((q) => (
-          <Question key={q.id} q={q} bypassing={bypassing} value={answers[q.id]} onChange={(v) => setAnswers((a) => ({ ...a, [q.id]: v }))} />
+          <Question key={q.id} q={q} bypassing={bypassing} chat={chat} value={answers[q.id]} onChange={(v) => setAnswers((a) => ({ ...a, [q.id]: v }))} />
         ))}
       </ol>
       <button type="submit" disabled={!ready} className="rounded border px-4 py-2 disabled:opacity-50">Submit answers</button>

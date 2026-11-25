@@ -12,10 +12,13 @@ status) is `exam_lifecycle`'s: a request, the daily sweep and the end of every j
 the exam in line with the PR through `_reconcile`."""
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 import shutil
 import subprocess
 import sys
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,7 +45,7 @@ def _dir(state_dir, repo: str, pr: int) -> Path:
     return _path(state_dir, repo, pr).parent
 
 
-def _attempt_dir(state_dir, repo: str, pr: int, n: int) -> Path:
+def attempt_dir(state_dir, repo: str, pr: int, n: int) -> Path:
     """Where attempt `n` keeps its exam, answers, grades and result."""
     return _dir(state_dir, repo, pr) / "attempts" / str(n)
 
@@ -104,7 +107,7 @@ def _migrate(state_dir, doc: dict) -> None:
         n = _flat_owner(doc, name)
         if name == "result.json" and _backfill(doc, n, flat):
             _write(state_dir, doc)
-        target = _attempt_dir(state_dir, doc["repo"], doc["pr"], n)
+        target = attempt_dir(state_dir, doc["repo"], doc["pr"], n)
         target.mkdir(parents=True, exist_ok=True)
         flat.replace(target / name)
 
@@ -154,7 +157,7 @@ def request(state_dir: str | Path, repo: str, pr: int) -> dict:
 def public(state_dir: str | Path, repo: str, pr: int, attempt: int) -> dict | None:
     """The served questions of `attempt`, as pr_exam.public projected them; never the exam file."""
     try:
-        return json.loads((_attempt_dir(state_dir, repo, pr, attempt) / "public.json").read_text())
+        return json.loads((attempt_dir(state_dir, repo, pr, attempt) / "public.json").read_text())
     except FileNotFoundError:
         return None
 
@@ -168,8 +171,36 @@ def view(state_dir: str | Path, repo: str, pr: int) -> dict | None:
         if doc is None:
             return None
         waiting = doc["state"] == ExamState.OPEN
-        return {**doc, "exam": public(state_dir, repo, pr, doc["attempt"]) if waiting else None,
+        return {**doc, "exam": _chatted(state_dir, doc, doc["attempt"]) if waiting else None,
                 "attempts": _submitted(state_dir, doc)}
+
+
+def _chatted(state_dir, doc: dict, n: int) -> dict | None:
+    """Attempt `n`'s served questions, each with its tips, assisted mark and thread."""
+    served = public(state_dir, doc["repo"], doc["pr"], n)
+    if served is None:
+        return None
+    turns = _turns(attempt_dir(state_dir, doc["repo"], doc["pr"], n))
+    return {**served, "questions": [{**q, **_help(q["id"], turns)} for q in served["questions"]]}
+
+
+def _help(qid: str, turns: list[dict]) -> dict:
+    """What the chat of question `qid` came to: running and done tips count, a done reply assists."""
+    mine = [t for t in turns if t["question"] == qid]
+    return {"tips": sum(map(_counts_as_tip, mine)), "assisted": any(map(_assists, mine)),
+            "thread": [_thread_entry(t) for t in mine]}
+
+
+def _counts_as_tip(turn: dict) -> bool:
+    return turn["kind"] == "tip" and turn["status"] != "failed"
+
+
+def _assists(turn: dict) -> bool:
+    return turn["status"] == "done" and turn["kind"] != "general" and not turn["after_submit"]
+
+
+def _thread_entry(turn: dict) -> dict:
+    return {k: turn[k] for k in ("id", "kind", "message", "text", "status", "error")}
 
 
 def _submitted(state_dir, doc: dict) -> list[dict]:
@@ -182,7 +213,7 @@ def _submitted(state_dir, doc: dict) -> list[dict]:
 
 def _questions(state_dir, doc: dict, n: int) -> list[dict]:
     """Attempt `n`'s served questions; [] for one whose questions the flat layout replaced."""
-    served = public(state_dir, doc["repo"], doc["pr"], n)
+    served = _chatted(state_dir, doc, n)
     return served["questions"] if served else []
 
 
@@ -346,6 +377,12 @@ def _exam_error(io, job: Path, spec: dict, model: str) -> str:
     return "; ".join(io.pr_exam.validate(out, request))
 
 
+def _served(public: dict) -> dict:
+    """The served questions as the page reads them: each starts with no tips and an empty thread
+    (the view puts the attempt's real chat over them)."""
+    return {**public, "questions": [{**q, **_help(q["id"], [])} for q in public["questions"]]}
+
+
 def _generate(cfg, doc, job: dict, pr, model, io) -> tuple[str, str, str]:
     """Run one generation session and stage its exam out of the session's reach;
     (outcome, detail, diff). The outcome is "open", "error", or "passed" for a
@@ -355,7 +392,7 @@ def _generate(cfg, doc, job: dict, pr, model, io) -> tuple[str, str, str]:
     jd = _job_dir(d)
     (Path(cfg.state_dir) / "exam-records" / repo).mkdir(parents=True, exist_ok=True)
     diff, glossary = _inputs(io, pr, repo, n, jd)
-    prior = (json.loads((_attempt_dir(cfg.state_dir, repo, n, job["attempt"]) / "exam.json").read_text())
+    prior = (json.loads((attempt_dir(cfg.state_dir, repo, n, job["attempt"]) / "exam.json").read_text())
              if job["kind"] == "followup" else None)
     spec = _spec(cfg, doc, job["kind"], job["head_sha"], jd, glossary, io.now, prior)
     if error := _exam_error(io, jd, spec, model):
@@ -363,12 +400,14 @@ def _generate(cfg, doc, job: dict, pr, model, io) -> tuple[str, str, str]:
     out = jd / "exam.json"
     if job["kind"] == "delta" and not json.loads(out.read_text())["questions"]:
         return "passed", "", diff
-    write_json_atomic(d / STAGED[1], io.pr_exam.public(out))
+    write_json_atomic(d / STAGED[1], _served(io.pr_exam.public(out)))
     shutil.copyfile(out, d / STAGED[0])
     return "open", "", diff
 
 
-def _entry(cfg, usages, when):
+def entry(cfg, usages, when):
+    """The first `models.triage` entry the usage gate admits, None when none is: the exam
+    runner's gate, which the console's chat turns share."""
     return triage_entry(
         cfg.models, lambda m: admits(usages, m, when, cfg.pace).admitted,
         priority.order(priority.load(cfg.state_dir, routed_providers(cfg)),
@@ -395,7 +434,7 @@ def submit(state_dir, repo: str, pr: int, attempt: int, head_sha: str, answers: 
         questions = public(state_dir, repo, pr, attempt)["questions"]
         if not _complete(questions, answers, doc["bypassed"]):
             return "incomplete"
-        _save_submission(_attempt_dir(state_dir, repo, pr, attempt), questions, answers, doc["bypassed"])
+        _save_submission(attempt_dir(state_dir, repo, pr, attempt), questions, answers, doc["bypassed"])
         doc.update(state=ExamState.GRADING, grading={"attempt": attempt}, bypassed=None)
         _write(state_dir, doc)
         return "ok"
@@ -570,7 +609,7 @@ def _failed(detail: str):
     return change
 
 
-def _generated(job: dict, outcome: str, diff: str, attempt_dir: Path):
+def _generated(job: dict, outcome: str, diff: str, body: str, attempt_dir: Path):
     """The change a generation makes: a staged exam is published as the next attempt, in
     `attempt_dir`, or a delta with no new concept passes the new head."""
     def change(cur: dict, d: Path) -> None:
@@ -581,6 +620,8 @@ def _generated(job: dict, outcome: str, diff: str, attempt_dir: Path):
         attempt_dir.mkdir(parents=True, exist_ok=True)
         (d / STAGED[0]).replace(attempt_dir / "exam.json")
         (d / STAGED[1]).replace(attempt_dir / "public.json")
+        (d / "diff.patch").write_text(diff)   # what the exam's chat is given: the head's diff and body
+        (d / "body.md").write_text(body)
         if cur["delta"]:   # a delta exam starts over on the new head
             cur["results"] = []
         cur.update(state=ExamState.OPEN, head_sha=job["head_sha"], attempt=job["attempt"] + 1,
@@ -594,13 +635,13 @@ def _released(cur: dict, d: Path) -> None:
 
 def _execute_grade(cfg, doc, job: dict, model: str, io):
     """Grade and score the attempt the job was claimed on."""
-    attempt_dir = _attempt_dir(cfg.state_dir, doc["repo"], doc["pr"], job["attempt"])
+    adir = attempt_dir(cfg.state_dir, doc["repo"], doc["pr"], job["attempt"])
     diff = io.github.diff(doc["repo"], doc["pr"])
-    grades, error = _grade(cfg, doc, attempt_dir, job["head_sha"], diff, model, io)
+    grades, error = _grade(cfg, doc, adir, job["head_sha"], diff, model, io)
     if grades is None:
         return _failed(error)
-    scored, error = _score(attempt_dir, grades, io.pr_exam)
-    return _failed(error) if scored is None else _graded(cfg, attempt_dir, scored, diff, io)
+    scored, error = _score(adir, grades, io.pr_exam)
+    return _failed(error) if scored is None else _graded(cfg, adir, scored, diff, io)
 
 
 def _execute(cfg, doc, job: dict, pr, model: str, io):
@@ -612,7 +653,7 @@ def _execute(cfg, doc, job: dict, pr, model: str, io):
     outcome, detail, diff = _generate(cfg, doc, job, pr, model, io)
     if outcome == "error":
         return _failed(detail)
-    return _generated(job, outcome, diff, _attempt_dir(cfg.state_dir, doc["repo"], doc["pr"], job["attempt"] + 1))
+    return _generated(job, outcome, diff, pr["body"] or "", attempt_dir(cfg.state_dir, doc["repo"], doc["pr"], job["attempt"] + 1))
 
 
 def _save_app(cfg, github) -> None:
@@ -679,15 +720,15 @@ def _run_job(cfg, doc, io) -> bool:
     """Claim, run and end this exam's next job; True when it left a result."""
     if doc["state"] == ExamState.NEW:
         doc = _update(cfg.state_dir, doc["repo"], doc["pr"], state=ExamState.GENERATING)
-    entry = _entry(cfg, io.usages, io.now())
-    if entry is None:
+    chosen = entry(cfg, io.usages, io.now())
+    if chosen is None:
         return False
     pr = io.github.pr(doc["repo"], doc["pr"])
     job = _job(doc, pr, io.now)
     if not _claim(cfg, doc, job, io.now):
         return False
     try:
-        change = _execute(cfg, doc, job, pr, entry.model_id, io)
+        change = _execute(cfg, doc, job, pr, chosen.model_id, io)
         pr = io.github.pr(doc["repo"], doc["pr"])   # after the session: has its head moved, is it merged
     except BaseException:
         _finish(cfg, doc, job, _released)
@@ -771,3 +812,150 @@ def sweep(cfg, **edges) -> None:
     requested or not, then do the work that leaves."""
     _each(cfg, SimpleNamespace(**edges), _sweep_exam)
     work(cfg, **edges)
+
+
+# Chat turns: `attempts/<n>/threads.json` is {"turns": [...]}, written under the exams lock.
+
+def _turns(attempt_dir: Path) -> list[dict]:
+    try:
+        return json.loads((attempt_dir / "threads.json").read_text())["turns"]
+    except FileNotFoundError:
+        return []
+
+
+def _turn_refusal(state_dir, doc: dict | None, attempt: int, head_sha: str, kind: str,
+                  question: str | None) -> str:
+    """"" when a turn may start on this attempt, else "conflict" (not the current attempt and
+    head, or a tip once the attempt is no longer open) or "unknown" (no such question)."""
+    if not _turn_open(doc, attempt, head_sha, kind):
+        return "conflict"
+    return "" if kind == "general" or question in _question_ids(state_dir, doc, attempt) else "unknown"
+
+
+def _turn_open(doc: dict | None, attempt: int, head_sha: str, kind: str) -> bool:
+    """The exam's current attempt and head, and still open for a tip."""
+    return (doc is not None and doc["attempt"] == attempt and doc["head_sha"] == head_sha
+            and (kind != "tip" or doc["state"] == ExamState.OPEN))
+
+
+def _question_ids(state_dir, doc: dict, attempt: int) -> set[str]:
+    served = public(state_dir, doc["repo"], doc["pr"], attempt) or {"questions": []}
+    return {q["id"] for q in served["questions"]}
+
+
+def thread(state_dir, repo: str, pr: int, attempt: int, question: str | None) -> list[dict]:
+    """The finished turns of `question`'s thread (the general chat for None), oldest first."""
+    with state_lock(state_dir, LOCK):
+        return [{k: t[k] for k in ("kind", "message", "text")}
+                for t in _turns(attempt_dir(state_dir, repo, pr, attempt))
+                if t["status"] == "done" and t["question"] == question]
+
+
+def turn_check(state_dir, repo: str, pr: int, attempt: int, head_sha: str, kind: str,
+               question: str | None) -> str:
+    """What `turn_start` would refuse, changing nothing."""
+    with state_lock(state_dir, LOCK):
+        return _turn_refusal(state_dir, _load(state_dir, repo, pr), attempt, head_sha, kind, question)
+
+
+def turn_start(state_dir, repo: str, pr: int, attempt: int, head_sha: str, kind: str,
+               question: str | None, message: str) -> tuple[str, str]:
+    """Reserve a running turn: ("", its id), or a refusal: "conflict", "unknown" or "busy"
+    (a turn already runs on that question, or in the general chat)."""
+    with state_lock(state_dir, LOCK):
+        refusal = _turn_refusal(state_dir, _load(state_dir, repo, pr), attempt, head_sha, kind, question)
+        if refusal:
+            return refusal, ""
+        d = attempt_dir(state_dir, repo, pr, attempt)
+        turns = _turns(d)
+        if any(t["status"] == "running" and t["question"] == question for t in turns):
+            return "busy", ""
+        turn = {"id": uuid.uuid4().hex, "kind": kind, "question": question, "message": message,
+                "status": "running", "text": "", "error": None, "after_submit": False,
+                "started": datetime.now(timezone.utc).isoformat()}
+        write_json_atomic(d / "threads.json", {"turns": [*turns, turn]})
+        _hold(state_dir, turn["id"])
+        return "", turn["id"]
+
+
+# A running turn is owned by the console process that runs it, which holds a flock on
+# turn-locks/<id> until the turn ends; a console's startup fails only the turns no one holds.
+_HELD: dict[str, int] = {}
+
+
+def _lock_path(state_dir, turn_id: str) -> Path:
+    return Path(state_dir) / "turn-locks" / turn_id
+
+
+def _hold(state_dir, turn_id: str) -> None:
+    path = _lock_path(state_dir, turn_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_CREAT | os.O_RDWR)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    _HELD[turn_id] = fd
+
+
+def turn_release(state_dir, turn_id: str) -> None:
+    """The turn's console lets go of it (its task ended, however it ended)."""
+    _lock_path(state_dir, turn_id).unlink(missing_ok=True)
+    if fd := _HELD.pop(turn_id, None):
+        os.close(fd)
+
+
+def _orphaned(state_dir, turn_id: str) -> bool:
+    """No live console holds the turn."""
+    try:
+        fd = os.open(_lock_path(state_dir, turn_id), os.O_RDWR)
+    except FileNotFoundError:
+        return True
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    finally:
+        os.close(fd)
+    return True
+
+
+def turn_end(state_dir, repo: str, pr: int, attempt: int, turn_id: str, text: str, error: str) -> str:
+    """Store a turn's reply, "done" or "failed" by `error`. "exam changed" when its attempt is gone
+    (the head moved or the exam was deleted): the reply is dropped. After submit it is `after_submit`."""
+    with state_lock(state_dir, LOCK):
+        doc = _load(state_dir, repo, pr)
+        d = attempt_dir(state_dir, repo, pr, attempt)
+        turns = _turns(d)
+        turn = _find(turns, turn_id)
+        if doc is None or turn is None:
+            return "exam changed"
+        turn.update(status="failed" if error else "done", text=text, error=error or None,
+                    after_submit=doc["state"] != ExamState.OPEN)
+        write_json_atomic(d / "threads.json", {"turns": turns})
+        return ""
+
+
+def _find(turns: list[dict], turn_id: str) -> dict | None:
+    return next((t for t in turns if t["id"] == turn_id), None)
+
+
+def fail_running_turns(state_dir) -> None:
+    """The console's startup: every turn still `running` that no live console holds was lost with its console."""
+    files = sorted(Path(state_dir, "exams").glob("*/*/*/attempts/*/threads.json"))
+    if not files:
+        return
+    with state_lock(state_dir, LOCK):
+        for f in files:
+            _fail_orphans(state_dir, f)
+
+
+def _fail_orphans(state_dir, threads: Path) -> None:
+    turns = _turns(threads.parent)   # [] when deleted since the listing
+    lost = [t for t in turns if _orphan(state_dir, t)]
+    for t in lost:
+        t.update(status="failed", error="console restarted")
+    if lost:
+        write_json_atomic(threads, {"turns": turns})
+
+
+def _orphan(state_dir, turn: dict) -> bool:
+    """A running turn no live console holds."""
+    return turn["status"] == "running" and _orphaned(state_dir, turn["id"])

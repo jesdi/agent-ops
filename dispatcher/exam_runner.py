@@ -7,6 +7,7 @@ import json
 import os
 import shlex
 import subprocess
+import tempfile
 import sys
 from pathlib import Path
 
@@ -117,11 +118,59 @@ class PrExam:
             raise ValueError(proc.stderr.strip() or "score failed")
         return json.loads(proc.stdout)
 
+    def context(self, attempt_dir: Path, turn: dict) -> str:
+        """The prompt of a chat turn, as the skill's `context` prints it. `turn` is the host's:
+        kind, question, message and the question's finished `thread` ({kind, message, text});
+        it is put in the skill's shape here. ValueError when the skill refuses the prompt (too
+        long, or no such attempt)."""
+        adir = Path(attempt_dir)
+        if not (adir / "exam.json").exists():
+            raise ValueError("no such attempt")
+        return self._context(adir, _tip_doc(turn) if turn["kind"] == "tip" else _chat_doc(adir, turn))
+
+    def _context(self, adir: Path, doc: dict) -> str:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "turn.json").write_text(json.dumps(doc))
+            for name in ("diff.patch", "body.md"):   # an attempt opened before chat has neither
+                (Path(tmp) / name).write_text(_text_or_empty(adir.parent.parent / name))   # the exam dir keeps the head's
+            proc = self._call("context", "--exam", adir / "exam.json", "--diff", Path(tmp) / "diff.patch",
+                              "--body", Path(tmp) / "body.md", "--turn", Path(tmp) / "turn.json")
+        if proc.returncode:
+            raise ValueError(proc.stderr.strip() or "context failed")
+        return proc.stdout
+
     def record(self, records: Path, exam: Path, result: Path, today: str) -> None:
         proc = self._call("record", "--records", records, "--exam", exam, "--result", result,
                           "--today", today)
         if proc.returncode:
             raise ValueError(proc.stderr.strip() or "record failed")
+
+
+def _tip_doc(turn: dict) -> dict:
+    tips = [t["text"] for t in turn.get("thread", []) if t["kind"] == "tip"]
+    return {"kind": "tip", "question": turn.get("question"), "draft": turn["message"],
+            "tip": 1 + len(tips), "tips": tips}
+
+
+def _chat_doc(adir: Path, turn: dict) -> dict:
+    doc = {"kind": turn["kind"], "message": turn["message"],
+           "thread": [{"role": r, "text": t[k]} for t in turn.get("thread", [])
+                      for r, k in (("user", "message"), ("assistant", "text"))]}
+    if turn["kind"] == "question":
+        doc["question"] = turn.get("question")
+        doc.update(_submitted(adir, doc["question"]))
+    return doc
+
+
+def _submitted(adir: Path, q: str) -> dict:
+    """{"submitted": the answer} once the attempt is submitted: it replaces the draft; else {}."""
+    path = adir / "answers.json"
+    answer = json.loads(path.read_text()).get(q) if path.exists() else None
+    return {"submitted": answer} if isinstance(answer, str) else {}
+
+
+def _text_or_empty(path: Path) -> str:
+    return path.read_text() if path.exists() else ""
 
 
 def session(cfg, *, run=subprocess.run):

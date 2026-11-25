@@ -5,6 +5,7 @@ the one reader the dispatcher and triage also use."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json as _json
 import re
 from contextlib import contextmanager
@@ -19,7 +20,7 @@ from pydantic import (BaseModel, Field, TypeAdapter, ValidationError,
                       field_validator)
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.staticfiles import StaticFiles
-from dispatcher import execution_overrides, model_settings, priority, queue_ops
+from dispatcher import exams, execution_overrides, model_settings, priority, queue_ops
 from dispatcher.config import (Config, apply_stored_models, by_project, policy_for,
                                referenced_providers, routed_providers,
                                stranded, with_models)
@@ -36,6 +37,7 @@ from dispatcher.status import Kind, crashed, ended
 from web import model_settings_view as msv
 from web import read_model
 from web.artifacts import router as artifacts_router
+from web.exam_turns import router as exam_turns_router
 from web.exams import router as exams_router
 from web.services import router as services_router
 from web.onboarding import router as onboarding_router
@@ -175,8 +177,14 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
                heartbeat_seconds: float = HEARTBEAT_SECONDS,
                frontend_dist: Path | None = None,
                config_loader: Callable[[], Config] | None = None,
-               clock: Callable[[], datetime] | None = None) -> FastAPI:
-    app = FastAPI(title="agent-ops web console")
+               clock: Callable[[], datetime] | None = None,
+               pr_exam=None) -> FastAPI:
+    @contextlib.asynccontextmanager
+    async def lifespan(_app):
+        exams.fail_running_turns(boot.state_dir)   # the turns the last console was running died with it
+        yield
+
+    app = FastAPI(title="agent-ops web console", lifespan=lifespan)
     app.add_middleware(TailscaleAuthMiddleware)
 
     @app.get("/api/health")
@@ -400,6 +408,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
     app.include_router(onboarding_router(sources))
     app.include_router(exams_router(sources, _cfg))
     app.include_router(services_router(sources, _now, lambda: _cfg().state_dir))
+    app.include_router(exam_turns_router(_cfg, _usages, _now, pr_exam))
 
     def _usage_view(reading: RequestReading) -> read_model.UsageView:
         assert reading.usages is not None
