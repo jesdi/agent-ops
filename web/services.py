@@ -120,11 +120,17 @@ def _warning(unit: dict, key: str, changes: dict, installed: dict | None) -> str
     paused state, or its timer (a hand-edited unit file or a drop-in over it)."""
     if installed is None:
         return None
-    change, want = changes.get(key) or {}, installed.get(key) or {}
-    off = unit["active_state"] != "active"
-    if "paused" not in change and off != bool(want.get("paused", False)):
-        return DIFFERS
-    return DIFFERS if "schedule" not in change and _timer_edited(unit, key, want) else None
+    return DIFFERS if _differs(unit, key, changes.get(key) or {}, installed.get(key) or {}) else None
+
+
+def _differs(unit: dict, key: str, change: dict, want: dict) -> bool:
+    if "paused" not in change and _paused_differs(unit, want):
+        return True
+    return "schedule" not in change and _timer_edited(unit, key, want)
+
+
+def _paused_differs(unit: dict, want: dict) -> bool:
+    return (unit["active_state"] != "active") != bool(want.get("paused", False))
 
 
 def _timer_edited(unit: dict, key: str, want: dict) -> bool:
