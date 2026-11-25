@@ -166,11 +166,8 @@ def _parse_manifest(raw: object) -> list[Registration]:
 
 def _automatic_registrations(task: TaskState) -> list[Registration]:
     entries = []
-    for artifact_id, name, path in (
-        ("prototype", "Prototype", ".agent/prototype.html"),
-    ):
-        if (Path(task.worktree) / path).is_file():
-            entries.append(Registration(artifact_id, name, path))
+    if (Path(task.worktree) / ".agent/prototype.html").is_file():
+        entries.append(Registration("prototype", "Prototype", ".agent/prototype.html"))
     request_path = getattr(operator_request(task), "path", "")
     if request_path:
         key = hashlib.sha256(request_path.encode()).hexdigest()[:12]
