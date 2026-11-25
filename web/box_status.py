@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from typing import Callable, NamedTuple, TextIO
 from urllib.parse import quote
 
-from dispatcher import config, herdr, sessions, state, triage
+from dispatcher import config, herdr, services_config, sessions, state, triage
 from dispatcher.status import HumanReason, Kind, ended, occupies
 from dispatcher.usage import unavailable
 from dispatcher.usage_providers import cache_path, usage_from_json
@@ -171,10 +171,10 @@ def parse_units(show: str) -> dict[str, Unit]:
     return units
 
 
-def _journal(since: str = "6 hours ago") -> list:
+def _journal(since: str | None = "6 hours ago", unit: str = "agent-ops-*", lines: int | None = None) -> list:
+    window = ["--since", since] if since else ["-n", str(lines)]
     proc = subprocess.run(
-        ["journalctl", "--user", "-u", "agent-ops-*", "--since", since,
-         "-o", "json", "--no-pager"],
+        ["journalctl", "--user", "-u", unit, *window, "-o", "json", "--no-pager"],
         capture_output=True, text=True, timeout=20)
     if proc.returncode:
         raise RuntimeError(proc.stderr.strip() or f"exit {proc.returncode}")
@@ -248,9 +248,22 @@ def journal_runs(entries: list) -> dict[str, list[dict]]:
     return runs
 
 
-def service_runs() -> dict[str, list[dict]]:
-    """Journal probe for the Services page: a week of runs, so a daily job has five."""
-    return journal_runs(_journal("7 days ago"))
+RECENT_RUNS = 5
+
+
+def service_runs(journal: Callable[..., list] = _journal) -> dict[str, list[dict]]:
+    """Journal probe for the Services page: a week of runs, then, for a managed job with
+    fewer than five in it (a weekly or long-paused job), the latest lines of its own journal."""
+    runs = journal_runs(journal("7 days ago"))
+    for name in services_config.JOBS:
+        job = f"agent-ops-{name}"
+        if len(runs.get(job, [])) < RECENT_RUNS:
+            # ponytail: a run logging more than this many lines leaves fewer than five; filter
+            # journalctl to the manager's own lines if a sparse job turns chatty.
+            older = journal_runs(journal(None, f"{job}.service", 2000)).get(job)
+            if older:
+                runs[job] = older
+    return runs
 
 
 def _herdr_tabs() -> set[str]:

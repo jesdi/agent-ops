@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from web.box_status import journal_runs
+from web.box_status import journal_runs, service_runs
 
 
 def _e(sec, msg):
@@ -53,3 +53,23 @@ def test_output_of_a_stopping_run_keeps_it_open_and_stopping():
     runs = journal_runs([_e(0, "Starting x"), _e(1, "Stopping x"), _e(2, "draining 3 tasks"),
                          _e(6, "Deactivated successfully.")])["agent-ops-dispatcher"]
     assert [(r["duration_seconds"], r["result"]) for r in runs] == [(6, "stopped")]
+
+
+def test_a_job_with_fewer_than_five_runs_in_a_week_reads_its_older_journal():
+    def run(day, unit):
+        return [SimpleNamespace(time=datetime(2026, 11, day, 9, tzinfo=timezone.utc), unit=unit,
+                                priority=6, message="Starting x..."),
+                SimpleNamespace(time=datetime(2026, 11, day, 9, 1, tzinfo=timezone.utc), unit=unit,
+                                priority=6, message="Finished x.")]
+    weekly = [e for day in (1, 8, 15, 22) for e in run(day, "agent-ops-digest.service")]
+    calls = []
+
+    def journal(since, unit="agent-ops-*", lines=None):
+        calls.append((since, unit))
+        return weekly[-2:] if since else (weekly if unit == "agent-ops-digest.service" else [])
+
+    runs = service_runs(journal)
+
+    assert len(runs["agent-ops-digest"]) == 4
+    assert "agent-ops-sweep" not in runs  # a job with no runs at all stays absent
+    assert ("7 days ago", "agent-ops-*") in calls
