@@ -551,18 +551,28 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         time, of the answers files' submission and the latest drop of one
         decides. Read whether or not a request is open."""
         t = _find_task(repository, issue)
-        queued = [i for i in sources.pending_intents()
-                  if (i["action"], i["repository"], i["issue"]) == ("answers", repository, issue)
-                  and isinstance(i["payload"], dict)
-                  and i["payload"].get("submit") in answers_file.SUBMITS
-                  and isinstance(i["payload"].get("revision"), str)]
+        queued = _queued(repository, issue)
         if queued:
-            p = max(queued, key=lambda i: str(i["created_at"]))["payload"]
-            return read_model.Delivery(state="queued", reason="", submit=p["submit"],
-                                       revision=p.get("revision"))
+            return queued
         latest = max(_delivered(t) + _dropped(repository, issue), default=None,
                      key=lambda d: d[:2])
         return latest and latest[-1]
+
+    def _queued(repository: str, issue: int) -> read_model.Delivery | None:
+        """The latest pending submission of the task, if any."""
+        queued = [i for i in sources.pending_intents() if _is_submission(i, repository, issue)]
+        if not queued:
+            return None
+        p = max(queued, key=lambda i: str(i["created_at"]))["payload"]
+        return read_model.Delivery(state="queued", reason="", submit=p["submit"],
+                                   revision=p.get("revision"))
+
+    def _is_submission(i: dict, repository: str, issue: int) -> bool:
+        """i is a pending answers submission of the task, with a revision."""
+        return ((i["action"], i["repository"], i["issue"]) == ("answers", repository, issue)
+                and isinstance(i["payload"], dict)
+                and i["payload"].get("submit") in answers_file.SUBMITS
+                and isinstance(i["payload"].get("revision"), str))
 
     def _delivered(t) -> list[tuple[str, int, read_model.Delivery]]:
         """The submission of each answers file of the task (both kinds can exist)."""
@@ -580,8 +590,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         file wins a tie (rank 1 over 0)."""
         for e in reversed(sources.events_tail(limit=sys.maxsize)):
             sub = e.get("submission")
-            if (e.get("event"), e.get("repository"), e.get("issue")) != (
-                    "intent-dropped", repository, issue) or not isinstance(sub, dict):
+            if not _is_drop(e, repository, issue):
                 continue
             try:
                 return [(str(sub.get("created_at") or ""), 0, read_model.Delivery(
@@ -590,6 +599,11 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
             except ValidationError:   # a hand-edited line
                 return []
         return []
+
+    def _is_drop(e: dict, repository: str, issue: int) -> bool:
+        """e records the drop of an answers submission of the task."""
+        return (e.get("event"), e.get("repository"), e.get("issue")) == (
+            "intent-dropped", repository, issue) and isinstance(e.get("submission"), dict)
 
     def _request_content(req, wt: Path
                          ) -> read_model.ReadableContent | read_model.UnavailableContent:
