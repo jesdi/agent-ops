@@ -329,17 +329,17 @@ def capture_answers(state_dir, task: TaskState, now: datetime | None = None) -> 
     if page is None:
         index.save(root / "index.json")
         return
-    # Stage the page, save the index, then rename the page in: a full disk
-    # fails before the earlier page or its index entry is touched, and the
-    # last step allocates nothing.
+    # Stage the page, rename it in, then save the index: a full disk fails
+    # before the earlier page is touched, and an index not saved after the
+    # rename keeps the earlier digest, so the next collection captures again.
     content = root / "content" / ANSWERS_ARTIFACTS[kind][0]
     staged = content.with_name(f".{content.name}.staged")
     try:
         _copy_content(staged, page)
-        index.save(root / "index.json")
         os.replace(staged, content)
     finally:
         staged.unlink(missing_ok=True)
+    index.save(root / "index.json")
 
 
 def pin_published(state_dir, task: TaskState, repo: str) -> None:

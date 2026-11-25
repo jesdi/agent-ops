@@ -8,7 +8,10 @@ Artifacts panel link does.
 """
 import hashlib
 import json
+import os
 import shutil
+
+import pytest
 
 from fastapi.testclient import TestClient
 
@@ -92,3 +95,29 @@ def test_the_answered_page_survives_the_next_round(tmp_path, monkeypatch):
     task_artifacts.collect(c.state_dir, load(c.state_dir, REPOSITORY, ISSUE), "", publish=False)
 
     _assert_answered_page(_open(c))
+
+
+def test_a_failed_page_rename_keeps_the_earlier_artifact_and_repairs(tmp_path, monkeypatch):
+    c, wt = _answered(tmp_path, monkeypatch)
+    index = task_artifacts.read(c.state_dir, REPOSITORY, ISSUE)
+    [before] = [i for i in index.items if i.id == "questionnaire-answers"]
+    (wt / ".agent" / "questionnaire-answers.json").write_text(json.dumps(
+        {"submitted": "changes", "answers": {"format": "csv", "format.note": "rows please"}}))
+    content = task_artifacts.content_path(c.state_dir, REPOSITORY, ISSUE, "questionnaire-answers")
+    real_replace = os.replace
+
+    def replace_(src, dst, *a, **kw):
+        if os.fspath(dst) == os.fspath(content):
+            raise OSError(5, "Input/output error")
+        return real_replace(src, dst, *a, **kw)
+    with monkeypatch.context() as m:
+        m.setattr(os, "replace", replace_)
+        with pytest.raises(OSError):
+            task_artifacts.capture_answers(c.state_dir, load(c.state_dir, REPOSITORY, ISSUE))
+
+    [after] = [i for i in task_artifacts.read(c.state_dir, REPOSITORY, ISSUE).items
+               if i.id == "questionnaire-answers"]
+    assert after == before
+    _assert_answered_page(_open(c))
+    task_artifacts.collect(c.state_dir, load(c.state_dir, REPOSITORY, ISSUE), "", publish=False)
+    assert "rows please" in _open(c).text
