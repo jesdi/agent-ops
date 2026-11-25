@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from typing import Annotated, Callable, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi import APIRouter, Depends, HTTPException, Path, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from dispatcher import exams as state
@@ -67,19 +68,27 @@ class ExamQuestion(BaseModel):
     type: Literal["choice", "text"]
     prompt: str
     options: list[str] | None = None
-    tips: int = 0   # the open attempt's done and running tips of this question
-    assisted: bool = False
-    thread: list[ExamTurn] = []
+    tips: int   # the question's finished tips in this attempt
+    tips_left: int | None   # the tips it may still take; None when the attempt takes none
+    assisted: bool
+    thread: list[ExamTurn]
 
 
-class ExamQuestions(BaseModel):
-    """The served projection of an attempt: never a key entry or a rubric."""
+class AttemptChat(BaseModel):
+    """An attempt's served questions with their chat, never a key entry or a rubric, and what
+    it takes now: `chat` for question and general turns."""
+    questions: list[ExamQuestion]
+    general: list[ExamTurn]   # the attempt's general chat
+    chat: bool
+
+
+class ExamQuestions(AttemptChat):
+    """The open attempt, as the skill's projection serves it; `bypass` while it takes one."""
     version: int
     repo: str
     pr: int
     head_sha: str
-    questions: list[ExamQuestion]
-    general: list[ExamTurn] = []   # the attempt's general chat; absent until it has a turn
+    bypass: bool
 
 
 class ExamQuestionResult(BaseModel):
@@ -99,18 +108,16 @@ class ExamResult(BaseModel):
     questions: list[ExamQuestionResult]
 
 
-class ExamAttempt(BaseModel):
-    """A submitted attempt of this head: its served questions, never a key, and its result
-    once graded. `questions` is empty for an attempt kept from before attempts had their own."""
+class ExamAttempt(AttemptChat):
+    """A submitted attempt of this head, and its result once graded."""
     attempt: int
-    questions: list[ExamQuestion]
-    general: list[ExamTurn] = []   # the attempt's general chat; absent until it has a turn
     result: ExamResult | None
 
 
 class ExamView(Exam):
     detail: str
     attempt: int
+    tip_cap: int   # the tips a question gets per attempt
     exam: ExamQuestions | None   # the open attempt, while it waits for answers
     bypassed: str | None   # the open attempt's bypassed question
     attempts: list[ExamAttempt]
@@ -123,6 +130,16 @@ class ExamEntry(Exam):
 
 class ExamsView(BaseModel):
     exams: list[ExamEntry]
+
+
+STATUS = {state.Refusal.CONFLICT: 409, state.Refusal.BUSY: 409, state.Refusal.UNKNOWN: 422,
+          state.Refusal.INCOMPLETE: 422, state.Refusal.TOO_LONG: 422, state.Refusal.USAGE: 429,
+          state.Refusal.UNAVAILABLE: 503}
+
+
+def refused(request: Request, exc: state.Refused) -> JSONResponse:
+    """The one HTTP answer to a change the exam refused."""
+    return JSONResponse({"detail": exc.detail}, status_code=STATUS[exc.refusal])
 
 
 def _url(console: str, doc: dict) -> str:
@@ -170,19 +187,11 @@ def router(sources, cfg: Callable[[], Config]) -> APIRouter:
     def answer(body: Answers, owner: Annotated[str, Path(pattern=rf"^{Slug}$")],
                name: Annotated[str, Path(pattern=rf"^{Slug}$")],
                pr: Annotated[int, Path(ge=1)], op: Operator = Depends(current_operator)):
-        outcome = sources.submit_exam(f"{owner}/{name}", pr, body.attempt, body.head_sha, body.answers)
-        if outcome == "conflict":
-            raise HTTPException(409, "this attempt is not open for answers")
-        if outcome == "incomplete":
-            raise HTTPException(422, "every question needs an answer")
+        sources.submit_exam(f"{owner}/{name}", pr, body.attempt, body.head_sha, body.answers)
         return view(f"{owner}/{name}", pr)
 
     def set_bypass(body: Bypass, owner: str, name: str, pr: int, on: bool) -> ExamView:
-        outcome = sources.bypass_exam(f"{owner}/{name}", pr, body.attempt, body.head_sha, body.question, on)
-        if outcome == "conflict":
-            raise HTTPException(409, "this attempt cannot change its bypass")
-        if outcome == "unknown":
-            raise HTTPException(422, "the exam has no such question")
+        sources.bypass_exam(f"{owner}/{name}", pr, body.attempt, body.head_sha, body.question, on)
         return view(f"{owner}/{name}", pr)
 
     @routes.post("/api/exam/{owner}/{name}/{pr}/bypass", response_model=ExamView, response_model_exclude_unset=True)

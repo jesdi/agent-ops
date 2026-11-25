@@ -1036,16 +1036,14 @@ export interface components {
         };
         /**
          * ExamAttempt
-         * @description A submitted attempt of this head: its served questions, never a key, and its result
-         *     once graded. `questions` is empty for an attempt kept from before attempts had their own.
+         * @description A submitted attempt of this head, and its result once graded.
          */
         ExamAttempt: {
             /** Attempt */
             attempt: number;
-            /**
-             * General
-             * @default []
-             */
+            /** Chat */
+            chat: boolean;
+            /** General */
             general: components["schemas"]["ExamTurn"][];
             /** Questions */
             questions: components["schemas"]["ExamQuestion"][];
@@ -1069,10 +1067,7 @@ export interface components {
         };
         /** ExamQuestion */
         ExamQuestion: {
-            /**
-             * Assisted
-             * @default false
-             */
+            /** Assisted */
             assisted: boolean;
             /** Id */
             id: string;
@@ -1080,16 +1075,12 @@ export interface components {
             options?: string[] | null;
             /** Prompt */
             prompt: string;
-            /**
-             * Thread
-             * @default []
-             */
+            /** Thread */
             thread: components["schemas"]["ExamTurn"][];
-            /**
-             * Tips
-             * @default 0
-             */
+            /** Tips */
             tips: number;
+            /** Tips Left */
+            tips_left: number | null;
             /**
              * Type
              * @enum {string}
@@ -1115,13 +1106,14 @@ export interface components {
         };
         /**
          * ExamQuestions
-         * @description The served projection of an attempt: never a key entry or a rubric.
+         * @description The open attempt, as the skill's projection serves it; `bypass` while it takes one.
          */
         ExamQuestions: {
-            /**
-             * General
-             * @default []
-             */
+            /** Bypass */
+            bypass: boolean;
+            /** Chat */
+            chat: boolean;
+            /** General */
             general: components["schemas"]["ExamTurn"][];
             /** Head Sha */
             head_sha: string;
@@ -1198,6 +1190,8 @@ export interface components {
             /** Repo */
             repo: string;
             state: components["schemas"]["ExamState"];
+            /** Tip Cap */
+            tip_cap: number;
         };
         /** ExamsView */
         ExamsView: {
@@ -1240,6 +1234,25 @@ export interface components {
             note: string;
             /** Provider */
             provider: string;
+        };
+        /**
+         * GeneralTurn
+         * @description A message in the attempt's general chat.
+         */
+        GeneralTurn: {
+            /** Attempt */
+            attempt: number;
+            /** Head Sha */
+            head_sha: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "general";
+            /** Message */
+            message: string;
+            /** Question */
+            question?: null;
         };
         /**
          * GhostCard
@@ -1754,6 +1767,25 @@ export interface components {
             /** Task Issue */
             task_issue: number;
         };
+        /**
+         * QuestionTurn
+         * @description A tip on a question, or a message in its thread.
+         */
+        QuestionTurn: {
+            /** Attempt */
+            attempt: number;
+            /** Head Sha */
+            head_sha: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "question" | "tip";
+            /** Message */
+            message: string;
+            /** Question */
+            question: string;
+        };
         /** QueueRow */
         QueueRow: {
             /** Blocked */
@@ -2046,22 +2078,6 @@ export interface components {
             spec: components["schemas"]["EntrySetting"][];
             /** When */
             when: string;
-        };
-        /** TurnBody */
-        TurnBody: {
-            /** Attempt */
-            attempt: number;
-            /** Head Sha */
-            head_sha: string;
-            /**
-             * Kind
-             * @enum {string}
-             */
-            kind: "tip" | "question" | "general";
-            /** Message */
-            message: string;
-            /** Question */
-            question?: string | null;
         };
         /**
          * UnavailableContent
@@ -2405,7 +2421,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["TurnBody"];
+                "application/json": components["schemas"]["QuestionTurn"] | components["schemas"]["GeneralTurn"];
             };
         };
         responses: {

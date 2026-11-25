@@ -38,7 +38,7 @@ from web import model_settings_view as msv
 from web import read_model
 from web.artifacts import router as artifacts_router
 from web.exam_turns import router as exam_turns_router
-from web.exams import router as exams_router
+from web.exams import refused, router as exams_router
 from web.services import router as services_router
 from web.onboarding import router as onboarding_router
 from web.auth import (Operator, TailscaleAuthMiddleware,
@@ -177,8 +177,7 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
                heartbeat_seconds: float = HEARTBEAT_SECONDS,
                frontend_dist: Path | None = None,
                config_loader: Callable[[], Config] | None = None,
-               clock: Callable[[], datetime] | None = None,
-               pr_exam=None) -> FastAPI:
+               clock: Callable[[], datetime] | None = None) -> FastAPI:
     @contextlib.asynccontextmanager
     async def lifespan(_app):
         exams.fail_running_turns(boot.state_dir)   # the turns the last console was running died with it
@@ -408,7 +407,8 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
     app.include_router(onboarding_router(sources))
     app.include_router(exams_router(sources, _cfg))
     app.include_router(services_router(sources, _now, lambda: _cfg().state_dir))
-    app.include_router(exam_turns_router(_cfg, _usages, _now, pr_exam))
+    app.include_router(exam_turns_router(sources, _cfg, _now))
+    app.add_exception_handler(exams.Refused, refused)
 
     def _usage_view(reading: RequestReading) -> read_model.UsageView:
         assert reading.usages is not None

@@ -85,8 +85,15 @@ class Github:
         return {"slug": info["slug"], "id": info["id"]}
 
 
+TOO_LONG = "-character limit"   # how `pr_exam.py context` refuses a prompt over its limit
+
+
+class PromptTooLong(ValueError):
+    """`pr_exam.py context` refused a turn's prompt as too long."""
+
+
 class PrExam:
-    """The skill's script, run as the skill documents: `validate` and `public`."""
+    """The skill's script, run as the skill documents it."""
 
     def __init__(self, script: Path = SCRIPT, *, run=subprocess.run):
         self.script, self.run = script, run
@@ -111,30 +118,21 @@ class PrExam:
             raise ValueError(proc.stderr.strip() or "config failed")
         return json.loads(proc.stdout)
 
-    def score(self, exam: Path, answers: Path, grades: Path, flags: Path | None = None) -> dict:
-        extra = ("--flags", flags) if flags else ()
-        proc = self._call("score", "--exam", exam, "--answers", answers, "--grades", grades, *extra)
+    def score(self, exam: Path, answers: Path, grades: Path, flags: Path) -> dict:
+        proc = self._call("score", "--exam", exam, "--answers", answers, "--grades", grades, "--flags", flags)
         if proc.returncode:
             raise ValueError(proc.stderr.strip() or "score failed")
         return json.loads(proc.stdout)
 
-    def context(self, attempt_dir: Path, turn: dict) -> str:
-        """The prompt of a chat turn, as the skill's `context` prints it. `turn` is the host's:
-        kind, question, message and the question's finished `thread` ({kind, message, text});
-        it is put in the skill's shape here. ValueError when the skill refuses the prompt (too
-        long, or no such attempt)."""
-        adir = Path(attempt_dir)
-        if not (adir / "exam.json").exists():
-            raise ValueError("no such attempt")
-        return self._context(adir, _tip_doc(turn) if turn["kind"] == "tip" else _chat_doc(adir, turn))
-
-    def _context(self, adir: Path, doc: dict) -> str:
+    def context(self, exam: Path, diff: Path, body: Path, turn: dict) -> str:
+        """The prompt of a chat turn, as the skill's `context` prints it for the turn document
+        `turn`. PromptTooLong when the skill refuses the prompt as too long, ValueError when it
+        refuses it for another reason."""
         with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "turn.json").write_text(json.dumps(doc))
-            for name in ("diff.patch", "body.md"):   # an attempt opened before chat has neither
-                (Path(tmp) / name).write_text(_text_or_empty(adir.parent.parent / name))   # the exam dir keeps the head's
-            proc = self._call("context", "--exam", adir / "exam.json", "--diff", Path(tmp) / "diff.patch",
-                              "--body", Path(tmp) / "body.md", "--turn", Path(tmp) / "turn.json")
+            (Path(tmp) / "turn.json").write_text(json.dumps(turn))
+            proc = self._call("context", "--exam", exam, "--diff", diff, "--body", body, "--turn", Path(tmp) / "turn.json")
+        if proc.returncode and TOO_LONG in proc.stderr:
+            raise PromptTooLong(proc.stderr.strip())
         if proc.returncode:
             raise ValueError(proc.stderr.strip() or "context failed")
         return proc.stdout
@@ -144,58 +142,6 @@ class PrExam:
                           "--today", today)
         if proc.returncode:
             raise ValueError(proc.stderr.strip() or "record failed")
-
-
-def _tip_doc(turn: dict) -> dict:
-    tips = [t["text"] for t in turn.get("thread", []) if t["kind"] == "tip"]
-    return {"kind": "tip", "question": turn.get("question"), "draft": turn["message"],
-            "tip": 1 + len(tips), "tips": tips}
-
-
-def _chat_doc(adir: Path, turn: dict) -> dict:
-    doc = {"kind": turn["kind"], "message": turn["message"],
-           "thread": [{"role": r, "text": t[k]} for t in turn.get("thread", [])
-                      for r, k in (("user", "message"), ("assistant", "text"))]}
-    if turn["kind"] == "question":
-        doc["question"] = turn.get("question")
-        doc.update(_submitted(adir, doc["question"]))
-    return doc
-
-
-def _submitted(adir: Path, q: str) -> dict:
-    """The attempt's side of a question once it is submitted (answers.json is written only then):
-    {"submitted": the answer as text}, and once graded its "points" and, for a missed free-text
-    one, its "feedback"; {} before submit."""
-    path = adir / "answers.json"
-    if not path.exists():
-        return {}
-    return {"submitted": _answer_text(adir, q, json.loads(path.read_text()).get(q)), **_graded(adir, q)}
-
-
-def _answer_text(adir: Path, q: str, answer) -> str:
-    """A submitted answer as `context` takes it, a string: a text answer as written, a choice
-    answer as its option, and a bypassed question's missing answer said so."""
-    if isinstance(answer, str):
-        return answer
-    if answer is None:
-        return "(no answer: the question was bypassed)"
-    options = _options(adir, q)
-    return f"option {answer}: {options[answer]}" if 0 <= answer < len(options) else f"option {answer}"
-
-
-def _options(adir: Path, q: str) -> list[str]:
-    exam = json.loads((adir / "exam.json").read_text())
-    return next((x.get("options") or [] for x in exam["questions"] if x["id"] == q), [])
-
-
-def _graded(adir: Path, q: str) -> dict:
-    path = adir / "result.json"
-    got = next((r for r in json.loads(path.read_text())["questions"] if r["id"] == q), {}) if path.exists() else {}
-    return {k: got[k] for k in ("points", "feedback") if got.get(k) not in (None, "")}
-
-
-def _text_or_empty(path: Path) -> str:
-    return path.read_text() if path.exists() else ""
 
 
 def session(cfg, *, run=subprocess.run):

@@ -95,7 +95,7 @@ class Session:
 
 
 class Scoring(PrExam):
-    def score(self, exam, answers, grades, flags=None):
+    def score(self, exam, answers, grades, flags):
         exam, answers, grades = (json.loads(Path(p).read_text()) for p in (exam, answers, grades))
         kinds = {c["id"]: c["kind"] for c in exam["concepts"]}
         out, missed, total, why_ok = [], [], 0, True
@@ -341,5 +341,6 @@ def test_accepted_answers_are_answered_202_with_the_exam_as_the_get_reads_it(tmp
     response = submit(box, body)
     assert response.status_code == 202
     assert response.json() == box.read().json()
-    grading = {"attempt": 1, "questions": body["exam"]["questions"], "result": None}
+    grading = {"attempt": 1, "questions": [{**q, "tips_left": None} for q in body["exam"]["questions"]],
+               "general": [], "chat": True, "result": None}
     assert response.json() == {**body, "state": "grading", "exam": None, "attempts": [grading]}

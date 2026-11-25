@@ -13,6 +13,8 @@ Interface under test (defined here, built by the ticket), on top of test_exam_gr
 import json
 import os
 import shutil
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from dispatcher import exam_migration, exams
@@ -55,7 +57,9 @@ def test_a_failed_attempt_stays_readable_once_its_follow_up_opens(tmp_path, monk
     assert [q["prompt"] for q in saved["questions"]] == [
         q["prompt"] for q in first["exam"]["questions"]]
     assert saved["key"]["q0"]["answer"] == 1
-    assert json.loads((attempt_dir(box, 1) / "public.json").read_text()) == first["exam"]
+    served = json.loads((attempt_dir(box, 1) / "public.json").read_text())   # the skill's projection, as it made it
+    assert [q["id"] for q in served["questions"]] == [q["id"] for q in first["exam"]["questions"]]
+    assert all(set(q) <= {"id", "type", "prompt", "options"} for q in served["questions"])
     grades = json.loads((attempt_dir(box, 1) / "grades.json").read_text())
     assert grades == {"t0": {"grade": "pass", "feedback": "FB-t0"},
                       "t1": {"grade": "partial", "feedback": "FB-t1"}}
@@ -174,6 +178,8 @@ def test_an_exam_left_in_the_flat_layout_is_migrated_once_and_graded_with_its_an
         for f in new.iterdir():
             shutil.move(str(f), root / f.name)
         shutil.rmtree(root / "attempts")
+        (root / "flags.json").unlink()
+        before_assist(root)
     assert (root / "exam.json").is_file() and (root / "answers.json").is_file()
     # The first console read must migrate, before the worker starts grading.
     response = box.read()
@@ -199,6 +205,18 @@ def test_an_exam_left_in_the_flat_layout_is_migrated_once_and_graded_with_its_an
     assert len(box.session.graded()) == 1
 
 
+def before_assist(root):
+    """Put state.json, and the exam's chat inputs, as an exam from before the assist layout had them."""
+    doc = json.loads((root / "state.json").read_text())
+    doc.pop("bypassed")
+    for result in doc["results"]:
+        for q in result["questions"]:
+            q.pop("feedback", None)
+    (root / "state.json").write_text(json.dumps(doc))
+    for name in ("diff.patch", "body.md"):
+        (root / name).unlink()
+
+
 def flatten(box, owners):
     """Put the box back as the flat layout left it: each file at the exam level, taken from
     the attempt `owners` names for it, attempts/ gone, and no feedback in state.json."""
@@ -206,11 +224,7 @@ def flatten(box, owners):
     for name, n in owners.items():
         shutil.move(str(attempt_dir(box, n) / name), root / name)
     shutil.rmtree(root / "attempts")
-    doc = json.loads((root / "state.json").read_text())
-    for result in doc["results"]:
-        for q in result["questions"]:
-            q.pop("feedback", None)
-    (root / "state.json").write_text(json.dumps(doc))
+    before_assist(root)
 
 
 def names(box, n):
@@ -225,7 +239,11 @@ def test_a_flat_exam_with_its_follow_up_open_keeps_the_failed_submission_with_th
     body = box.read().json()
     assert (body["state"], body["attempt"]) == ("open", 2)
     assert names(box, 2) == ["exam.json", "public.json"]
-    assert names(box, 1) == ["answers.json", "grades.json", "result.json"]
+    assert names(box, 1) == ["answers.json", "flags.json", "grades.json", "public.json", "result.json"]
+    [lost] = body["attempts"]   # its questions were replaced by attempt 2's: kept as their concepts, no chat
+    assert lost["chat"] is False and lost["general"] == []
+    assert [q["prompt"] for q in lost["questions"]] == [
+        f"{q['concept']}: this question was not kept." for q in lost["result"]["questions"]]
     assert json.loads((attempt_dir(box, 1) / "answers.json").read_text())["q0"] == 0
     failed = {q["id"]: q for q in result_of(body, 1)["questions"]}
     assert failed["t1"]["feedback"] == "FB-t1"   # the summary is backfilled from result.json
@@ -242,8 +260,8 @@ def test_a_flat_exam_grading_its_follow_up_is_graded_with_the_follow_ups_answers
     flatten(box, {"exam.json": 2, "public.json": 2, "answers.json": 2,
                   "grades.json": 1, "result.json": 1})
     assert box.read().json()["state"] == "grading"
-    assert names(box, 2) == ["answers.json", "exam.json", "public.json"]
-    assert names(box, 1) == ["grades.json", "result.json"]
+    assert names(box, 2) == ["answers.json", "exam.json", "flags.json", "public.json"]
+    assert names(box, 1) == ["grades.json", "public.json", "result.json"]
     box.work()
     assert box.read().json()["state"] == "passed"
     assert json.loads((attempt_dir(box, 2) / "result.json").read_text())["passed"] is True
@@ -256,7 +274,7 @@ def test_a_flat_passed_exam_moves_whole_into_its_attempt_and_its_summary_gains_t
     assert graded_once(box, opened(box))["state"] == "passed"
     flatten(box, {name: 1 for name in FILES})
     body = box.read().json()
-    assert names(box, 1) == sorted(FILES)
+    assert names(box, 1) == sorted([*FILES, "flags.json"])
     questions = {q["id"]: q for q in result_of(body, 1)["questions"]}
     assert questions["t1"]["feedback"] == "FB-t1"
     assert "feedback" not in questions["t0"]
@@ -281,21 +299,15 @@ def test_a_failed_attempt_stays_in_the_view_while_its_follow_up_is_generated(tmp
     assert [q["id"] for q in failed["questions"]] == ["q0", "q1", "q2", "t0", "t1"]
 
 
-def test_the_view_reads_every_attempt_file_under_the_exams_lock(tmp_path, monkeypatch):
+def test_a_view_read_during_a_change_waits_for_it_and_shows_the_exam_whole(tmp_path, monkeypatch):
     box, _, _ = failed_once(tmp_path, monkeypatch)
-    real, held = exams.public, []
-
-    def public(state_dir, repo, pr, attempt):
-        try:
-            with state_lock(state_dir, exams.LOCK, timeout=0):
-                held.append(False)
-        except TimeoutError:
-            held.append(True)
-        return real(state_dir, repo, pr, attempt)
-    monkeypatch.setattr(exams, "public", public)
-    body = box.read().json()
-    assert [a["attempt"] for a in body["attempts"]] == [1] and body["exam"]
-    assert held == [True, True]
+    with ThreadPoolExecutor(1) as pool:
+        with state_lock(box.cfg.state_dir, exams.LOCK):   # what every change to the exam holds
+            pending = pool.submit(lambda: box.read().json())
+            time.sleep(0.2)
+            assert not pending.done()
+        body = pending.result(timeout=5)
+    assert [a["attempt"] for a in body["attempts"]] == [1] and body["exam"]["questions"]
 
 
 def test_a_flat_file_of_an_errored_first_grading_stays_with_attempt_one():
@@ -324,8 +336,8 @@ def test_a_flat_result_of_an_interrupted_follow_up_grading_stays_with_the_follow
     (exam_dir(box) / "result.json").write_text(json.dumps(interrupted))
     body = box.read().json()
     assert body["state"] == "grading"
-    assert names(box, 2) == ["answers.json", "exam.json", "grades.json", "public.json", "result.json"]
-    assert not attempt_dir(box, 1).exists() or names(box, 1) == []
+    assert names(box, 2) == ["answers.json", "exam.json", "flags.json", "grades.json", "public.json", "result.json"]
+    assert names(box, 1) == ["public.json"]
     assert json.loads((attempt_dir(box, 2) / "result.json").read_text()) == interrupted
     assert all(q.get("feedback") != "FB-second" for q in result_of(body, 1)["questions"])
     box.work()
@@ -348,8 +360,8 @@ def test_a_flat_result_whose_time_equals_the_follow_ups_answers_is_kept_aside_an
     body = box.read().json()
     assert body["state"] == "grading"
     assert sorted(p.name for p in (exam_dir(box) / exam_migration.UNATTRIBUTED).iterdir()) == ["grades.json", "result.json"]
-    assert names(box, 2) == ["answers.json", "exam.json", "public.json"]
-    assert not attempt_dir(box, 1).exists() or names(box, 1) == []
+    assert names(box, 2) == ["answers.json", "exam.json", "flags.json", "public.json"]
+    assert names(box, 1) == ["public.json"]
     assert all(q.get("feedback") != "FB-unknown" for q in result_of(body, 1)["questions"])
     box.work()
     assert box.read().json()["state"] == "passed"

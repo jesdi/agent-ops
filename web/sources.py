@@ -12,12 +12,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Collection, Literal
 
-from dispatcher import (claims, exams, eventlog, execution_overrides, failures,
+from dispatcher import (claims, containers, exams, eventlog, execution_overrides, failures,
                         messages as msgq,
                         onboard, onboarding_sessions, priority, queue_ops, state, task_artifacts, triage)
 from dispatcher.usage import ProviderUsage
 from dispatcher.usage_providers import ADAPTERS, fetch_provider
-from dispatcher.config import Repository
+from dispatcher.config import Config, Repository, referenced_providers
+from dispatcher.exam_runner import PrExam, PromptTooLong
+from dispatcher.exam_threads import Ask, Prompt
+from dispatcher.runtimes import runtime_for
 from dispatcher.intents import write_intent
 from dispatcher.queue_ops import QueuePlan
 from dispatcher.sessions import session_name
@@ -110,10 +113,22 @@ def _quarantine_entry(p: Path) -> dict | None:
     return entry
 
 
+@dataclass(frozen=True)
+class StartedTurn:
+    """A reserved exam chat turn, ready to run: the model command, the prompt for its stdin,
+    the parser of its JSON lines and how long it may take."""
+    id: str
+    argv: list[str]
+    prompt: str
+    text_of: Callable[[dict], str]
+    timeout: int
+
+
 class Sources:
     def __init__(self, state_dir: str, sessions, github,
                  clock: Callable[[], float] = time.time,
-                 systemctl: tuple[str, ...] = DISPATCHER_KICK):
+                 systemctl: tuple[str, ...] = DISPATCHER_KICK,
+                 pr_exam: PrExam | None = None):
         # The state dir only: the config (models included) has one owner,
         # web.app, which can change it while the console runs.
         self._state_dir = state_dir
@@ -121,6 +136,7 @@ class Sources:
         self._github = github
         self._clock = clock
         self._systemctl = systemctl
+        self._pr_exam = pr_exam or PrExam()
         self._rank_cache: dict[str, dict] = {}
         self._desc_cache: dict[tuple[str, int], dict] = {}
         self._triage_running: tuple[float, bool] | None = None
@@ -155,14 +171,38 @@ class Sources:
         self._kick_dispatcher()
         return doc
 
-    def submit_exam(self, repo: str, pr: int, attempt: int, head_sha: str, answers: dict) -> str:
-        outcome = exams.submit(self.state_dir, repo, pr, attempt, head_sha, answers)
-        if outcome == "ok":
-            self._kick_dispatcher()
-        return outcome
+    def submit_exam(self, repo: str, pr: int, attempt: int, head_sha: str, answers: dict) -> None:
+        exams.submit(self.state_dir, repo, pr, attempt, head_sha, answers)
+        self._kick_dispatcher()
 
-    def bypass_exam(self, repo: str, pr: int, attempt: int, head_sha: str, question: str, on: bool) -> str:
-        return exams.bypass(self.state_dir, repo, pr, attempt, head_sha, question, on)
+    def bypass_exam(self, repo: str, pr: int, attempt: int, head_sha: str, question: str, on: bool) -> None:
+        exams.bypass(self.state_dir, repo, pr, attempt, head_sha, question, on)
+
+    def start_turn(self, cfg: Config, now: datetime, repo: str, pr: int, ask: Ask) -> StartedTurn:
+        """Reserve an exam chat turn with its prompt and the model the usage gate admits; Refused
+        (exams.Refused) when the attempt may not take it, no model is admitted, or the skill
+        will not build its prompt. Nothing is stored unless it is reserved."""
+        prompt = exams.prepare_turn(self.state_dir, repo, pr, ask)
+        chosen = exams.entry(cfg, self.usage(referenced_providers(cfg)), now)
+        if chosen is None:
+            raise exams.Refused(exams.Refusal.USAGE, "unavailable: usage limit")
+        text = self._context(prompt)
+        turn_id = exams.start_turn(self.state_dir, repo, pr, ask)
+        argv = containers.turn_cmd(f"turn-{turn_id}", str(self.state_dir), cfg.session_memory, cfg.session_cpus,
+                                   chosen.model_id, chosen.effort)
+        return StartedTurn(turn_id, argv, text, runtime_for(chosen.model_id).stream_text, exams.TIMEOUT)
+
+    def _context(self, prompt: Prompt) -> str:
+        try:
+            return self._pr_exam.context(prompt.exam, prompt.diff, prompt.body, prompt.turn)
+        except PromptTooLong:
+            raise exams.Refused(exams.Refusal.TOO_LONG, "PR too large for chat") from None
+        except (ValueError, OSError, subprocess.SubprocessError) as exc:
+            raise exams.Refused(exams.Refusal.UNAVAILABLE, f"the chat prompt could not be built: {exc}") from None
+
+    def end_turn(self, repo: str, pr: int, attempt: int, turn_id: str, text: str, error: str) -> str:
+        """Store a turn's reply; "" or why it was dropped (exams.end_turn)."""
+        return exams.end_turn(self.state_dir, repo, pr, attempt, turn_id, text, error)
 
     def exams(self) -> list[dict]:
         return exams.listing(self.state_dir)

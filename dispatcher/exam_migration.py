@@ -1,16 +1,29 @@
-"""The flat-layout migration (pr-exam-host-assist ticket 01).
+"""The migration of an exam from before pr-exam-host-assist (ticket 01's flat layout).
 
-Before `attempts/<n>/`, each of these files sat at the exam level and held the last attempt
-that reached the step writing it. `exams._load` moves them on first read, under the exams
-lock. Delete this module, its call in `exams._load` and the flat-layout tests in
-tests/test_exam_attempt_directories.py once the deploy has run and every exam on the box has
-been read, as ADR 0004 does for task files. `exams.read` takes the exams lock only for this
-migration, so it can drop it then."""
+Before `attempts/<n>/`, each per-attempt file sat at the exam level and held the last attempt
+that reached the step writing it. `exams._load` calls `migrate` on every read, under the exams
+lock: it moves each flat file into its attempt, then, once per exam (a state.json with no
+`bypassed` key is one from before), fills in what the assist layout always has, so the rest of
+the code reads one shape:
+- `bypassed` in state.json;
+- `flags.json` (nothing bypassed or assisted) for every submitted attempt;
+- the exam's `diff.patch` and `body.md` the chat is given: the passed diff when there is one,
+  else a line saying it was not kept;
+- `public.json` for a graded attempt whose questions the flat layout replaced, built from its
+  result summary, each prompt saying the question was not kept. Such an attempt has no
+  exam.json, so it takes no turn.
+
+Once the deploy has run and every exam on the box has been read, delete this module, its call
+in `exams._load` and the flat-layout tests in tests/test_exam_attempt_directories.py, as
+ADR 0004 does for task files: nothing else reads the old shape. `exams.read` takes the exams
+lock only for this migration, so it can drop it then."""
 from __future__ import annotations
 
 import json
 from pathlib import Path
 from typing import Callable
+
+from dispatcher.state import write_atomic, write_json_atomic
 
 FLAT_STEPS = {"exam.json": "opened", "public.json": "opened", "answers.json": "submitted",
               "grades.json": "graded", "result.json": "graded"}
@@ -75,10 +88,21 @@ def _target(d: Path, n: int | None) -> Path:
 
 
 def migrate(d: Path, doc: dict, save: Callable[[], None], line: Callable[[object], str]) -> None:
+    """Bring the exam at `d` from before the assist layout to it. The caller holds the exams
+    lock; `save` writes `doc`. Every step is idempotent and `bypassed` is saved last, so an
+    interrupted migration resumes."""
+    _move_flat(d, doc, save, line)
+    if "bypassed" in doc:
+        return
+    _fill(d, doc)
+    doc["bypassed"] = None
+    save()
+
+
+def _move_flat(d: Path, doc: dict, save: Callable[[], None], line: Callable[[object], str]) -> None:
     """Move each file the exam at `d` left in the flat layout into the directory of the attempt
-    it belongs to. The caller holds the exams lock; `save` writes `doc`. Each file moves by an
-    atomic rename, after its backfill is saved, and a file left at the flat path asks for the
-    move again, so an interrupted migration resumes."""
+    it belongs to. Each file moves by an atomic rename, after its backfill is saved, and a file
+    left at the flat path asks for the move again."""
     for name in FLAT_STEPS:
         flat = d / name
         if not flat.exists():
@@ -90,3 +114,35 @@ def migrate(d: Path, doc: dict, save: Callable[[], None], line: Callable[[object
         target = _target(d, n)
         target.mkdir(parents=True, exist_ok=True)
         flat.replace(target / name)
+
+
+NOT_KEPT = {"diff.patch": "(the diff of this exam was not kept)", "body.md": "(the PR body of this exam was not kept)"}
+
+
+def _fill(d: Path, doc: dict) -> None:
+    """What the assist layout always has and an exam from before it may lack."""
+    if not doc["attempt"]:
+        return
+    _fill_chat_inputs(d)
+    for n in [r["attempt"] for r in doc["results"]] + ([doc["grading"]["attempt"]] if doc["grading"] else []):
+        _fill_attempt(d / "attempts" / str(n), doc, n)
+
+
+def _fill_chat_inputs(d: Path) -> None:
+    passed = d / "passed.diff"
+    texts = {**NOT_KEPT, **({"diff.patch": passed.read_text()} if passed.exists() else {})}
+    for name, text in texts.items():
+        if not (d / name).exists():
+            write_atomic(d / name, text)
+
+
+def _fill_attempt(adir: Path, doc: dict, n: int) -> None:
+    adir.mkdir(parents=True, exist_ok=True)
+    if (adir / "answers.json").exists() and not (adir / "flags.json").exists():
+        write_json_atomic(adir / "flags.json", {"bypassed": [], "assisted": []})
+    summary = _summary(doc, n)
+    if summary and not (adir / "public.json").exists():
+        write_json_atomic(adir / "public.json", {
+            "version": 1, "repo": doc["repo"], "pr": doc["pr"], "head_sha": doc["head_sha"],
+            "questions": [{"id": q["id"], "type": "text", "prompt": f"{q['concept']}: this question was not kept."}
+                          for q in summary["questions"]]})

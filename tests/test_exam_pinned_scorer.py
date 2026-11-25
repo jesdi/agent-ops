@@ -23,7 +23,7 @@ SCRIPT = exam_runner.SCRIPT   # the installation the console runs
 
 class Pinned(Scoring):
     """The installed skill scores and records, as it does on the box."""
-    def score(self, exam, answers, grades, flags=None):
+    def score(self, exam, answers, grades, flags):
         return exam_runner.PrExam(SCRIPT).score(exam, answers, grades, flags)
 
     def record(self, records, exam, result, today):

@@ -10,7 +10,7 @@ Interface under test (defined here, built by the ticket):
         have. A 409 or 422 changes nothing.
     GET .../ `bypassed`: the open attempt's bypassed question id, or None.
     POST .../answers accepts a bypassed question without an answer.
-    pr_exam.score(exam: Path, answers: Path, grades: Path, flags: Path | None = None) -> dict
+    pr_exam.score(exam: Path, answers: Path, grades: Path, flags: Path) -> dict
         `flags` holds {"bypassed": [id], "assisted": [id]}, written once at submit; what
         `pr_exam.py score --flags` takes. A bypassed question comes out as
         {"id", "concept", "help": "bypassed", "explanation", "hunk"}: no points, and it
@@ -35,8 +35,8 @@ class Flagging(Scoring):
     def __init__(self):
         self.seen = []
 
-    def score(self, exam, answers, grades, flags=None):
-        flag_doc = json.loads(Path(flags).read_text()) if flags else {}
+    def score(self, exam, answers, grades, flags):
+        flag_doc = json.loads(Path(flags).read_text())
         self.seen.append(flag_doc)
         exam, answers, grades = (json.loads(Path(p).read_text()) for p in (exam, answers, grades))
         skipped = set(flag_doc.get("bypassed", []))
@@ -184,38 +184,19 @@ def test_grading_scores_with_the_flags_written_at_submit(tmp_path, monkeypatch):
     assert box.pr_exam.seen == [{"bypassed": ["q2"], "assisted": []}]
 
 
-def watch_writes(monkeypatch, state_dir):
-    """Record, for each atomic write of exams.py, its file name and whether `exams.lock` was held."""
-    from dispatcher import exams
-    from dispatcher.state import state_lock
-    real, writes = exams.write_json_atomic, []
-
-    def spy(path, data, *a, **kw):
-        try:
-            with state_lock(state_dir, exams.LOCK, timeout=0):
-                held = False
-        except TimeoutError:
-            held = True
-        writes.append((Path(path).name, held))
-        return real(path, data, *a, **kw)
-    monkeypatch.setattr(exams, "write_json_atomic", spy)
-    return writes
-
-
-def test_the_flags_are_written_once_under_the_exams_lock_with_the_state_change(tmp_path, monkeypatch):
+def test_the_flags_are_sealed_once_at_submit_as_the_attempt_moves_to_grading(tmp_path, monkeypatch):
     box = box_for(tmp_path, monkeypatch)
     body = opened(box)
     assert bypass(box, body, "q6").status_code == 200
-    writes = watch_writes(monkeypatch, box.cfg.state_dir)
     answers = without(answers_for(body), "q6")
     assert submit(box, body, answers=answers).status_code == 202
-    assert submit(box, body, answers=answers).status_code == 409
-    flags = [w for w in writes if w[0] == "flags.json"]
-    assert flags == [("flags.json", True)]
-    assert all(held for _, held in writes)
-    assert [n for n, _ in writes].index("flags.json") < len(writes) - 1   # state change follows, same lock
-    [flag_file] = Path(box.cfg.state_dir).glob("exams/**/flags.json")
-    assert json.loads(flag_file.read_text()) == {"bypassed": ["q6"], "assisted": []}
     assert box.read().json()["state"] == "grading"
+    [flag_file] = Path(box.cfg.state_dir).glob("exams/**/flags.json")
+    sealed = flag_file.read_bytes()
+    assert json.loads(sealed) == {"bypassed": ["q6"], "assisted": []}
+    assert submit(box, body, answers=answers).status_code == 409
+    assert unbypass(box, body, "q6").status_code == 409
+    assert bypass(box, body, "q2").status_code == 409
+    assert flag_file.read_bytes() == sealed
     box.work()
     assert box.pr_exam.seen == [{"bypassed": ["q6"], "assisted": []}]

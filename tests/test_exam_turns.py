@@ -2,12 +2,12 @@
 and `containers.turn_cmd`, on top of test_exam_question_bypass.py.
 
 Interface under test (defined here, built by the ticket):
-    create_app(..., pr_exam=<object with context()>)   the console's `pr_exam`, as `exams.work` takes one
-    pr_exam.context(attempt_dir: Path, turn: dict) -> str
-        `attempt_dir` is `<exam dir>/attempts/<n>` of the turn's attempt. `turn` is
-        {"kind": "tip"|"question"|"general", "question": id|None, "message": str, "thread": [...]}.
-        Returns the prompt (what `pr_exam.py context` prints); it refuses a prompt that is too long
-        by raising ValueError.
+    Sources(..., pr_exam=<object with context()>)   the console's `pr_exam`, as `exams.work` takes one
+    pr_exam.context(exam: Path, diff: Path, body: Path, turn: dict) -> str
+        `exam` is `<exam dir>/attempts/<n>/exam.json` of the turn's attempt, `diff` and `body` the
+        head's. `turn` is the document `pr_exam.py context --turn` takes. Returns the prompt (what
+        `pr_exam.py context` prints); it refuses a prompt that is too long by raising
+        exam_runner.PromptTooLong, and refuses for another reason by raising ValueError.
     containers.turn_cmd(name, state_dir, memory, cpus, model, effort="") -> argv
         `inspection_cmd`'s sandbox without the clone and the request mounts, streaming its output:
         claude `--output-format stream-json --include-partial-messages --verbose --tools ''`,
@@ -19,18 +19,18 @@ Interface under test (defined here, built by the ticket):
         general), "message": str (the draft of a tip, or the operator's message)}
         202 {"id": str} at once, the reply is produced by a background task of the console.
         429 detail "unavailable: usage limit" when no `models.triage` entry is admitted, 422 detail
-        "PR too large for chat" when `context` refuses. Both before any model call, storing nothing.
+        "PR too large for chat" when `context` refuses the prompt as too long, 503 with the skill's
+        reason when it refuses for another. All before any model call, storing nothing.
     GET .../turns/{id}/stream   text/event-stream, one `data: {"delta": str}` per chunk of the reply
         (what has been written so far arrives first, as one delta), then one
         `data: {"status": "done"}` or `data: {"status": "failed", "error": str}`.
-    GET .../ `exam.questions[]` of the open attempt also carries `tips` (done plus running tips),
-        `assisted` (bool) and `thread`: [{"id", "kind", "message", "text", "status":
-        "running"|"done"|"failed", "error"}], oldest first.
+    GET .../ `exam.questions[]` of the open attempt also carries `tips` (finished tips), `tips_left`
+        (the cap less the finished and running tips), `assisted` (bool) and `thread`: [{"id", "kind",
+        "message", "text", "status": "running"|"done"|"failed", "error"}], oldest first.
     The console's startup marks every `running` turn failed, with an error.
 """
 import asyncio
 import contextlib
-import inspect
 import json
 import sys
 from pathlib import Path
@@ -39,7 +39,7 @@ import httpx
 import pytest
 
 from dispatcher import containers, runtimes
-from dispatcher.exam_runner import PrExam
+from dispatcher.exam_runner import PrExam, PromptTooLong
 from tests.test_exam_debt import Gh
 from tests.test_exam_generation import GET, HEADERS, NOW, REPO
 from tests.test_exam_grading import answers_for, opened, submit
@@ -58,6 +58,8 @@ import json, pathlib, sys, time
 runtime, ctl = sys.argv[1], pathlib.Path(sys.argv[2])
 prompt = sys.stdin.read()
 (ctl / f"run-{len(list(ctl.glob('run-*')))}").write_text(prompt)
+if (ctl / "empty").exists():
+    sys.exit(0)
 
 def emit(text):   # Codex's exec --json has no deltas: it sends the whole message at the end
     if runtime == "claude":
@@ -86,13 +88,13 @@ else:
 class Chat(Recording):
     def __init__(self):
         super().__init__()
-        self.asked, self.too_long = [], False
+        self.asked, self.refusal = [], None
 
-    def context(self, attempt_dir, turn):
-        if self.too_long:
-            raise ValueError("the prompt is too long")
-        self.asked.append({"attempt_dir": Path(attempt_dir), "turn": turn})
-        return f"CONTEXT {turn['kind']} {turn.get('question')} :: {turn.get('message', '')}"
+    def context(self, exam, diff, body, turn):
+        if self.refusal:
+            raise self.refusal
+        self.asked.append({"exam": Path(exam), "turn": turn})
+        return f"CONTEXT {turn['kind']} {turn.get('question')} :: {turn.get('message', turn.get('draft', ''))}"
 
 
 class Turns(RecordingBox):
@@ -119,9 +121,8 @@ class Turns(RecordingBox):
             def usage(self, routed):
                 return box.usages
 
-        edges = {"pr_exam": self.pr_exam} if "pr_exam" in inspect.signature(create_app).parameters else {}
-        return create_app(self.cfg, Src(self.cfg.state_dir, None, None, clock=lambda: 1000.0),
-                          sse_interval=0.01, clock=lambda: box.now, **edges)
+        return create_app(self.cfg, Src(self.cfg.state_dir, None, None, clock=lambda: 1000.0, pr_exam=self.pr_exam),
+                          sse_interval=0.01, clock=lambda: box.now)
 
     def hold(self):
         (self.ctl / "hold").write_text("")
@@ -248,7 +249,7 @@ def test_a_tip_streams_in_more_than_one_chunk_and_is_there_after_a_reload(box):
     assert (turn["kind"], turn["message"], turn["text"], turn["status"]) == ("tip", "the token only grows", REPLY, "done")
     assert box.stdin(0) == "CONTEXT tip q5 :: the token only grows"
     [asked] = box.pr_exam.asked
-    assert asked["attempt_dir"] == Path(box.cfg.state_dir) / "exams" / REPO / "240" / "attempts" / str(body["attempt"])
+    assert asked["exam"] == Path(box.cfg.state_dir) / "exams" / REPO / "240" / "attempts" / str(body["attempt"]) / "exam.json"
     assert question(box.read().json(), "q5")["thread"] == q5["thread"]
 
 
@@ -364,7 +365,7 @@ def test_usage_that_admits_no_entry_refuses_a_tip_at_once_and_stores_nothing(box
 @pytest.mark.parametrize("kind, qid", [("tip", "q5"), ("question", "q2"), ("general", None)])
 def test_a_prompt_that_is_too_long_is_refused_before_any_model_call_and_stores_nothing(box, kind, qid):
     body = opened(box)
-    box.pr_exam.too_long = True
+    box.pr_exam.refusal = PromptTooLong("prompt is 500,000 characters, over the 400,000-character limit")
 
     async def go():
         async with box.aclient() as c:
@@ -375,6 +376,69 @@ def test_a_prompt_that_is_too_long_is_refused_before_any_model_call_and_stores_n
     assert box.cmds == [] and list(box.ctl.glob("run-*")) == []
     assert (question(view, "q5")["tips"], thread_of(view, "q5"), thread_of(view, "q2")) == (0, [], [])
     assert stored_turns(box) == []
+
+
+@pytest.mark.parametrize("refusal", [ValueError("question q9: not in the exam"), OSError("python is gone")])
+def test_a_prompt_the_skill_cannot_build_says_why_before_any_model_call_and_stores_nothing(box, refusal):
+    body = opened(box)
+    box.pr_exam.refusal = refusal
+
+    async def go():
+        async with box.aclient() as c:
+            return await box.ask(c, body, "tip", "q5", "hello")
+
+    r = asyncio.run(go())
+    assert r.status_code == 503 and str(refusal) in r.json()["detail"]
+    assert "too large" not in r.json()["detail"]
+    assert box.cmds == [] and stored_turns(box) == []
+
+
+def test_an_empty_reply_fails_the_turn_and_costs_no_tip(box):
+    body = opened(box)
+    (box.ctl / "empty").write_text("")
+
+    async def go():
+        async with box.aclient() as c:
+            r = await box.ask(c, body, "tip", "q5", "hint")
+            assert r.status_code == 202, r.text
+            _, q, _, wait = await box.stream(r.json()["id"])
+            final = (await follow(q))[1]
+            await wait()
+            return final, await box.view(c)
+
+    final, view = asyncio.run(go())
+    assert final == {"status": "failed", "error": "the model sent no reply"}
+    q5 = question(view, "q5")
+    assert (q5["tips"], q5["tips_left"], q5["assisted"]) == (0, 3, False)
+    assert [(t["status"], t["error"]) for t in q5["thread"]] == [("failed", "the model sent no reply")]
+
+
+def test_a_reply_that_cannot_be_stored_ends_its_stream_failed_and_frees_its_thread(box, monkeypatch):
+    body = opened(box)
+    real, calls = Sources.end_turn, []
+
+    def flaky(self, *args):
+        calls.append(args)
+        if len(calls) == 1:
+            raise OSError("disk full")
+        return real(self, *args)
+    monkeypatch.setattr(Sources, "end_turn", flaky)
+
+    async def go():
+        async with box.aclient() as c:
+            r = await box.ask(c, body, "tip", "q5", "hint")
+            assert r.status_code == 202, r.text
+            _, q, _, wait = await box.stream(r.json()["id"])
+            final = (await follow(q))[1]
+            await wait()
+            failed = question(await box.view(c), "q5")
+            await box.tip(c, body)
+            return final, failed, question(await box.view(c), "q5")
+
+    final, failed, after = asyncio.run(go())
+    assert final["status"] == "failed" and "disk full" in final["error"]
+    assert (failed["tips"], failed["assisted"], [t["status"] for t in failed["thread"]]) == (0, False, ["failed"])
+    assert (after["tips"], [t["status"] for t in after["thread"]]) == (1, ["failed", "done"])
 
 
 def test_a_console_restart_fails_the_running_tip_and_frees_its_slot(box):
@@ -471,10 +535,10 @@ class RealChat(Recording):
     """Recording's fake generation and grading, with the console's own `PrExam.context` on the installed
     assist-capable skill: only the model is faked."""
 
-    def context(self, attempt_dir, turn):
+    def context(self, exam, diff, body, turn):
         script = next((s for s in SKILLS if s.exists() and 'add_parser("context")' in s.read_text()), None)
         assert script, "no installed pr-exam skill has a `context` command"
-        return PrExam(script).context(attempt_dir, turn)
+        return PrExam(script).context(exam, diff, body, turn)
 
 
 class Real(Turns):

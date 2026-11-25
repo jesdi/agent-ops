@@ -52,8 +52,8 @@ class Malformed(Session):
 
 class Installed(Scoring):
     """The pinned pr_exam.py scores, as it does on the box: it copies the grades file's feedback."""
-    def score(self, exam, answers, grades, flags=None):
-        return exam_runner.PrExam(SCRIPT).score(exam, answers, grades)
+    def score(self, exam, answers, grades, flags):
+        return exam_runner.PrExam(SCRIPT).score(exam, answers, grades, flags)
 
 
 @pytest.mark.skipif(not SCRIPT.is_file(), reason="the pinned pr-exam skill is not installed")

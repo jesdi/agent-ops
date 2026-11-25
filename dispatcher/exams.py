@@ -12,30 +12,48 @@ status) is `exam_lifecycle`'s: a request, the daily sweep and the end of every j
 the exam in line with the PR through `_reconcile`."""
 from __future__ import annotations
 
-import fcntl
 import json
-import os
 import shutil
 import subprocess
 import sys
-import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from enum import StrEnum
 from types import SimpleNamespace
 from typing import Iterator
 
-from dispatcher import exam_lifecycle, exam_migration, priority
+from dispatcher import exam_lifecycle, exam_migration, exam_threads, priority
 from dispatcher.config import routed_providers
 from dispatcher.exam_lifecycle import ExamState
+from dispatcher.exam_threads import Ask, Prompt
 from dispatcher.models import triage_entry
 from dispatcher.state import state_lock, write_json_atomic
 from dispatcher.usage import admits
 
 LOCK = "exams.lock"
-TIPS = 3   # tips a question gets per attempt
 TIMEOUT = 1200   # a session runs 20 minutes at most
 APP = "exam-app.json"
 STAGED = ("next-exam.json", "next-public.json")   # a generated exam before it is applied
+CHATTING = (ExamState.GENERATING, ExamState.OPEN, ExamState.GRADING, ExamState.PASSED)
+
+
+class Refusal(StrEnum):
+    """Why the exam refused an operator's change; the console maps each to its HTTP status."""
+    CONFLICT = "conflict"       # not what the exam's state allows now
+    UNKNOWN = "unknown"         # no such question
+    INCOMPLETE = "incomplete"   # an answer is missing
+    BUSY = "busy"               # a turn already runs there
+    USAGE = "usage"             # the usage gate admits no model
+    TOO_LONG = "too long"       # the turn's prompt is over the skill's limit
+    UNAVAILABLE = "unavailable" # the skill could not build the turn's prompt
+
+
+class Refused(Exception):
+    """An operator's change the exam refused; it changed nothing."""
+
+    def __init__(self, refusal: Refusal, detail: str):
+        super().__init__(detail)
+        self.refusal, self.detail = refusal, detail
 
 
 def _path(state_dir: str | Path, repo: str, pr: int) -> Path:
@@ -63,9 +81,7 @@ def _load(state_dir: str | Path, repo: str, pr: int) -> dict | None:
         doc = json.loads(_path(state_dir, repo, pr).read_text())
     except FileNotFoundError:
         return None
-    doc.setdefault("bypassed", None)   # the open attempt's bypassed question
-    if doc["attempt"]:   # the flat-layout migration: deleted with exam_migration
-        exam_migration.migrate(_dir(state_dir, repo, pr), doc, lambda: _write(state_dir, doc), _line)
+    exam_migration.migrate(_dir(state_dir, repo, pr), doc, lambda: _write(state_dir, doc), _line)
     return doc
 
 
@@ -85,7 +101,7 @@ def request(state_dir: str | Path, repo: str, pr: int) -> dict:
                    "debt": False, "detail": "", "attempt": 0, "requested": 0, "reconciled": 0,
                    "stale": False, "job": None, "status": None, "due": None, "merged": False,
                    "passed_concepts": [], "grading": None, "followup": None, "delta": False,
-                   "results": []}
+                   "results": [], "bypassed": None}
         elif doc["state"] == ExamState.ERROR and not doc["grading"]:
             doc["state"] = ExamState.NEW   # a request after a failed job retries it
         doc["requested"] += 1
@@ -93,71 +109,53 @@ def request(state_dir: str | Path, repo: str, pr: int) -> dict:
         return doc
 
 
-def public(state_dir: str | Path, repo: str, pr: int, attempt: int) -> dict | None:
+def public(state_dir: str | Path, repo: str, pr: int, attempt: int) -> dict:
     """The served questions of `attempt`, as pr_exam.public projected them; never the exam file."""
-    try:
-        return json.loads((attempt_dir(state_dir, repo, pr, attempt) / "public.json").read_text())
-    except FileNotFoundError:
-        return None
+    return json.loads((attempt_dir(state_dir, repo, pr, attempt) / "public.json").read_text())
 
 
 def view(state_dir: str | Path, repo: str, pr: int) -> dict | None:
     """The exam as its page reads it, the state and every attempt file read under one lock:
-    `exam` is the open attempt's served questions, and `attempts` every submitted attempt
-    of this head, oldest first, as {attempt, questions, result | None}. Neither holds a key."""
+    `exam` is the open attempt, `attempts` every submitted attempt of this head, oldest first,
+    with its result once graded. Each attempt carries its served questions with their chat,
+    and what it takes now: `chat` (thread and general turns), `bypass`, and per question the
+    tips left (None when it takes none). Neither holds a key."""
     with state_lock(state_dir, LOCK):
         doc = _load(state_dir, repo, pr)
         if doc is None:
             return None
-        waiting = doc["state"] == ExamState.OPEN
-        return {**doc, "exam": _chatted(state_dir, doc, doc["attempt"]) if waiting else None,
-                "attempts": _submitted(state_dir, doc)}
+        return {**doc, "tip_cap": exam_threads.TIPS,
+                "exam": _attempt(state_dir, doc, doc["attempt"]) if doc["state"] == ExamState.OPEN else None,
+                "attempts": [{"attempt": n, **_attempt(state_dir, doc, n), "result": result}
+                             for n, result in _submitted(doc)]}
 
 
-def _chatted(state_dir, doc: dict, n: int) -> dict | None:
-    """Attempt `n`'s served questions, each with its tips, assisted mark and thread, and its
-    general chat once it has one."""
-    served = public(state_dir, doc["repo"], doc["pr"], n)
-    if served is None:
-        return None
-    turns = _turns(attempt_dir(state_dir, doc["repo"], doc["pr"], n))
-    general = [_thread_entry(t) for t in turns if t["question"] is None]
-    return {**served, "questions": [{**q, **_help(q["id"], turns)} for q in served["questions"]],
-            **({"general": general} if general else {})}
-
-
-def _help(qid: str, turns: list[dict]) -> dict:
-    """What the chat of question `qid` came to: running and done tips count, a done reply assists."""
-    mine = [t for t in turns if t["question"] == qid]
-    return {"tips": sum(map(_counts_as_tip, mine)), "assisted": any(map(_assists, mine)),
-            "thread": [_thread_entry(t) for t in mine]}
-
-
-def _counts_as_tip(turn: dict) -> bool:
-    return turn["kind"] == "tip" and turn["status"] != "failed"
-
-
-def _assists(turn: dict) -> bool:
-    return turn["status"] == "done" and turn["kind"] != "general" and not turn["after_submit"]
-
-
-def _thread_entry(turn: dict) -> dict:
-    return {k: turn[k] for k in ("id", "kind", "message", "text", "status", "error")}
-
-
-def _submitted(state_dir, doc: dict) -> list[dict]:
-    """The graded attempts of this head with their result, then the one grading, if any."""
-    graded = [(r["attempt"], r) for r in doc["results"]]
+def _submitted(doc: dict) -> list[tuple[int, dict | None]]:
+    """This head's submitted attempts, oldest first, each with its result: the graded ones,
+    then the one grading (no result yet)."""
     grading = [(doc["grading"]["attempt"], None)] if doc["grading"] else []
-    return [{"attempt": n, **_questions(state_dir, doc, n), "result": result}
-            for n, result in graded + grading]
+    return [(r["attempt"], r) for r in doc["results"]] + grading
 
 
-def _questions(state_dir, doc: dict, n: int) -> dict:
-    """Attempt `n`'s served questions and its general chat once it has one; no questions for
-    one whose questions the flat layout replaced."""
-    served = _chatted(state_dir, doc, n) or {"questions": []}
-    return {k: served[k] for k in ("questions", "general") if k in served}
+def _attempt(state_dir, doc: dict, n: int) -> dict:
+    """Attempt `n`'s served questions with their chat, its general chat and what it takes now."""
+    adir = attempt_dir(state_dir, doc["repo"], doc["pr"], n)
+    served, turns, tips = public(state_dir, doc["repo"], doc["pr"], n), exam_threads.turns(adir), _taking(doc, n)
+    return {**served, "chat": _chatting(adir, doc, n), "bypass": tips, "general": exam_threads.general_view(turns),
+            "questions": [{**q, **exam_threads.question_view(q["id"], turns, tips)} for q in served["questions"]]}
+
+
+def _taking(doc: dict, n: int) -> bool:
+    """Attempt `n` is the open one, taking answers, tips and a bypass."""
+    return doc["state"] == ExamState.OPEN and doc["attempt"] == n
+
+
+def _chatting(adir: Path, doc: dict, n: int) -> bool:
+    """Attempt `n` takes question and general turns: it is one of this head's attempts (open,
+    grading or graded) while the exam is in a state that chats. A turn is built from the
+    attempt's exam, so one whose exam was not kept takes none."""
+    kept = [m for m, _ in _submitted(doc)] + ([doc["attempt"]] if _taking(doc, doc["attempt"]) else [])
+    return doc["state"] in CHATTING and n in kept and (adir / "exam.json").is_file()
 
 
 def app(state_dir: str | Path) -> dict | None:
@@ -320,12 +318,6 @@ def _exam_error(io, job: Path, spec: dict, model: str) -> str:
     return "; ".join(io.pr_exam.validate(out, request))
 
 
-def _served(public: dict) -> dict:
-    """The served questions as the page reads them: each starts with no tips and an empty thread
-    (the view puts the attempt's real chat over them)."""
-    return {**public, "questions": [{**q, **_help(q["id"], [])} for q in public["questions"]]}
-
-
 def _generate(cfg, doc, job: dict, pr, model, io) -> tuple[str, str, str]:
     """Run one generation session and stage its exam out of the session's reach;
     (outcome, detail, diff). The outcome is "open", "error", or "passed" for a
@@ -343,7 +335,7 @@ def _generate(cfg, doc, job: dict, pr, model, io) -> tuple[str, str, str]:
     out = jd / "exam.json"
     if job["kind"] == "delta" and not json.loads(out.read_text())["questions"]:
         return "passed", "", diff
-    write_json_atomic(d / STAGED[1], _served(io.pr_exam.public(out)))
+    write_json_atomic(d / STAGED[1], io.pr_exam.public(out))
     shutil.copyfile(out, d / STAGED[0])
     return "open", "", diff
 
@@ -358,8 +350,7 @@ def entry(cfg, usages, when):
 
 
 def _is_open(doc: dict | None, attempt: int, head_sha: str) -> bool:
-    return (doc is not None and doc["state"] == ExamState.OPEN and doc["attempt"] == attempt
-            and doc["head_sha"] == head_sha)
+    return doc is not None and doc["head_sha"] == head_sha and _taking(doc, attempt)
 
 
 def _answers(q: dict, a) -> bool:
@@ -367,30 +358,26 @@ def _answers(q: dict, a) -> bool:
     return not isinstance(a, bool) and isinstance(a, (int, str)) and isinstance(a, int) == (q["type"] == "choice")
 
 
-def submit(state_dir, repo: str, pr: int, attempt: int, head_sha: str, answers: dict) -> str:
-    """Accept the answers of the open attempt: "ok", "conflict" (repeated, earlier or
-    another head) or "incomplete". Changes nothing unless "ok"."""
+def submit(state_dir, repo: str, pr: int, attempt: int, head_sha: str, answers: dict) -> None:
+    """Accept the answers of the open attempt and seal its flags. Refused (changing nothing)
+    with CONFLICT when it is repeated, or for an earlier attempt or another head, and with
+    INCOMPLETE when a question other than the bypassed one has no answer."""
     with state_lock(state_dir, LOCK):
         doc = _load(state_dir, repo, pr)
         if not _is_open(doc, attempt, head_sha):
-            return "conflict"
+            raise Refused(Refusal.CONFLICT, "this attempt is not open for answers")
         questions = public(state_dir, repo, pr, attempt)["questions"]
         if not _complete(questions, answers, doc["bypassed"]):
-            return "incomplete"
+            raise Refused(Refusal.INCOMPLETE, "every question needs an answer")
         d = attempt_dir(state_dir, repo, pr, attempt)
-        _save_submission(d, questions, answers, doc["bypassed"], _assisted(_turns(d)))
+        _save_submission(d, questions, answers, doc["bypassed"], exam_threads.assisted(exam_threads.turns(d)))
         doc.update(state=ExamState.GRADING, grading={"attempt": attempt}, bypassed=None)
         _write(state_dir, doc)
-        return "ok"
 
 
 def _complete(questions: list, answers: dict, skipped: str | None) -> bool:
     """Every question but the bypassed one has a well-typed answer."""
     return all(q["id"] == skipped or _answers(q, answers.get(q["id"])) for q in questions)
-
-
-def _assisted(turns: list[dict]) -> list[str]:
-    return sorted({t["question"] for t in turns if _assists(t)})
 
 
 def _save_submission(attempt_dir: Path, questions: list, answers: dict, skipped: str | None,
@@ -401,26 +388,24 @@ def _save_submission(attempt_dir: Path, questions: list, answers: dict, skipped:
     write_json_atomic(attempt_dir / "flags.json", {"bypassed": [skipped] if skipped else [], "assisted": assisted})
 
 
-def _bypass_refusal(doc: dict, questions: list, question: str, on: bool) -> str:
-    """"" when the bypass or its undo may go ahead, else "unknown" or "conflict"."""
-    if question not in {q["id"] for q in questions}:
-        return "unknown"
-    # a bypass needs none held, an undo needs this one held
-    return "conflict" if doc["bypassed"] != (None if on else question) else ""
-
-
-def bypass(state_dir, repo: str, pr: int, attempt: int, head_sha: str, question: str, on: bool) -> str:
-    """Bypass `question` of the open attempt, or undo it: "ok", "conflict" (not the open current
-    attempt, a second bypass, or undoing another question) or "unknown" (no such question)."""
+def bypass(state_dir, repo: str, pr: int, attempt: int, head_sha: str, question: str, on: bool) -> None:
+    """Bypass `question` of the open attempt, or undo it. Refused with CONFLICT for any but the
+    open current attempt, a second bypass, or undoing another question, and with UNKNOWN for a
+    question the attempt lacks."""
     with state_lock(state_dir, LOCK):
         doc = _load(state_dir, repo, pr)
         if not _is_open(doc, attempt, head_sha):
-            return "conflict"
-        if refusal := _bypass_refusal(doc, public(state_dir, repo, pr, attempt)["questions"], question, on):
-            return refusal
+            raise Refused(Refusal.CONFLICT, "this attempt cannot change its bypass")
+        _require(question, public(state_dir, repo, pr, attempt)["questions"])
+        if doc["bypassed"] != (None if on else question):   # a bypass needs none held, an undo this one
+            raise Refused(Refusal.CONFLICT, "this attempt cannot change its bypass")
         doc["bypassed"] = question if on else None
         _write(state_dir, doc)
-        return "ok"
+
+
+def _require(question: str, questions: list[dict]) -> None:
+    if question not in {q["id"] for q in questions}:
+        raise Refused(Refusal.UNKNOWN, "the exam has no such question")
 
 
 def _grading_request(job: Path, doc, sha: str, diff: str, key: dict, answers: dict, texts: list) -> Path:
@@ -466,10 +451,7 @@ def _line(feedback) -> str:
 
 def _texts(attempt_dir: Path, key: dict) -> list:
     """The free-text questions of the attempt left to grade: none the attempt bypassed."""
-    flags = attempt_dir / "flags.json"   # written at submit; an attempt submitted before bypass has none
-    if not flags.exists():
-        write_json_atomic(flags, {"bypassed": [], "assisted": []})
-    skipped = json.loads(flags.read_text())["bypassed"]
+    skipped = json.loads((attempt_dir / "flags.json").read_text())["bypassed"]
     return [q for q in key["questions"] if q["type"] == "text" and q["id"] not in skipped]
 
 
@@ -509,9 +491,10 @@ def _result(doc, scored: dict) -> dict:
 
 
 def _shown(q: dict) -> dict:
-    """One scored question as the page shows it: the explanation only where points were lost."""
+    """One scored question as the page shows it: the explanation, hunk and feedback only where
+    points were lost or the question was bypassed."""
     keep = ("id", "concept", "points", "help")
-    if q.get("help") or q["points"] < 1:
+    if q.get("help") == "bypassed" or q["points"] < 1:
         keep += ("explanation", "hunk", "feedback")
     return {k: v for k, v in q.items() if k in keep}
 
@@ -763,157 +746,68 @@ def sweep(cfg, **edges) -> None:
     work(cfg, **edges)
 
 
-# Chat turns: `attempts/<n>/threads.json` is {"turns": [...]}, written under the exams lock.
-
-def _turns(attempt_dir: Path) -> list[dict]:
-    try:
-        return json.loads((attempt_dir / "threads.json").read_text())["turns"]
-    except FileNotFoundError:
-        return []
 
 
-def _turn_refusal(state_dir, doc: dict | None, attempt: int, head_sha: str, kind: str,
-                  question: str | None) -> str:
-    """"" when a turn may start on this attempt, else "conflict" (not the current attempt and
-    head, or a tip once the attempt is no longer open) or "unknown" (no such question)."""
-    if not _turn_open(doc, attempt, head_sha, kind):
-        return "conflict"
-    return "" if kind == "general" or question in _question_ids(state_dir, doc, attempt) else "unknown"
+# Chat turns. Which attempt takes which turn is decided here, under the exams lock, by the same
+# predicates the view serves (`_chatting`, `_taking`); `exam_threads` keeps the turns.
+
+def _admit(state_dir, doc: dict | None, ask: Ask) -> Path:
+    """The directory of the attempt `ask` names, when it may take that turn now; else Refused."""
+    adir = _open_to(state_dir, doc, ask)
+    if ask.question is not None:
+        _require(ask.question, public(state_dir, doc["repo"], doc["pr"], ask.attempt)["questions"])
+    _free(exam_threads.turns(adir), ask)
+    return adir
 
 
-def _turn_open(doc: dict | None, attempt: int, head_sha: str, kind: str) -> bool:
-    """This head's kept attempt; a tip needs the current attempt, still open."""
-    if doc is None or doc["head_sha"] != head_sha:
-        return False
-    return _is_open(doc, attempt, head_sha) if kind == "tip" else 1 <= attempt <= doc["attempt"]
+def _open_to(state_dir, doc: dict | None, ask: Ask) -> Path:
+    """The directory of the attempt `ask` names, when that attempt of this head takes its kind
+    of turn now: `_chatting`, and `_taking` for a tip. Else Refused."""
+    if doc is None or doc["head_sha"] != ask.head_sha:
+        raise Refused(Refusal.CONFLICT, "this attempt cannot take that turn")
+    adir = attempt_dir(state_dir, doc["repo"], doc["pr"], ask.attempt)
+    if not (_chatting(adir, doc, ask.attempt) and (ask.kind != "tip" or _taking(doc, ask.attempt))):
+        raise Refused(Refusal.CONFLICT, "this attempt cannot take that turn")
+    return adir
 
 
-def _question_ids(state_dir, doc: dict, attempt: int) -> set[str]:
-    served = public(state_dir, doc["repo"], doc["pr"], attempt) or {"questions": []}
-    return {q["id"] for q in served["questions"]}
+def _free(turns: list, ask: Ask) -> None:
+    """Refused while a turn runs in the thread `ask` names, or for a tip past the cap."""
+    if exam_threads.running(turns, ask.question):
+        raise Refused(Refusal.BUSY, "a turn is already running there")
+    if ask.kind == "tip" and exam_threads.tips_held(turns, ask.question) >= exam_threads.TIPS:
+        raise Refused(Refusal.CONFLICT, f"this question has had its {exam_threads.TIPS} tips")
 
 
-def thread(state_dir, repo: str, pr: int, attempt: int, question: str | None) -> list[dict]:
-    """The finished turns of `question`'s thread (the general chat for None), oldest first."""
+def prepare_turn(state_dir, repo: str, pr: int, ask: Ask) -> Prompt:
+    """What the skill's `context` takes for `ask`, built from the files of the attempt it names;
+    Refused when that attempt may not take the turn. Changes nothing: `start_turn` reserves it."""
     with state_lock(state_dir, LOCK):
-        return [{k: t[k] for k in ("kind", "message", "text")}
-                for t in _turns(attempt_dir(state_dir, repo, pr, attempt))
-                if t["status"] == "done" and t["question"] == question]
+        adir = _admit(state_dir, _load(state_dir, repo, pr), ask)
+        d = _dir(state_dir, repo, pr)
+        return Prompt(adir / "exam.json", d / "diff.patch", d / "body.md", exam_threads.document(adir, ask))
 
 
-def turn_check(state_dir, repo: str, pr: int, attempt: int, head_sha: str, kind: str,
-               question: str | None) -> str:
-    """What `turn_start` would refuse, changing nothing."""
+def start_turn(state_dir, repo: str, pr: int, ask: Ask) -> str:
+    """Reserve `ask` as a running turn, checked again as `prepare_turn` did; its id, or Refused."""
     with state_lock(state_dir, LOCK):
-        return _turn_refusal(state_dir, _load(state_dir, repo, pr), attempt, head_sha, kind, question)
+        return exam_threads.reserve(_admit(state_dir, _load(state_dir, repo, pr), ask), ask)
 
 
-def turn_start(state_dir, repo: str, pr: int, attempt: int, head_sha: str, kind: str,
-               question: str | None, message: str) -> tuple[str, str]:
-    """Reserve a running turn: ("", its id), or a refusal: "conflict", "unknown" or "busy"
-    (a turn already runs on that question, or in the general chat)."""
-    with state_lock(state_dir, LOCK):
-        refusal = _turn_refusal(state_dir, _load(state_dir, repo, pr), attempt, head_sha, kind, question)
-        if refusal:
-            return refusal, ""
-        d = attempt_dir(state_dir, repo, pr, attempt)
-        turns = _turns(d)
-        refusal = _thread_refusal([t for t in turns if t["question"] == question], kind)
-        if refusal:
-            return refusal, ""
-        turn = {"id": uuid.uuid4().hex, "kind": kind, "question": question, "message": message,
-                "status": "running", "text": "", "error": None, "after_submit": False,
-                "started": datetime.now(timezone.utc).isoformat()}
-        write_json_atomic(d / "threads.json", {"turns": [*turns, turn]})
-        _hold(state_dir, turn["id"])
-        return "", turn["id"]
-
-
-def _thread_refusal(mine: list[dict], kind: str) -> str:
-    """"busy" while a turn of this thread runs, "conflict" for a tip past the cap, else ""."""
-    if any(t["status"] == "running" for t in mine):
-        return "busy"
-    return "conflict" if kind == "tip" and sum(map(_counts_as_tip, mine)) >= TIPS else ""
-
-
-# A running turn is owned by the console process that runs it, which holds a flock on
-# turn-locks/<id> until the turn ends; a console's startup fails only the turns no one holds.
-_HELD: dict[str, int] = {}
-
-
-def _lock_path(state_dir, turn_id: str) -> Path:
-    return Path(state_dir) / "turn-locks" / turn_id
-
-
-def _hold(state_dir, turn_id: str) -> None:
-    path = _lock_path(state_dir, turn_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_CREAT | os.O_RDWR)
-    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    _HELD[turn_id] = fd
-
-
-def turn_release(state_dir, turn_id: str) -> None:
-    """The turn's console lets go of it (its task ended, however it ended)."""
-    _lock_path(state_dir, turn_id).unlink(missing_ok=True)
-    if fd := _HELD.pop(turn_id, None):
-        os.close(fd)
-
-
-def _orphaned(state_dir, turn_id: str) -> bool:
-    """No live console holds the turn."""
-    try:
-        fd = os.open(_lock_path(state_dir, turn_id), os.O_RDWR)
-    except FileNotFoundError:
-        return True
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
-        return False
-    finally:
-        os.close(fd)
-    return True
-
-
-def turn_end(state_dir, repo: str, pr: int, attempt: int, turn_id: str, text: str, error: str) -> str:
-    """Store a turn's reply, "done" or "failed" by `error`. "exam changed" when its attempt is gone
-    (the head moved or the exam was deleted): the reply is dropped. After submit it is `after_submit`."""
+def end_turn(state_dir, repo: str, pr: int, attempt: int, turn_id: str, text: str, error: str) -> str:
+    """Store a turn's reply, "done" or "failed" by `error`; "exam changed" when its attempt is
+    gone (the head moved or the exam was deleted) and the reply is dropped. A turn that ends
+    once its attempt is no longer open is `after_submit`: it marks nothing."""
     with state_lock(state_dir, LOCK):
         doc = _load(state_dir, repo, pr)
-        d = attempt_dir(state_dir, repo, pr, attempt)
-        turns = _turns(d)
-        turn = _find(turns, turn_id)
-        if doc is None or turn is None:
+        adir = attempt_dir(state_dir, repo, pr, attempt)
+        if doc is None or not exam_threads.end(adir, turn_id, text, error, not _taking(doc, attempt)):
             return "exam changed"
-        turn.update(status="failed" if error else "done", text=text, error=error or None,
-                    after_submit=not _is_open(doc, attempt, doc["head_sha"]))
-        write_json_atomic(d / "threads.json", {"turns": turns})
         return ""
 
 
-def _find(turns: list[dict], turn_id: str) -> dict | None:
-    return next((t for t in turns if t["id"] == turn_id), None)
-
-
 def fail_running_turns(state_dir) -> None:
-    """The console's startup: every turn still `running` that no live console holds was lost with its console."""
-    files = sorted(Path(state_dir, "exams").glob("*/*/*/attempts/*/threads.json"))
-    if not files:
-        return
+    """The console's startup: a turn still running was lost with the console that ran it."""
     with state_lock(state_dir, LOCK):
-        for f in files:
-            _fail_orphans(state_dir, f)
-
-
-def _fail_orphans(state_dir, threads: Path) -> None:
-    turns = _turns(threads.parent)   # [] when deleted since the listing
-    lost = [t for t in turns if _orphan(state_dir, t)]
-    for t in lost:
-        t.update(status="failed", error="console restarted")
-    if lost:
-        write_json_atomic(threads, {"turns": turns})
-
-
-def _orphan(state_dir, turn: dict) -> bool:
-    """A running turn no live console holds."""
-    return turn["status"] == "running" and _orphaned(state_dir, turn["id"])
+        for threads in sorted(Path(state_dir, "exams").glob("*/*/*/attempts/*/threads.json")):
+            exam_threads.fail_running(threads.parent)

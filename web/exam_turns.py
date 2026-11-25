@@ -1,36 +1,52 @@
 """Exam chat turns: a tip or a message starts a model run that the console owns as a
 background task, so closing the page changes nothing. `POST .../turns` reserves the turn and
 answers at once; `GET .../turns/{id}/stream` replays and follows its reply. The finished turn
-is stored in the attempt's `threads.json` and read back through the exam view."""
+is stored in the attempt's `threads.json` and read back through the exam view. The rules
+(which attempt takes which turn, the prompt, the model) are the `Sources` seam's; this
+router does the HTTP, the stream and the task."""
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from dataclasses import dataclass, field
-from typing import Callable, Literal
+from datetime import datetime
+from typing import Annotated, Callable, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from dispatcher import containers, exams
 from dispatcher.config import Config
-from dispatcher.exam_runner import PrExam
-from dispatcher.runtimes import runtime_for
+from dispatcher.exam_threads import Ask
 from web.auth import Operator, current_operator
 from web.exams import Owner, Pr
+from web.sources import StartedTurn
 
 POLL = 0.05    # seconds between looks at a live reply; ponytail: a condition variable if it ever shows
 KEPT = 64      # finished replies kept for a stream that opens late
 
 
-class TurnBody(BaseModel):
+class _Turn(BaseModel):
     model_config = ConfigDict(extra="forbid")
     attempt: int = Field(strict=True)
     head_sha: str
-    kind: Literal["tip", "question", "general"]
-    question: str | None = None
     message: str
+
+
+class QuestionTurn(_Turn):
+    """A tip on a question, or a message in its thread."""
+    kind: Literal["tip", "question"]
+    question: str
+
+
+class GeneralTurn(_Turn):
+    """A message in the attempt's general chat."""
+    kind: Literal["general"]
+    question: None = None
+
+
+TurnBody = Annotated[QuestionTurn | GeneralTurn, Field(discriminator="kind")]
 
 
 @dataclass
@@ -46,21 +62,22 @@ def _event(doc: dict) -> str:
     return "data: " + json.dumps(doc) + "\n\n"
 
 
-async def _converse(live: Live, argv: list[str], prompt: str, text_of: Callable[[dict], str]) -> str:
-    """Run the model command with `prompt` on stdin, feeding every text delta to `live`;
-    "" when it exited 0, else why it did not."""
-    proc = await asyncio.create_subprocess_exec(*argv, stdin=asyncio.subprocess.PIPE,
+async def _converse(live: Live, turn: StartedTurn) -> str:
+    """Run the model command with the prompt on stdin, feeding every text chunk to `live`;
+    "" when it exited 0 with a reply, else why it did not."""
+    proc = await asyncio.create_subprocess_exec(*turn.argv, stdin=asyncio.subprocess.PIPE,
                                                 stdout=asyncio.subprocess.PIPE,
                                                 stderr=asyncio.subprocess.PIPE, limit=1 << 22)
     errors = asyncio.create_task(proc.stderr.read())
     try:
-        proc.stdin.write(prompt.encode())
+        proc.stdin.write(turn.prompt.encode())
         await proc.stdin.drain()
         proc.stdin.close()
         async for line in proc.stdout:
-            if delta := _delta(line, text_of):
-                live.chunks.append(delta)
-        return _stopped(await proc.wait(), await errors)
+            if chunk := _chunk(line, turn.text_of):
+                live.chunks.append(chunk)
+        stopped = _stopped(await proc.wait(), await errors)
+        return stopped or ("" if "".join(live.chunks).strip() else "the model sent no reply")
     finally:
         errors.cancel()
         if proc.returncode is None:
@@ -68,7 +85,7 @@ async def _converse(live: Live, argv: list[str], prompt: str, text_of: Callable[
             await proc.wait()
 
 
-def _delta(line: bytes, text_of: Callable[[dict], str]) -> str:
+def _chunk(line: bytes, text_of: Callable[[dict], str]) -> str:
     try:
         return text_of(json.loads(line))
     except (ValueError, AttributeError):   # not a JSON object: the CLI's own noise
@@ -81,67 +98,48 @@ def _stopped(code: int, stderr: bytes) -> str:
     return f"the model stopped: exit {code}" + (f": {tail[0]}" if tail else "") if code else ""
 
 
-def _refuse(refusal: str) -> None:
-    """Turn `turn_check` or `turn_start`'s refusal into its HTTP error."""
-    if refusal:
-        raise HTTPException(*{"conflict": (409, "this attempt cannot take that turn"),
-                              "unknown": (422, "the exam has no such question"),
-                              "busy": (409, "a turn is already running there")}[refusal])
+async def _reply(live: Live, turn: StartedTurn) -> str:
+    """The turn's model run; "" or why it failed. Never raises."""
+    try:
+        async with asyncio.timeout(turn.timeout):
+            return await _converse(live, turn)
+    except TimeoutError:
+        return f"the model ran past {turn.timeout // 60} minutes"
+    except Exception as exc:   # a turn must end, whatever went wrong
+        return f"the model could not run: {exc}"
 
 
-def router(cfg: Callable[[], Config], usages: Callable[[Config], dict], now: Callable,
-           pr_exam: PrExam | None = None) -> APIRouter:
-    pr_exam = pr_exam or PrExam()
+def router(sources, cfg: Callable[[], Config], now: Callable[[], datetime]) -> APIRouter:
     routes = APIRouter()
     lives: dict[str, Live] = {}
     tasks: set[asyncio.Task] = set()
 
-    async def run(live: Live, turn_id: str, attempt: int, prompt: str, model: str, effort: str,
-                  live_cfg: Config) -> None:
+    async def run(live: Live, turn: StartedTurn, attempt: int) -> None:
+        """Run the turn and store how it ended; its stream always ends, as the stored turn does."""
+        final = {"status": "failed", "error": "the turn stopped"}
         try:
-            error = ""
-            try:
-                argv = containers.turn_cmd(f"turn-{turn_id}", str(live_cfg.state_dir), live_cfg.session_memory,
-                                           live_cfg.session_cpus, model, effort)
-                async with asyncio.timeout(exams.TIMEOUT):
-                    error = await _converse(live, argv, prompt, runtime_for(model).stream_text)
-            except TimeoutError:
-                error = f"the model ran past {exams.TIMEOUT // 60} minutes"
-            except Exception as exc:   # a turn must end, whatever went wrong
-                error = f"the model could not run: {exc}"
-            dropped = await asyncio.to_thread(exams.turn_end, live_cfg.state_dir, live.repo, live.pr, attempt,
-                                              turn_id, "".join(live.chunks), error)
+            error = await _reply(live, turn)
+            error = await asyncio.to_thread(sources.end_turn, live.repo, live.pr, attempt, turn.id,
+                                            "".join(live.chunks), error) or error
+            final = {"status": "failed", "error": error} if error else {"status": "done"}
+        except Exception as exc:   # the reply could not be stored: fail the turn, best effort
+            final = {"status": "failed", "error": f"the reply could not be stored: {exc}"}
+            with contextlib.suppress(Exception):
+                await asyncio.to_thread(sources.end_turn, live.repo, live.pr, attempt, turn.id, "", final["error"])
         finally:
-            exams.turn_release(live_cfg.state_dir, turn_id)
-        error = dropped or error
-        live.final = {"status": "failed", "error": error} if error else {"status": "done"}
+            live.final = final
 
     @routes.post("/api/exam/{owner}/{name}/{pr}/turns", status_code=202)
     async def start(body: TurnBody, owner: Owner, name: Owner, pr: Pr, op: Operator = Depends(current_operator)):
-        repo, live_cfg = f"{owner}/{name}", cfg()
-        if (body.kind == "general") != (body.question is None):
-            raise HTTPException(422, "a general turn takes no question, any other turn needs one")
-        where = (live_cfg.state_dir, repo, pr, body.attempt, body.head_sha, body.kind, body.question)
-        _refuse(await asyncio.to_thread(exams.turn_check, *where))
-        entry = await asyncio.to_thread(lambda: exams.entry(live_cfg, usages(live_cfg), now()))
-        if entry is None:
-            raise HTTPException(429, "unavailable: usage limit")
-        turn = {"kind": body.kind, "question": body.question, "message": body.message,
-                "thread": await asyncio.to_thread(exams.thread, live_cfg.state_dir, repo, pr, body.attempt, body.question)}
-        try:
-            prompt = await asyncio.to_thread(pr_exam.context,
-                                             exams.attempt_dir(live_cfg.state_dir, repo, pr, body.attempt), turn)
-        except ValueError:
-            raise HTTPException(422, "PR too large for chat")
-        refusal, turn_id = await asyncio.to_thread(exams.turn_start, *where, body.message)
-        _refuse(refusal)
-        live = lives[turn_id] = Live(repo, pr)
+        repo = f"{owner}/{name}"
+        turn = await asyncio.to_thread(sources.start_turn, cfg(), now(), repo, pr, Ask(**body.model_dump()))
+        live = lives[turn.id] = Live(repo, pr)
         while len(lives) > KEPT:
             del lives[next(iter(lives))]
-        task = asyncio.create_task(run(live, turn_id, body.attempt, prompt, entry.model_id, entry.effort, live_cfg))
+        task = asyncio.create_task(run(live, turn, body.attempt))
         tasks.add(task)
         task.add_done_callback(tasks.discard)
-        return {"id": turn_id}
+        return {"id": turn.id}
 
     @routes.get("/api/exam/{owner}/{name}/{pr}/turns/{turn_id}/stream")
     async def stream(request: Request, owner: Owner, name: Owner, pr: Pr, turn_id: str,

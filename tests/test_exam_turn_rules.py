@@ -10,7 +10,7 @@ Interface under test (defined here, built by the ticket):
         head: the open one, the one grading, a passed one, a failed one (`attempt` names it).
     GET .../ the questions of every attempt carry `tips`, `assisted` and `thread` like the open one's do:
         `exam.questions[]` for the open attempt, `attempts[].questions[]` for a submitted one.
-    pr_exam.context(attempt_dir, turn): `attempt_dir` is the attempt the turn names, never a later one.
+    pr_exam.context(exam, diff, body, turn): `exam` is the exam of the attempt the turn names, never a later one's.
     The flags a submit writes to `attempts/<n>/flags.json` are {"bypassed": [id], "assisted": [id]}: the
         questions with a finished tip or question-thread reply while the attempt was open. A turn that
         finishes later changes neither the file nor the scoring.
@@ -20,6 +20,7 @@ Interface under test (defined here, built by the ticket):
 import asyncio
 import json
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -42,13 +43,13 @@ class Assist(Chat, Flagging):
         Chat.__init__(self)
         self.seen, self.recorded = [], []
 
-    def context(self, attempt_dir, turn):
+    def context(self, exam, diff, body, turn):
         if self.real:
-            self.asked.append({"attempt_dir": Path(attempt_dir), "turn": turn})
-            return RealChat.context(self, attempt_dir, turn)
-        return Chat.context(self, attempt_dir, turn)
+            self.asked.append({"exam": Path(exam), "turn": turn})
+            return RealChat.context(self, exam, diff, body, turn)
+        return Chat.context(self, exam, diff, body, turn)
 
-    def score(self, exam, answers, grades, flags=None):
+    def score(self, exam, answers, grades, flags):
         out = Flagging.score(self, exam, answers, grades, flags)
         for q in out["questions"]:
             if q["id"] in self.seen[-1].get("assisted", []):
@@ -155,9 +156,12 @@ def test_a_running_tip_holds_its_slot_and_the_general_chat_has_its_own_turn(box)
             other = await box.ask(c, body, "question", "q2", "another question")
             chat = await box.ask(c, body, "general", None, "overview?")
             chat_again = await box.ask(c, body, "general", None, "overview again?")
-            return [r.status_code for r in (third, again, thread, other, chat, chat_again)]
+            return [r.status_code for r in (third, again, thread, other, chat, chat_again)], await box.view(c)
 
-    assert asyncio.run(go()) == [202, 409, 409, 202, 202, 409]
+    codes, view = asyncio.run(go())
+    assert codes == [202, 409, 409, 202, 202, 409]
+    q5 = question(view, "q5")   # the running third tip is not shown as had, but it holds the last slot
+    assert (q5["tips"], q5["tips_left"]) == (2, 0)
 
 
 def test_a_tip_that_fails_mid_stream_leaves_the_count_and_assisted_state_and_gives_its_slot_back(box):
@@ -262,6 +266,9 @@ def test_a_reply_that_finishes_while_grading_is_stored_but_changes_neither_flags
     [recorded] = box.pr_exam.recorded
     helps = {q["id"]: q.get("help") for q in recorded["questions"]}
     assert helps == {"q1": None, "q2": "assisted", "q3": None, "q4": None, "q5": None, "q6": "bypassed"}
+    shown = {q["id"]: q for q in result_of(box.read().json(), 1)["questions"]}   # the key only where help cost
+    assert (shown["q2"]["help"], shown["q2"]["points"]) == ("assisted", 1) and "explanation" not in shown["q2"]
+    assert shown["q6"]["help"] == "bypassed" and shown["q6"]["explanation"] and shown["q6"]["hunk"]
 
 
 def test_a_tip_is_refused_while_grading_and_the_attempt_stays_as_submitted(box):
@@ -336,7 +343,7 @@ def test_a_question_asked_about_a_failed_attempt_is_built_from_that_attempt_and_
     thread, view = asyncio.run(go())
     assert [(t["message"], t["status"]) for t in thread] == [("why was I wrong?", "done")]
     [asked] = real.pr_exam.asked
-    assert asked["attempt_dir"] == Path(real.cfg.state_dir) / "exams" / REPO / "240" / "attempts" / "1"
+    assert asked["exam"] == Path(real.cfg.state_dir) / "exams" / REPO / "240" / "attempts" / "1" / "exam.json"
     prompt = real.stdin(0)
     assert "the token is random" in prompt and FEEDBACK in prompt and "why was I wrong?" in prompt
     assert re.search(r"Points\W{0,6}0\b", prompt), prompt
@@ -395,3 +402,43 @@ def test_a_turn_still_running_when_a_new_head_restarts_the_exam_is_dropped(box):
     q5 = question(view, "q5")
     assert (view["head_sha"], q5["tips"], q5["assisted"], q5["thread"]) == (NEW, 0, False, [])
     assert [t for t in stored_turns(box)] == []
+
+
+def test_no_turn_is_taken_once_the_exam_is_in_error_nor_on_an_attempt_it_does_not_have(box):
+    body = opened(box)
+
+    async def go():
+        async with box.aclient() as c:
+            other = await box.ask(c, body, "question", "q5", "attempt two?", attempt=2)
+            await submit_all(box, body, c)
+            box.session.grade_error = subprocess.SubprocessError("the grader crashed")
+            box.work()
+            asks = [await box.ask(c, body, kind, qid, "why?") for kind, qid in (("question", "q5"), ("general", None))]
+            return other, asks, await box.view(c)
+
+    other, asks, view = asyncio.run(go())
+    assert view["state"] == "error"
+    assert [r.status_code for r in (other, *asks)] == [409, 409, 409]
+    assert (box.cmds, runs(box), stored_turns(box)) == ([], 0, [])
+    [kept] = view["attempts"]
+    assert kept["chat"] is False and {q["tips_left"] for q in kept["questions"]} == {None}
+
+
+def test_a_turn_after_grading_gets_each_answer_as_the_attempt_submitted_it(box):
+    body = opened(box)
+
+    async def go():
+        async with box.aclient() as c:
+            box.release()
+            await submitted_with_q2_assisted_and_q6_bypassed(box, body, c)
+            box.work()
+            for qid in ("q1", "q6"):
+                r = await box.ask(c, body, "question", qid, "why?")
+                assert r.status_code == 202, r.text
+                await settle_at(box, c, 1, qid)
+
+    asyncio.run(go())
+    q1, q6 = (a["turn"] for a in box.pr_exam.asked[-2:])
+    assert (q1["question"], q1["submitted"], q1["points"]) == ("q1", "option 1: opt b", 1)
+    assert (q6["question"], q6["submitted"]) == ("q6", "(no answer: the question was bypassed)")
+    assert "points" not in q6
