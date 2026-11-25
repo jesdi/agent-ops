@@ -110,7 +110,8 @@ def _when(sched: dict) -> str:
     return f"OnCalendar={sched['calendar']}"
 
 
-def _timer(job: str, sched: dict) -> str:
+def timer_unit(job: str, sched: dict) -> str:
+    """The timer unit file the deploy sync writes for `job` on schedule `sched`."""
     return (f"[Unit]\nDescription=agent-ops {job}\n\n[Timer]\n{_when(sched)}\n"
             f"Unit=agent-ops-{job}.service\n\n[Install]\nWantedBy=timers.target\n")
 
@@ -131,7 +132,7 @@ def render(config: str, changes: str, unit_dir: str) -> dict:
     out: dict[str, list[str]] = {"enabled": [], "disabled": []}
     for job in JOBS:
         name = f"agent-ops-{job}.timer"
-        (Path(unit_dir) / name).write_text(_timer(job, cfg[job]["schedule"]))
+        (Path(unit_dir) / name).write_text(timer_unit(job, cfg[job]["schedule"]))
         paused = ch.get(job, {}).get("paused", cfg[job]["paused"])
         out["disabled" if paused else "enabled"].append(name)
     return out

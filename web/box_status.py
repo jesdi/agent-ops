@@ -151,6 +151,7 @@ def _timer(scope: str, t: dict[str, str], services: dict[str, dict]) -> dict:
         "interval_seconds": None if calendar else interval,
         "last_run": _last_run(services.get(t["Id"].removesuffix(".timer") + ".service", {})),
         "next_run": _next_run(t, interval),
+        "drop_ins": t.get("DropInPaths", "").split(),
         "upcoming": calendar_runs(calendar[1]) if calendar and t["ActiveState"] == "active" else []}
 
 
@@ -165,7 +166,7 @@ def systemd_timers() -> list[dict]:
             "Id,ExecMainStartTimestamp,ExecMainExitTimestamp")}
         out += [_timer(scope, t, services) for t in _show(
             scope, names, "Id,Description,ActiveState,FragmentPath,TimersCalendar,"
-            "TimersMonotonic,NextElapseUSecRealtime,LastTriggerUSec")]
+            "TimersMonotonic,NextElapseUSecRealtime,LastTriggerUSec,DropInPaths")]
     return out
 
 

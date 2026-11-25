@@ -108,14 +108,31 @@ def _change(entry: dict | None) -> Change | None:
                   pr=link.get("pr"), url=link.get("url"))
 
 
+DIFFERS = "The box differs from the services config."
+
+
 def _warning(unit: dict, key: str, changes: dict, installed: dict | None) -> str | None:
-    """The box differs from the installed config with no console change behind it."""
-    if installed is None or "paused" in (changes.get(key) or {}):
+    """The box differs from the installed config with no console change behind it: its
+    paused state, or its timer (a hand-edited unit file or a drop-in over it)."""
+    if installed is None:
         return None
+    change, want = changes.get(key) or {}, installed.get(key) or {}
     off = unit["active_state"] != "active"
-    if off == bool((installed.get(key) or {}).get("paused", False)):
-        return None
-    return "The box differs from the services config."
+    if "paused" not in change and off != bool(want.get("paused", False)):
+        return DIFFERS
+    return DIFFERS if "schedule" not in change and _timer_edited(unit, key, want) else None
+
+
+def _timer_edited(unit: dict, key: str, want: dict) -> bool:
+    """Whether the timer is not the one the config renders; an unreadable unit file tells nothing."""
+    if unit.get("drop_ins"):
+        return True
+    if "schedule" not in want:
+        return False
+    try:
+        return Path(unit["fragment_path"]).read_text() != services_config.timer_unit(key, want["schedule"])
+    except OSError:
+        return False
 
 
 def _job(unit: dict, runs: dict[str, list[dict]], *, read_only: bool,
