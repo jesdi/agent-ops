@@ -936,8 +936,13 @@ def _pass_eta(heartbeat: dict | None, now: datetime) -> str | None:
     finished = _parse_ts(hb.get("finished_at", ""))
     if hb.get("custom") is True:
         return "" if finished is not None else None
+    return _interval_eta(finished, hb.get("interval_minutes"), now)
+
+
+def _interval_eta(finished: datetime | None, interval_minutes, now: datetime) -> str | None:
+    """`finished` plus the interval, or None when either is missing or the pass is stale."""
     try:
-        interval = int(hb.get("interval_minutes") or 0)
+        interval = int(interval_minutes or 0)
         # A naive finished_at against an aware now raises TypeError: the zone
         # is unknown, so staleness cannot be judged either.
         fresh = (finished is not None and interval > 0
