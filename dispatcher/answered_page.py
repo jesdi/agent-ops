@@ -17,7 +17,7 @@ def render(page: str, answers: object) -> str:
     other radio unchecked), the note `answers["q.note"]` in textarea
     `note-q`, and every input, textarea, select and button disabled. Every
     answer that lands on none of them is listed as text before `</body>`."""
-    renderer = _Renderer(answers if isinstance(answers, dict) else {})
+    renderer = _Renderer(answers if isinstance(answers, dict) else {"answers": answers})
     renderer.feed(page)
     renderer.close()
     unmatched = "".join(
@@ -75,12 +75,16 @@ class _Renderer(HTMLParser):
         return escape(note, quote=False)
 
     def handle_starttag(self, tag, attrs):
+        if self.skipping:   # markup inside a filled textarea (Python < 3.12 parses it)
+            return
         if tag in _CONTROLS:
             self.out.append(self._control(tag, attrs, ""))
         else:
             self.out.append(self.get_starttag_text())
 
     def handle_startendtag(self, tag, attrs):
+        if self.skipping:
+            return
         if tag in _CONTROLS:
             self.out.append(self._control(tag, attrs, " /"))
         else:
@@ -89,6 +93,8 @@ class _Renderer(HTMLParser):
     def handle_endtag(self, tag):
         if tag == "textarea":
             self.skipping = False
+        elif self.skipping:
+            return
         if tag == "body":
             self.body_end = len(self.out)
         self.out.append(f"</{tag}>")
@@ -104,7 +110,8 @@ class _Renderer(HTMLParser):
         self.handle_data(f"&#{name};")
 
     def handle_comment(self, data):
-        self.out.append(f"<!--{data}-->")
+        if not self.skipping:
+            self.out.append(f"<!--{data}-->")
 
     def handle_decl(self, decl):
         self.out.append(f"<!{decl}>")
