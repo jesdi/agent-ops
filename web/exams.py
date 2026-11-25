@@ -85,7 +85,7 @@ class ExamQuestionResult(BaseModel):
     id: str
     concept: str
     points: int | float | None = None   # absent for a bypassed question
-    help: Literal["bypassed"] | None = None
+    help: Literal["bypassed", "assisted"] | None = None
     explanation: str | None = None   # only for a question under 1 point
     hunk: str | None = None
     feedback: str | None = None   # the grader's line, only for a missed or partial free-text question

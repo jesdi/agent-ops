@@ -6,6 +6,8 @@ import { queryKeys } from '../hooks/queryKeys'
 /** Which exam attempt a question's chat belongs to. */
 export type ChatTarget = { owner: string; name: string; pr: string; attempt: number; head_sha: string }
 
+const TIP_CAP = 3
+
 type Live = { id: string; kind: ExamTurn['kind']; message: string; text: string; error: string | null }
 
 function Turn({ turn, onRetry }: { turn: Pick<ExamTurn, 'kind' | 'message' | 'text'> & { error: string | null }; onRetry: () => void }) {
@@ -22,9 +24,9 @@ function Turn({ turn, onRetry }: { turn: Pick<ExamTurn, 'kind' | 'message' | 'te
   )
 }
 
-/** A question's Tip and Ask actions with its thread inline. A turn runs on the console, so this only
+/** A question's Tip (while `tips`: the attempt is open) and Ask actions with its thread inline. A turn runs on the console, so this only
  *  watches the reply stream; the stored thread, read again once the turn ends, is what stays. */
-export function ExamThread({ q, draft, target }: { q: ExamQuestion; draft: string; target: ChatTarget }) {
+export function ExamThread({ q, draft, target, tips = true }: { q: ExamQuestion; draft: string; target: ChatTarget; tips?: boolean }) {
   const queryClient = useQueryClient()
   const thread = q.thread ?? []   // a served exam from before chats has no thread
   const [live, setLive] = useState<Live | null>(null)
@@ -53,15 +55,21 @@ export function ExamThread({ q, draft, target }: { q: ExamQuestion; draft: strin
   return (
     <div className="space-y-2">
       <div className="flex gap-2">
-        <button type="button" disabled={busy} onClick={() => void run('tip', draft)} className="rounded border px-2 py-1 text-sm disabled:opacity-50">
-          Tip {q.tips ?? 0} / 3
-        </button>
+        {tips && <TipButton used={q.tips ?? 0} busy={busy} onTip={() => void run('tip', draft)} />}
         <button type="button" onClick={() => setAsking((a) => !a)} className="rounded border px-2 py-1 text-sm">Ask</button>
       </div>
       {asking && <AskBox id={`ask-${q.id}`} busy={busy} onSend={(text) => void run('question', text)} />}
       {refusal && <p role="alert" className="text-failed-fg">{refusal}</p>}
       <Turns thread={thread} live={live} onRetry={(kind, text) => void run(kind, text)} />
     </div>
+  )
+}
+
+function TipButton({ used, busy, onTip }: { used: number; busy: boolean; onTip: () => void }) {
+  return (
+    <button type="button" disabled={busy || used >= TIP_CAP} onClick={onTip} className="rounded border px-2 py-1 text-sm disabled:opacity-50">
+      Tip {used} / {TIP_CAP}
+    </button>
   )
 }
 

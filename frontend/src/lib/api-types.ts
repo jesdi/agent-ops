@@ -1100,7 +1100,7 @@ export interface components {
             /** Feedback */
             feedback?: string | null;
             /** Help */
-            help?: "bypassed" | null;
+            help?: ("bypassed" | "assisted") | null;
             /** Hunk */
             hunk?: string | null;
             /** Id */

@@ -40,9 +40,14 @@ function Question({ q, value, onChange, bypassing, chat }: {
       <button type="button" onClick={() => bypassing.toggle(q.id)} className="rounded border px-2 py-1 text-sm">
         {bypassed ? 'Undo bypass' : 'Bypass'}
       </button>
+      <Assisted q={q} />
       <ExamThread q={q} draft={draft} target={chat} />
     </li>
   )
+}
+
+function Assisted({ q }: { q: ExamQuestion }) {
+  return q.assisted ? <p className="text-sm text-ink-muted">assisted</p> : null
 }
 
 /** The questions of `result` that lost points or were bypassed, each with its explanation, the grader's feedback and its hunk. */
@@ -145,8 +150,25 @@ function GeneratingView({ data }: ViewProps) {
   return <><p>Generating the exam…</p><LastMisses data={data} /></>
 }
 
-function GradingView() {
-  return <p>Grading your answers…</p>
+/** The submitted attempt's questions stay open to chat while it is graded, but take no tip. */
+function GradingView({ data }: ViewProps) {
+  const [owner = '', name = ''] = data.repo.split('/')
+  const grading = data.attempts.findLast((a) => !a.result)
+  const chat = { owner, name, pr: String(data.pr), attempt: grading?.attempt ?? data.attempt, head_sha: data.head_sha ?? '' }
+  return (
+    <>
+      <p>Grading your answers…</p>
+      <ol className="space-y-6">
+        {(grading?.questions ?? []).map((q) => (
+          <li key={q.id} className="space-y-2">
+            <p className="font-medium">{q.prompt}</p>
+            <Assisted q={q} />
+            <ExamThread q={q} draft="" target={chat} tips={false} />
+          </li>
+        ))}
+      </ol>
+    </>
+  )
 }
 
 function ErrorView({ data }: ViewProps) {

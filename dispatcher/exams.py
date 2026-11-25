@@ -32,6 +32,7 @@ from dispatcher.state import state_lock, write_json_atomic
 from dispatcher.usage import admits
 
 LOCK = "exams.lock"
+TIPS = 3   # tips a question gets per attempt
 TIMEOUT = 1200   # a session runs 20 minutes at most
 APP = "exam-app.json"
 STAGED = ("next-exam.json", "next-public.json")   # a generated exam before it is applied
@@ -434,7 +435,8 @@ def submit(state_dir, repo: str, pr: int, attempt: int, head_sha: str, answers: 
         questions = public(state_dir, repo, pr, attempt)["questions"]
         if not _complete(questions, answers, doc["bypassed"]):
             return "incomplete"
-        _save_submission(attempt_dir(state_dir, repo, pr, attempt), questions, answers, doc["bypassed"])
+        d = attempt_dir(state_dir, repo, pr, attempt)
+        _save_submission(d, questions, answers, doc["bypassed"], _assisted(_turns(d)))
         doc.update(state=ExamState.GRADING, grading={"attempt": attempt}, bypassed=None)
         _write(state_dir, doc)
         return "ok"
@@ -445,11 +447,16 @@ def _complete(questions: list, answers: dict, skipped: str | None) -> bool:
     return all(q["id"] == skipped or _answers(q, answers.get(q["id"])) for q in questions)
 
 
-def _save_submission(attempt_dir: Path, questions: list, answers: dict, skipped: str | None) -> None:
+def _assisted(turns: list[dict]) -> list[str]:
+    return sorted({t["question"] for t in turns if _assists(t)})
+
+
+def _save_submission(attempt_dir: Path, questions: list, answers: dict, skipped: str | None,
+                     assisted: list[str]) -> None:
     """Write the submitted answers and the attempt's flags snapshot."""
     write_json_atomic(attempt_dir / "answers.json",
                       {q["id"]: answers[q["id"]] for q in questions if q["id"] in answers})
-    write_json_atomic(attempt_dir / "flags.json", {"bypassed": [skipped] if skipped else [], "assisted": []})
+    write_json_atomic(attempt_dir / "flags.json", {"bypassed": [skipped] if skipped else [], "assisted": assisted})
 
 
 def _bypass_refusal(doc: dict, questions: list, question: str, on: bool) -> str:
@@ -833,9 +840,10 @@ def _turn_refusal(state_dir, doc: dict | None, attempt: int, head_sha: str, kind
 
 
 def _turn_open(doc: dict | None, attempt: int, head_sha: str, kind: str) -> bool:
-    """The exam's current attempt and head, and still open for a tip."""
-    return (doc is not None and doc["attempt"] == attempt and doc["head_sha"] == head_sha
-            and (kind != "tip" or doc["state"] == ExamState.OPEN))
+    """This head's kept attempt; a tip needs the current attempt, still open."""
+    if doc is None or doc["head_sha"] != head_sha:
+        return False
+    return _is_open(doc, attempt, head_sha) if kind == "tip" else 1 <= attempt <= doc["attempt"]
 
 
 def _question_ids(state_dir, doc: dict, attempt: int) -> set[str]:
@@ -868,14 +876,22 @@ def turn_start(state_dir, repo: str, pr: int, attempt: int, head_sha: str, kind:
             return refusal, ""
         d = attempt_dir(state_dir, repo, pr, attempt)
         turns = _turns(d)
-        if any(t["status"] == "running" and t["question"] == question for t in turns):
-            return "busy", ""
+        refusal = _thread_refusal([t for t in turns if t["question"] == question], kind)
+        if refusal:
+            return refusal, ""
         turn = {"id": uuid.uuid4().hex, "kind": kind, "question": question, "message": message,
                 "status": "running", "text": "", "error": None, "after_submit": False,
                 "started": datetime.now(timezone.utc).isoformat()}
         write_json_atomic(d / "threads.json", {"turns": [*turns, turn]})
         _hold(state_dir, turn["id"])
         return "", turn["id"]
+
+
+def _thread_refusal(mine: list[dict], kind: str) -> str:
+    """"busy" while a turn of this thread runs, "conflict" for a tip past the cap, else ""."""
+    if any(t["status"] == "running" for t in mine):
+        return "busy"
+    return "conflict" if kind == "tip" and sum(map(_counts_as_tip, mine)) >= TIPS else ""
 
 
 # A running turn is owned by the console process that runs it, which holds a flock on
@@ -928,7 +944,7 @@ def turn_end(state_dir, repo: str, pr: int, attempt: int, turn_id: str, text: st
         if doc is None or turn is None:
             return "exam changed"
         turn.update(status="failed" if error else "done", text=text, error=error or None,
-                    after_submit=doc["state"] != ExamState.OPEN)
+                    after_submit=not _is_open(doc, attempt, doc["head_sha"]))
         write_json_atomic(d / "threads.json", {"turns": turns})
         return ""
 

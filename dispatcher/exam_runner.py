@@ -163,10 +163,17 @@ def _chat_doc(adir: Path, turn: dict) -> dict:
 
 
 def _submitted(adir: Path, q: str) -> dict:
-    """{"submitted": the answer} once the attempt is submitted: it replaces the draft; else {}."""
+    """The attempt's side of a question once it is submitted: {"submitted": the answer}, and once
+    graded its "points" and, for a missed free-text one, its "feedback"; else {}."""
     path = adir / "answers.json"
     answer = json.loads(path.read_text()).get(q) if path.exists() else None
-    return {"submitted": answer} if isinstance(answer, str) else {}
+    return {"submitted": answer, **_graded(adir, q)} if isinstance(answer, str) else {}
+
+
+def _graded(adir: Path, q: str) -> dict:
+    path = adir / "result.json"
+    got = next((r for r in json.loads(path.read_text())["questions"] if r["id"] == q), {}) if path.exists() else {}
+    return {k: got[k] for k in ("points", "feedback") if got.get(k) not in (None, "")}
 
 
 def _text_or_empty(path: Path) -> str:
