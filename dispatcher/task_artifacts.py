@@ -9,18 +9,25 @@ import hashlib
 import json
 import logging
 import mimetypes
+import os
 import re
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from dispatcher import host_auth, spec_publish, state
+from dispatcher import answered_page, answers, host_auth, spec_publish, state
+from dispatcher.artifacts import REVIEW_PAGE_MAX_BYTES
 from dispatcher.state import TaskState, operator_request
 
 log = logging.getLogger(__name__)
 RETENTION_DAYS = 7
 MAX_BYTES = 20 * 1024 * 1024
 ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,79}\Z")
+# The artifact each answers kind is captured as.
+ANSWERS_ARTIFACTS = {"plan-approval": ("review-answers", "Review answers"),
+                     "answers": ("questionnaire-answers", "Questionnaire answers")}
+# The page a text answer of each kind is captured on when no request of its kind is open.
+DEFAULT_PAGES = {"plan-approval": ".agent/review.html", "answers": ".agent/questionnaire.html"}
 
 
 @dataclass(frozen=True)
@@ -139,27 +146,28 @@ def _manifest(task: TaskState) -> list[Registration]:
     if not manifest.exists():
         return []
     try:
-        raw = json.loads(_source(task.worktree, str(manifest)).read_text())
-        if not isinstance(raw, list) or len(raw) > 100:
-            raise ValueError("expected an array of at most 100 artifacts")
-        entries = [Registration.parse(entry) for entry in raw]
-        if len({entry.id for entry in entries}) != len(entries):
-            raise ValueError("duplicate artifact IDs")
-        return entries
+        entries = _parse_manifest(json.loads(_source(task.worktree, str(manifest)).read_text()))
     except (OSError, ValueError, KeyError, TypeError) as exc:
         log.warning("Invalid artifact manifest for %s/%s: %s", task.repository, task.issue, exc)
         return []
+    # The answers ids belong to the capture, never to a session's copy.
+    reserved = {artifact_id for artifact_id, _ in ANSWERS_ARTIFACTS.values()}
+    return [entry for entry in entries if entry.id not in reserved]
+
+
+def _parse_manifest(raw: object) -> list[Registration]:
+    if not isinstance(raw, list) or len(raw) > 100:
+        raise ValueError("expected an array of at most 100 artifacts")
+    entries = [Registration.parse(entry) for entry in raw]
+    if len({entry.id for entry in entries}) != len(entries):
+        raise ValueError("duplicate artifact IDs")
+    return entries
 
 
 def _automatic_registrations(task: TaskState) -> list[Registration]:
     entries = []
-    for artifact_id, name, path in (
-        ("prototype", "Prototype", ".agent/prototype.html"),
-        ("review-answers", "Review answers", ".agent/review-answers.json"),
-        ("questionnaire-answers", "Questionnaire answers", ".agent/questionnaire-answers.json"),
-    ):
-        if (Path(task.worktree) / path).is_file():
-            entries.append(Registration(artifact_id, name, path))
+    if (Path(task.worktree) / ".agent/prototype.html").is_file():
+        entries.append(Registration("prototype", "Prototype", ".agent/prototype.html"))
     request_path = getattr(operator_request(task), "path", "")
     if request_path:
         key = hashlib.sha256(request_path.encode()).hexdigest()[:12]
@@ -227,6 +235,14 @@ class Collector:
             except (OSError, ValueError) as exc:
                 log.warning("Cannot collect artifact %s/%s/%s: %s", self.task.repository, self.task.issue, entry.id, exc)
         index.items = list(items.values())
+        self.capture(index)
+
+    def capture(self, index: ArtifactIndex) -> None:
+        for kind, (artifact_id, _) in ANSWERS_ARTIFACTS.items():
+            try:
+                _capture(self.root, index, self.task, kind, self.now)
+            except (OSError, ValueError) as exc:
+                log.warning("Cannot capture artifact %s/%s/%s: %s", self.task.repository, self.task.issue, artifact_id, exc)
 
 
 def _copy_content(dest: Path, content: bytes) -> None:
@@ -251,6 +267,90 @@ def collect(state_dir, task: TaskState, repo: str, *, publish: bool = True,
         Collector(root, task, repo, publish, now, auth).collect(index)
     index.save(root / "index.json")
     state.archive(state_dir, task)
+
+
+def _capture(root: Path, index: ArtifactIndex, task: TaskState, kind: str, now: datetime) -> None:
+    """Archive the answered page of the task's answers file of `kind` when it
+    is a submission the index does not hold yet, on the page it was made on.
+    The item's digest is the answers file's, not the page's. The page is
+    written in atomically and only then entered in `index`, so a failed write
+    leaves the earlier page and its entry. The caller saves `index`. Raises
+    OSError or ValueError when the file or the page cannot be used."""
+    name, _ = answers.ANSWERS_FILES[kind]
+    path = f".agent/{name}"
+    submission = _submission(task, path)
+    if submission is None:
+        return
+    raw, doc = submission
+    artifact_id, artifact_name = ANSWERS_ARTIFACTS[kind]
+    digest = hashlib.sha256(raw).hexdigest()
+    items = {item.id: item for item in index.items}
+    if getattr(items.get(artifact_id), "digest", None) == digest:
+        return
+    page = _answered_page(task, kind, doc)
+    if page is None:
+        return
+    _copy_content(root / "content" / artifact_id, page)
+    items[artifact_id] = StoredArtifact(artifact_id, artifact_name, path, "text/html", digest,
+                                        task.stage.value, now.isoformat())
+    index.items = list(items.values())
+
+
+def _answered_page(task: TaskState, kind: str, doc: dict) -> bytes | None:
+    """The request page of `kind` answered with `doc`; None once the page is
+    no longer the revision `doc` was made on (a session's text answer has
+    none). The revision is checked after the read, so a page swapped in
+    meanwhile is never taken."""
+    page = _request_page(task, kind)
+    if doc.get("revision") and answers.disk_revision(task) != doc["revision"]:
+        return None
+    return answered_page.render(page, doc.get("answers")).encode()
+
+
+def _submission(task: TaskState, path: str) -> tuple[bytes, dict] | None:
+    """The answers file at `path` and its document, when it is a submission."""
+    raw = state.read_regular(Path(task.worktree) / path, answers.ANSWERS_FILE_MAX_BYTES)
+    doc = json.loads(raw) if raw is not None else None
+    if not isinstance(doc, dict) or doc.get("submitted") is None:
+        return None
+    return raw, doc
+
+
+def _request_page(task: TaskState, kind: str) -> str:
+    """The open request's page when it is of `kind`, else the default page of `kind`."""
+    request = operator_request(task)
+    page_path = request.path if getattr(request, "kind", None) == kind else DEFAULT_PAGES[kind]
+    page = state.read_regular(Path(task.worktree) / page_path, REVIEW_PAGE_MAX_BYTES)
+    if page is None:
+        raise OSError("request page is not a readable regular file")
+    return page.decode()
+
+
+def capture_answers(state_dir, task: TaskState, now: datetime | None = None) -> None:
+    """Archive the answered page of the submission just recorded for the
+    task's open request. When the index cannot be saved, the earlier page is
+    put back, so the served page and its entry never disagree."""
+    kind = operator_request(task).kind
+    root = state.archive_root(state_dir, task.repository, task.issue)
+    index = read(state_dir, task.repository, task.issue)
+    index.retain_for(task)
+    content = root / "content" / ANSWERS_ARTIFACTS[kind][0]
+    earlier = content.with_name(f".{content.name}.earlier")
+    earlier.unlink(missing_ok=True)
+    if content.is_file():
+        os.link(content, earlier)   # a rename back needs no space on a full disk
+    try:
+        _capture(root, index, task, kind, now or datetime.now(timezone.utc))
+        try:
+            index.save(root / "index.json")
+        except BaseException:
+            if earlier.exists():
+                os.replace(earlier, content)
+            else:
+                content.unlink(missing_ok=True)
+            raise
+    finally:
+        earlier.unlink(missing_ok=True)
 
 
 def pin_published(state_dir, task: TaskState, repo: str) -> None:
