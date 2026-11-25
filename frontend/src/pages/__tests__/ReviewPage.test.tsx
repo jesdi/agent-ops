@@ -292,7 +292,7 @@ test('scenario 18: a stale-revision drop restores the dropped answers into the n
   const restore = vi.spyOn(win, 'postMessage')
   act(() => { window.dispatchEvent(new MessageEvent('message', { data: { type: 'ready', v: 1 }, source: win })) })
   expect(restore).toHaveBeenCalledWith(
-    { type: 'restore', v: 1, answers: expect.objectContaining({ format: 'b', 'format.note': 'x' }) }, '*')
+    { type: 'restore', v: 1, answers: { format: 'b', 'format.note': 'x' } }, '*')
   await poll(queryClient)
   await new Promise((r) => setTimeout(r, 50))
   expect(submissions()).toHaveLength(1)
