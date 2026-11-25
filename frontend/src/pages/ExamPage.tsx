@@ -34,21 +34,16 @@ function Question({ q, value, onChange }: { q: ExamQuestion; value: number | str
   )
 }
 
-function Misses({ result, showScore = true }: { result: ExamResult; showScore?: boolean }) {
-  const missed = result.questions.filter((m) => m.points < 1)
-  return (
-    <section className="space-y-3">
-      {showScore && <p>Score {result.score} / {result.max}</p>}
-      {missed.map((m) => (
-        <article key={m.id} className="space-y-1">
-          <h2 className="font-medium">{m.concept}</h2>
-          <p>{m.explanation}</p>
-          {m.feedback && <p className="text-sm">{m.feedback}</p>}
-          <pre className="overflow-x-auto rounded border border-border bg-surface p-2 text-sm">{m.hunk}</pre>
-        </article>
-      ))}
-    </section>
-  )
+/** The questions of `result` that lost points, each with its explanation, the grader's feedback and its hunk. */
+function Misses({ result }: { result: ExamResult }) {
+  return result.questions.filter((m) => m.points < 1).map((m) => (
+    <article key={m.id} className="space-y-1">
+      <h2 className="font-medium">{m.concept}</h2>
+      <p>{m.explanation}</p>
+      {m.feedback && <p className="text-sm">{m.feedback}</p>}
+      <pre className="overflow-x-auto rounded border border-border bg-surface p-2 text-sm">{m.hunk}</pre>
+    </article>
+  ))
 }
 
 function isStatus(error: unknown, status: number) {
@@ -106,7 +101,12 @@ function lastResult(data: ExamView) {
 
 function LastMisses({ data }: { data: ExamView }) {
   const last = lastResult(data)
-  return last && !last.passed ? <Misses result={last} /> : null
+  return last && !last.passed ? (
+    <section className="space-y-3">
+      <p>Score {last.score} / {last.max}</p>
+      <Misses result={last} />
+    </section>
+  ) : null
 }
 
 function GeneratingView({ data }: ViewProps) {
@@ -131,7 +131,7 @@ function PassedView({ data }: ViewProps) {
         {!data.debt && <p>The exam status is posted as success.</p>}
       </section>
       {/* a passing attempt can still hold partial answers, with the grader's feedback */}
-      <Misses result={last} showScore={false} />
+      <section className="space-y-3"><Misses result={last} /></section>
     </>
   ) : null
 }
