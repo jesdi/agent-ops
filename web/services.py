@@ -26,6 +26,13 @@ class RecentRun(BaseModel):
     result: str         # "success" | "failed" | "stopped" | "running"
 
 
+class Change(BaseModel):
+    """A console change not yet installed: "applying", or "failed" to record."""
+    state: str
+    pr: int | None = None
+    url: str | None = None
+
+
 class Job(BaseModel):
     id: str
     name: str
@@ -37,6 +44,7 @@ class Job(BaseModel):
     read_only: bool
     recent_runs: list[RecentRun] = []
     upcoming: list[str] = []
+    change: Change | None = None
 
 
 class ServicesView(BaseModel):
@@ -84,7 +92,16 @@ def _recent(runs: list[dict]) -> list[RecentRun]:
                       result=r["result"] or "running") for r in reversed(runs[-RECENT:])]
 
 
-def _job(unit: dict, runs: dict[str, list[dict]], *, read_only: bool) -> Job:
+def _change(entry: dict | None) -> Change | None:
+    if not entry:
+        return None
+    rec = entry.get("record") or {}
+    return Change(state="failed" if rec.get("failed") else "applying",
+                  pr=rec.get("pr"), url=rec.get("url"))
+
+
+def _job(unit: dict, runs: dict[str, list[dict]], *, read_only: bool,
+         changes: dict | None = None) -> Job:
     schedule = describe_schedule(unit["on_calendar"])
     job_id = unit["unit"].removesuffix(".timer")
     mine = runs.get(job_id, [])
@@ -92,6 +109,7 @@ def _job(unit: dict, runs: dict[str, list[dict]], *, read_only: bool) -> Job:
     return Job(
         recent_runs=[] if read_only else _recent(runs.get(job_id, [])),
         upcoming=_upcoming(unit),
+        change=None if read_only else _change((changes or {}).get(job_id.removeprefix(USER_JOB_PREFIX))),
         id=job_id, name=unit["description"],
         description=unit["description"],
         state="running" if running else "active" if unit["active_state"] == "active" else "paused",
@@ -108,12 +126,13 @@ def _read_only(t: dict) -> bool:
             and t["unit"].endswith(".timer"))
 
 
-def services_view(timers: list[dict], runs: dict[str, list[dict]], now: datetime) -> ServicesView:
+def services_view(timers: list[dict], runs: dict[str, list[dict]], now: datetime,
+                  changes: dict | None = None) -> ServicesView:
     """Managed: agent-ops user timers. Read-only: root timers whose unit file is
     in /etc/systemd/system (Ubuntu's own timers live elsewhere)."""
     return ServicesView(
         now=now.isoformat(),
-        managed=[_job(t, runs, read_only=False) for t in timers if _managed(t)],
+        managed=[_job(t, runs, read_only=False, changes=changes) for t in timers if _managed(t)],
         read_only=[_job(t, runs, read_only=True) for t in timers if _read_only(t)])
 
 
@@ -122,7 +141,8 @@ def router(sources, now: Callable[[], datetime], state_dir: Callable[[], str]) -
 
     @routes.get("/api/services", response_model=ServicesView)
     def services(op: Operator = Depends(current_operator)):
-        return services_view(sources.service_timers(), sources.service_runs(), now().astimezone(timezone.utc))
+        return services_view(sources.service_timers(), sources.service_runs(), now().astimezone(timezone.utc),
+                             services_changes.read(state_dir()))
 
     def check_managed(job: str) -> None:
         if not any(j.id == job for j in services_view(
@@ -137,6 +157,16 @@ def router(sources, now: Callable[[], datetime], state_dir: Callable[[], str]) -
                                         lambda: change(f"{job}.timer"))
         except Exception as e:
             raise HTTPException(502, f"systemctl failed: {e}") from e
+        sources.kick_recorder()
+        return {}
+
+    @routes.post("/api/services/{job}/retry")
+    def retry(job: str, op: Operator = Depends(current_operator)):
+        check_managed(job)
+        services_changes.update(state_dir(), job.removeprefix(USER_JOB_PREFIX), lambda e: {
+            **e, "record": {k: v for k, v in (e.get("record") or {}).items() if k != "failed"}
+        } if e else e)
+        sources.kick_recorder()
         return {}
 
     @routes.post("/api/services/{job}/pause")

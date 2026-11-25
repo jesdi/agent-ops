@@ -33,13 +33,13 @@ def git(sh: Sh, scratch: Path, env: dict, *args: str) -> str:
     return sh([*GIT_AS_GH, "-C", str(scratch), *args], env=env)
 
 
-def fetch_main(sh: Sh, scratch: Path, env: dict) -> str:
-    """infra main's targets.yaml, fetched into the scratch clone."""
+def fetch_main(sh: Sh, scratch: Path, env: dict, path: str = INFRA_TARGETS) -> str:
+    """infra main's `path` (targets.yaml by default), fetched into the scratch clone."""
     if not (scratch / ".git").exists():
         shutil.rmtree(scratch, ignore_errors=True)
         sh([*GIT_AS_GH, "clone", f"https://github.com/{INFRA_REPO}.git", str(scratch)], env=env)
     git(sh, scratch, env, "fetch", "origin", "--prune")
-    return git(sh, scratch, env, "show", f"origin/main:{INFRA_TARGETS}")
+    return git(sh, scratch, env, "show", f"origin/main:{path}")
 
 
 def push_branch(sh: Sh, scratch: Path, env: dict, branch: str, lease: str) -> None:

@@ -345,8 +345,15 @@ ships, and only until then, abandon an onboarding by hand: delete
 The unit's environment needs `GH_INFRA_TOKEN`, a fine-grained token with
 contents and pull-requests write on agent-ops-infra only: enough to push the
 `onboard/<project>` branch and open its PR, used for every agent-ops-infra
-call. The merge into infra main, the box's deploy source, stays yours. Resolve and clone use the box's repository token; the
+call. The merge into infra main, the box's deploy source, stays yours for projects. Resolve and clone use the box's repository token; the
 board check uses `GH_PROJECT_TOKEN`.
+
+The services recorder (`python -m dispatcher.services_record <targets.yaml>`, run by
+`agent-ops-services-record.service`, kicked by the console after every pause, resume or
+retry, and on a timer) uses the same `GH_INFRA_TOKEN`, which must also be able to merge
+pull requests. It opens `services/<job>` pull requests that change only
+`config/services.yaml`, and merges one itself once its `ci` run succeeded. Without the
+token, a console pause stays in place on the box and the job shows "change failed".
 
 ### GitHub permissions and PR polling
 

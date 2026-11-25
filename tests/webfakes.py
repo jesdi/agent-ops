@@ -82,6 +82,7 @@ class FakeSources:
         self.box_now = "2026-11-24T10:12:00+00:00"  # the box clock for runs it starts
         self.systemctl_calls = []  # (verb, unit) of every start_unit / stop_unit / disable_timer / enable_timer
         self.systemctl_failure = None  # an Exception raised by disable_timer / enable_timer
+        self.recorder_kicks = 0   # times the console asked the services recorder to run
 
     def service_timers(self):
         """The box's systemd units as the probe reports them: one dict per
@@ -96,6 +97,10 @@ class FakeSources:
         "result": "success" | "failed" | "stopped"}; a run still going has
         duration_seconds None and no result of its own ("running")."""
         return {k: list(v) for k, v in self.box_runs.items()}
+
+    def kick_recorder(self):
+        """The console starts a recorder pass after every change (pause, resume, retry)."""
+        self.recorder_kicks += 1
 
     def start_unit(self, unit):
         """`systemctl --user start <unit>`: a oneshot run that begins now and is

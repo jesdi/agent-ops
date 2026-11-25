@@ -186,6 +186,11 @@ class Sources:
         subprocess.run(("systemctl", "--user", "enable", "--now", unit),
                        capture_output=True, timeout=30, check=True)
 
+    def kick_recorder(self) -> None:
+        """Start a services recorder pass; the console never fails on it."""
+        subprocess.run(("systemctl", "--user", "start", "--no-block", "agent-ops-services-record.service"),
+                       capture_output=True, timeout=5)
+
     def exam_state(self, repo: str, pr: int) -> dict | None:
         return exams.read(self.state_dir, repo, pr)
 

@@ -63,9 +63,9 @@ const PAUSE_CONSEQUENCE: Record<string, string> = {
 }
 
 function Actions({ job }: { job: ServiceJob }) {
-  const { run, stop, pause, resume } = useServiceActions()
+  const { run, stop, pause, resume, retry } = useServiceActions()
   if (job.read_only) return null
-  const error = run.error ?? stop.error ?? pause.error ?? resume.error
+  const error = run.error ?? stop.error ?? pause.error ?? resume.error ?? retry.error
   const askThenPause = () => {
     const consequence = PAUSE_CONSEQUENCE[job.id]
     if (!consequence || window.confirm(`Pause ${job.name}? ${consequence}`)) pause.mutate(job.id)
@@ -77,6 +77,13 @@ function Actions({ job }: { job: ServiceJob }) {
         ? <button type="button" onClick={() => resume.mutate(job.id)}>Resume</button>
         : <button type="button" onClick={askThenPause}>Pause</button>}
       {job.state === 'running' && <button type="button" onClick={() => stop.mutate(job.id)}>Stop run</button>}
+      {job.change?.state === 'failed' && (
+        <>
+          <span className="text-failed-fg">change failed</span>
+          {job.change.url && <a href={job.change.url} className="underline">#{job.change.pr}</a>}
+          <button type="button" onClick={() => retry.mutate(job.id)}>Retry</button>
+        </>
+      )}
       {error && <p className="text-failed-fg">{error.message}</p>}
     </div>
   )
