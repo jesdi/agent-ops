@@ -48,14 +48,30 @@ def _owner(doc: dict, name: str, flat: Path, answers: Path) -> int | None:
 def backfill(doc: dict, n: int, result: Path, line: Callable[[object], str]) -> bool:
     """Give attempt `n`'s result summary the feedback its result.json holds, each through
     `line` as grading would have let it through; False when `n` has no summary."""
-    summary = next((r for r in doc["results"] if r["attempt"] == n), None)
+    summary = _summary(doc, n)
     if summary is None:
         return False
-    lines = {q["id"]: line(q.get("feedback")) for q in json.loads(result.read_text())["questions"]}
+    lines = _feedback_lines(result, line)
     for q in summary["questions"]:
         if q["points"] < 1 and lines.get(q["id"]):
             q["feedback"] = lines[q["id"]]
     return True
+
+
+def _summary(doc: dict, n: int) -> dict | None:
+    """Attempt `n`'s result summary in state.json; None when it has none on this head."""
+    return next((r for r in doc["results"] if r["attempt"] == n), None)
+
+
+def _feedback_lines(result: Path, line: Callable[[object], str]) -> dict:
+    """{question id: its validated feedback line} of a result.json."""
+    return {q["id"]: line(q.get("feedback")) for q in json.loads(result.read_text())["questions"]}
+
+
+def _target(d: Path, n: int | None) -> Path:
+    """Attempt `n`'s directory; an ambiguous file (`n` None) is kept aside, in no attempt,
+    rather than credited to the wrong one."""
+    return d / (UNATTRIBUTED if n is None else f"attempts/{n}")
 
 
 def migrate(d: Path, doc: dict, save: Callable[[], None], line: Callable[[object], str]) -> None:
@@ -71,7 +87,6 @@ def migrate(d: Path, doc: dict, save: Callable[[], None], line: Callable[[object
         n = _owner(doc, name, flat, answers)
         if n is not None and name == "result.json" and backfill(doc, n, flat, line):
             save()
-        # an ambiguous file is kept aside, in no attempt, rather than credited to the wrong one
-        target = d / (UNATTRIBUTED if n is None else f"attempts/{n}")
+        target = _target(d, n)
         target.mkdir(parents=True, exist_ok=True)
         flat.replace(target / name)
