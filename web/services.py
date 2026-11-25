@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Callable
+
+import yaml
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel
@@ -45,6 +48,7 @@ class Job(BaseModel):
     recent_runs: list[RecentRun] = []
     upcoming: list[str] = []
     change: Change | None = None
+    warning: str | None = None
 
 
 class ServicesView(BaseModel):
@@ -101,8 +105,18 @@ def _change(entry: dict | None) -> Change | None:
                   pr=rec.get("pr"), url=rec.get("url"))
 
 
+def _warning(unit: dict, key: str, changes: dict, installed: dict | None) -> str | None:
+    """The box differs from the installed config with no console change behind it."""
+    if installed is None or "paused" in (changes.get(key) or {}):
+        return None
+    off = unit["active_state"] != "active"
+    if off == bool((installed.get(key) or {}).get("paused", False)):
+        return None
+    return "The box differs from the services config."
+
+
 def _job(unit: dict, runs: dict[str, list[dict]], *, read_only: bool,
-         changes: dict | None = None) -> Job:
+         changes: dict | None = None, installed: dict | None = None) -> Job:
     schedule = describe_schedule(unit["on_calendar"])
     job_id = unit["unit"].removesuffix(".timer")
     mine = runs.get(job_id, [])
@@ -111,6 +125,7 @@ def _job(unit: dict, runs: dict[str, list[dict]], *, read_only: bool,
         recent_runs=[] if read_only else _recent(runs.get(job_id, [])),
         upcoming=_upcoming(unit),
         change=None if read_only else _change((changes or {}).get(job_id.removeprefix(USER_JOB_PREFIX))),
+        warning=None if read_only else _warning(unit, job_id.removeprefix(USER_JOB_PREFIX), changes or {}, installed),
         id=job_id, name=unit["description"],
         description=unit["description"],
         state="running" if running else "active" if unit["active_state"] == "active" else "paused",
@@ -127,13 +142,21 @@ def _read_only(t: dict) -> bool:
             and t["unit"].endswith(".timer"))
 
 
+def _rank(j: Job) -> int:
+    if j.state == "running" or j.change or j.warning:
+        return 0
+    return 1 if j.state == "paused" else 2
+
+
 def services_view(timers: list[dict], runs: dict[str, list[dict]], now: datetime,
-                  changes: dict | None = None) -> ServicesView:
+                  changes: dict | None = None, installed: dict | None = None) -> ServicesView:
     """Managed: agent-ops user timers. Read-only: root timers whose unit file is
     in /etc/systemd/system (Ubuntu's own timers live elsewhere)."""
+    managed = [_job(t, runs, read_only=False, changes=changes, installed=installed) for t in timers if _managed(t)]
+    managed.sort(key=_rank)  # stable: the box's order within a rank
     return ServicesView(
         now=now.isoformat(),
-        managed=[_job(t, runs, read_only=False, changes=changes) for t in timers if _managed(t)],
+        managed=managed,
         read_only=[_job(t, runs, read_only=True) for t in timers if _read_only(t)])
 
 
@@ -143,13 +166,19 @@ def _deploy_sync_paused(timers: list[dict], changes: dict) -> bool:
         (changes.get("update") or {}).get("paused"))
 
 
+def _installed(state_dir: str) -> dict | None:
+    """The installed services config, or None before the infra change has deployed."""
+    f = Path(state_dir) / "services.yaml"
+    return (yaml.safe_load(f.read_text()) or {}) if f.exists() else None
+
+
 def router(sources, now: Callable[[], datetime], state_dir: Callable[[], str]) -> APIRouter:
     routes = APIRouter()
 
     @routes.get("/api/services", response_model=ServicesView)
     def services(op: Operator = Depends(current_operator)):
         return services_view(sources.service_timers(), sources.service_runs(), now().astimezone(timezone.utc),
-                             services_changes.read(state_dir()))
+                             services_changes.read(state_dir()), _installed(state_dir()))
 
     def check_managed(job: str) -> None:
         if not any(j.id == job for j in services_view(

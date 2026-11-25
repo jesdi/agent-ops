@@ -108,6 +108,7 @@ function Detail({ job, now }: { job: ServiceJob; now: string }) {
           </div>
         ))}
       </dl>
+      {job.warning && <p className="text-failed-fg">{job.warning}</p>}
       {job.change?.state === 'applying' && (
         <p>
           <span>applying change</span>

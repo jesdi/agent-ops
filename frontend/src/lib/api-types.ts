@@ -1211,6 +1211,8 @@ export interface components {
              * @default []
              */
             upcoming: string[];
+            /** Warning */
+            warning?: string | null;
         };
         /** MessageView */
         MessageView: {
