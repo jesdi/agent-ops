@@ -444,8 +444,30 @@ def test_a_failed_capture_is_not_retried_on_a_newer_page(tmp_path, monkeypatch, 
         _fail_archive_writes(m, c)
         _drain(c, {"format": "csv"}, "changes", page=NEXT_PAGE)
     (wt / QUESTIONNAIRE).write_bytes(NEXT_PAGE.replace(b"import", b"archive"))
+    caplog.clear()
+    caplog.set_level(logging.WARNING)
 
     _collect(c)
+
+    assert _get(c, "questionnaire-answers").content == captured
+    assert not [r for r in caplog.records if r.name == task_artifacts.__name__]
+
+
+def test_a_retry_does_not_take_a_page_swapped_in_while_it_reads(tmp_path, monkeypatch):
+    c, wt = _answered(tmp_path, monkeypatch)
+    captured, _ = _second_round(c, wt)
+    with monkeypatch.context() as m:
+        _fail_archive_writes(m, c)
+        _drain(c, {"format": "csv"}, "changes", page=NEXT_PAGE)
+    real_read = task_artifacts.state.read_regular
+
+    def swap_then_read(path, *a, **kw):
+        if pathlib.Path(path) == wt / QUESTIONNAIRE:
+            (wt / QUESTIONNAIRE).write_bytes(NEXT_PAGE.replace(b"import", b"archive"))
+        return real_read(path, *a, **kw)
+    with monkeypatch.context() as m:
+        m.setattr(task_artifacts.state, "read_regular", swap_then_read)
+        _collect(c)
 
     assert _get(c, "questionnaire-answers").content == captured
 

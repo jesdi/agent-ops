@@ -285,20 +285,26 @@ def _capture(root: Path, index: ArtifactIndex, task: TaskState, kind: str, now: 
     artifact_id, artifact_name = ANSWERS_ARTIFACTS[kind]
     digest = hashlib.sha256(raw).hexdigest()
     items = {item.id: item for item in index.items}
-    if artifact_id in items and items[artifact_id].digest == digest:
+    if getattr(items.get(artifact_id), "digest", None) == digest:
         return
-    _copy_content(root / "content" / artifact_id, _answered_page(task, kind, doc))
+    page = _answered_page(task, kind, doc)
+    if page is None:
+        return
+    _copy_content(root / "content" / artifact_id, page)
     items[artifact_id] = StoredArtifact(artifact_id, artifact_name, path, "text/html", digest,
                                         task.stage.value, now.isoformat())
     index.items = list(items.values())
 
 
-def _answered_page(task: TaskState, kind: str, doc: dict) -> bytes:
-    """The request page of `kind` answered with `doc`, when it is still the
-    revision `doc` was made on (a session's text answer has none)."""
+def _answered_page(task: TaskState, kind: str, doc: dict) -> bytes | None:
+    """The request page of `kind` answered with `doc`; None once the page is
+    no longer the revision `doc` was made on (a session's text answer has
+    none). The revision is checked after the read, so a page swapped in
+    meanwhile is never taken."""
+    page = _request_page(task, kind)
     if doc.get("revision") and answers.disk_revision(task) != doc["revision"]:
-        raise ValueError("the request page is no longer the revision the answers were made on")
-    return answered_page.render(_request_page(task, kind), doc.get("answers")).encode()
+        return None
+    return answered_page.render(page, doc.get("answers")).encode()
 
 
 def _submission(task: TaskState, path: str) -> tuple[bytes, dict] | None:
