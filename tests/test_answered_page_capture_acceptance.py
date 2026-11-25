@@ -440,7 +440,8 @@ def test_a_failed_archive_write_still_records_and_wakes(tmp_path, monkeypatch, c
 def _fail_index_writes(monkeypatch, c):
     """The content write into the task's archive goes through; then the disk
     is full: the write of index.json and every later write that allocates
-    space in the archive raise, as a restoring copy would."""
+    space in the archive raise, as a restoring copy would. A rename allocates
+    nothing and still goes through."""
     root = str(archive_root(c.state_dir, REPOSITORY, ISSUE))
     index = os.path.join(root, "index.json")
     real_replace, real_os_open, real_open = os.replace, os.open, builtins.open
@@ -454,7 +455,7 @@ def _fail_index_writes(monkeypatch, c):
 
     def replace_(src, dst, *a, **kw):
         if not kw.get("dst_dir_fd") and inside(dst):
-            if full or os.path.abspath(os.fspath(dst)) == index:
+            if os.path.abspath(os.fspath(dst)) == index:
                 raise enospc()
             full.append(dst)
         return real_replace(src, dst, *a, **kw)

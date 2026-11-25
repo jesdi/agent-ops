@@ -275,11 +275,10 @@ def collect(state_dir, task: TaskState, repo: str, *, publish: bool = True,
 def _capture(root: Path, index: ArtifactIndex, task: TaskState, kind: str, now: datetime) -> None:
     """Archive the answered page of the task's answers file of `kind` when it
     is a submission the index does not hold yet. The item's digest is the
-    answers file's, not the page's. The page is staged, renamed in, and only
-    then entered in `index`: a full disk fails before the earlier page is
-    touched, and an index that is not saved after the rename keeps the earlier
-    digest, so the next collection captures again. The caller saves `index`.
-    Raises OSError or ValueError when the file or the page cannot be used."""
+    answers file's, not the page's. The page is written in atomically and only
+    then entered in `index`, so a failed write leaves the earlier page and its
+    entry. The caller saves `index`. Raises OSError or ValueError when the
+    file or the page cannot be used."""
     name, _ = answers.ANSWERS_FILES[kind]
     path = f".agent/{name}"
     submission = _submission(task, path)
@@ -292,13 +291,7 @@ def _capture(root: Path, index: ArtifactIndex, task: TaskState, kind: str, now: 
     if artifact_id in items and items[artifact_id].digest == digest:
         return
     page = answered_page.render(_request_page(task, kind), doc.get("answers")).encode()
-    content = root / "content" / artifact_id
-    staged = content.with_name(f".{content.name}.staged")
-    try:
-        _copy_content(staged, page)
-        os.replace(staged, content)
-    finally:
-        staged.unlink(missing_ok=True)
+    _copy_content(root / "content" / artifact_id, page)
     items[artifact_id] = StoredArtifact(artifact_id, artifact_name, path, "text/html", digest,
                                         task.stage.value, now.isoformat())
     index.items = list(items.values())
@@ -325,12 +318,29 @@ def _request_page(task: TaskState, kind: str) -> str:
 
 def capture_answers(state_dir, task: TaskState, now: datetime | None = None) -> None:
     """Archive the answered page of the submission just recorded for the
-    task's open request."""
+    task's open request. When the index cannot be saved, the earlier page is
+    put back, so the served page and its entry never disagree."""
+    kind = operator_request(task).kind
     root = state.archive_root(state_dir, task.repository, task.issue)
     index = read(state_dir, task.repository, task.issue)
     index.retain_for(task)
-    _capture(root, index, task, operator_request(task).kind, now or datetime.now(timezone.utc))
-    index.save(root / "index.json")
+    content = root / "content" / ANSWERS_ARTIFACTS[kind][0]
+    earlier = content.with_name(f".{content.name}.earlier")
+    earlier.unlink(missing_ok=True)
+    if content.is_file():
+        os.link(content, earlier)   # a rename back needs no space on a full disk
+    try:
+        _capture(root, index, task, kind, now or datetime.now(timezone.utc))
+        try:
+            index.save(root / "index.json")
+        except BaseException:
+            if earlier.exists():
+                os.replace(earlier, content)
+            else:
+                content.unlink(missing_ok=True)
+            raise
+    finally:
+        earlier.unlink(missing_ok=True)
 
 
 def pin_published(state_dir, task: TaskState, repo: str) -> None:
