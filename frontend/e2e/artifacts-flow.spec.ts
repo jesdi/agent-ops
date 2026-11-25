@@ -75,3 +75,40 @@ for (const [kind, path, send] of [['plan-approval', '.agent/review.html', 'Send 
     await expect(page.getByRole('button', { name: send })).toBeVisible()
   })
 }
+
+// #281: only the open request's page goes to the review route; every other
+// artifact, and the same page with no open request, keeps its raw preview.
+test('other artifacts and a closed request keep the raw preview in a new tab', async ({ page }) => {
+  let request: 'open' | 'closed' | 'failing' = 'open'
+  await page.route('**/api/task/widget/42/request', route => request === 'failing'
+    ? route.fulfill({ status: 500, json: { detail: 'request offline' } })
+    : route.fulfill({ json: request === 'open' ? {
+      kind: 'plan-approval', revision: 'r1', answers: {},
+      content: { kind: 'readable', path: '.agent/review.html', media_type: 'text/html', text: '<p>pick one</p>' },
+    } : null }))
+  const artifact = { media_type: 'text/html', updated_at: '2026-11-24T00:00:00Z', stage: 'plan', status: 'local', github_url: '' }
+  await page.route('**/api/task/widget/42/artifacts', route => route.fulfill({ json: {
+    items: [{ ...artifact, id: 'review', name: 'Review page', path: '.agent/review.html', url: '/api/task/widget/42/artifacts/review' },
+      { ...artifact, id: 'prototype', name: 'Prototype', path: '.agent/prototype.html', url: '/api/task/widget/42/artifacts/prototype' }],
+    expired: false, expires_at: '',
+  } }))
+  await page.context().route('**/api/task/widget/42/artifacts/prototype', route => route.fulfill({
+    contentType: 'text/html', body: '<h1>Prototype preview</h1>',
+  }))
+  await page.goto('/task/widget/42')
+  const artifacts = page.getByRole('region', { name: 'Artifacts', exact: true })
+  const review = artifacts.getByRole('link', { name: 'Open Review page' })
+  const prototype = artifacts.getByRole('link', { name: 'Open Prototype' })
+  await expect(review).toHaveAttribute('href', '/task/widget/42/review')
+  await expect(prototype).toHaveAttribute('href', '/api/task/widget/42/artifacts/prototype')
+  await expect(prototype).toHaveAttribute('target', '_blank')
+  const opened = page.waitForEvent('popup')
+  await prototype.click()
+  await expect((await opened).getByRole('heading', { name: 'Prototype preview' })).toBeVisible()
+  for (const state of ['closed', 'failing'] as const) {
+    request = state
+    await page.reload()
+    await expect(review).toHaveAttribute('href', '/api/task/widget/42/artifacts/review')
+    await expect(review).toHaveAttribute('target', '_blank')
+  }
+})

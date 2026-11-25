@@ -110,4 +110,25 @@ test.each([
   renderWithProviders(<ArtifactsPanel repository="widget" issue={42} />)
   const link = await screen.findByRole('link', { name: 'Open Review page' })
   await vi.waitFor(() => expect(link).toHaveAttribute('href', '/task/widget/42/review'))
+  expect(link).not.toHaveAttribute('target', '_blank')
+})
+
+test('only the artifact on the open request page path links to the review route', async () => {
+  seed([
+    { ...spec, id: 'review', name: 'Review page', path: './.agent/review.html', media_type: 'text/html', status: 'local',
+      url: '/api/task/widget/42/artifacts/review', github_url: '' },
+    { ...spec, id: 'prototype', name: 'Prototype', path: '.agent/prototype.html', media_type: 'text/html', status: 'local',
+      url: '/api/task/widget/42/artifacts/prototype', github_url: '' },
+  ])
+  server.use(http.get('/api/task/widget/42/request', () => HttpResponse.json({
+    kind: 'plan-approval', revision: 'r1', answers: {},
+    content: { kind: 'readable', path: '.agent/review.html', media_type: 'text/html', text: '<p>pick one</p>' },
+  })))
+  renderWithProviders(<ArtifactsPanel repository="widget" issue={42} />)
+  const review = await screen.findByRole('link', { name: 'Open Review page' })
+  await vi.waitFor(() => expect(review).toHaveAttribute('href', '/task/widget/42/review'))
+  expect(review).not.toHaveAttribute('target', '_blank')
+  const prototype = screen.getByRole('link', { name: 'Open Prototype' })
+  expect(prototype).toHaveAttribute('href', '/api/task/widget/42/artifacts/prototype')
+  expect(prototype).toHaveAttribute('target', '_blank')
 })
