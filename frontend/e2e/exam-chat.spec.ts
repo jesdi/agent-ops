@@ -10,7 +10,7 @@ const view = {
   repo: 'jesdi/general-skills', pr: 240, state: 'open', head_sha: SHA, debt: false, detail: 'attempt 1, 2 questions',
   attempt: 1, bypassed: null, attempts: [], tip_cap: 3,
   exam: {
-    version: 1, repo: 'jesdi/general-skills', pr: 240, head_sha: SHA, chat: true, bypass: true,
+    version: 1, repo: 'jesdi/general-skills', pr: 240, head_sha: SHA, chat: true,
     questions: [question('q1', 'Why does the lease compare the head SHA?'), question('q2', 'Why is the base SHA rechecked before merging?')],
     general: [{ id: 'g1', kind: 'general', message: 'what is the riskiest change?', text: 'The lease expiry.', status: 'done', error: null }, reply('g2', 'general', HUNK)],
   },

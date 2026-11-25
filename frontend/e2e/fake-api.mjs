@@ -83,7 +83,7 @@ function examView() {
     repo: 'jesdi/general-skills', pr: 240, state: e.state, head_sha: SHA, debt: false, detail: '',
     attempt: 1, bypassed: e.bypassed, attempts: e.attempts, tip_cap: 3,
     exam: e.state === 'open'
-      ? { version: 1, repo: 'jesdi/general-skills', pr: 240, head_sha: SHA, questions: e.questions, general: e.general, chat: true, bypass: true }
+      ? { version: 1, repo: 'jesdi/general-skills', pr: 240, head_sha: SHA, questions: e.questions, general: e.general, chat: true }
       : null,
   }
 }
