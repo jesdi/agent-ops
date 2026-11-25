@@ -130,7 +130,7 @@ describe('services page detail: runs', () => {
     renderWithProviders(<ServicesPage />)
     await userEvent.click(await screen.findByText('Subject job'))
 
-    expect(await screen.findByText('03:00')).toBeInTheDocument()
+    expect(await screen.findByText('Nov 25 03:00')).toBeInTheDocument()
   })
 
   it('says "No runs recorded" for a job with no runs', async () => {

@@ -4,28 +4,38 @@ import { useServiceActions } from '../hooks/useServiceActions'
 import type { ServiceJob } from '../lib/api'
 import { ScheduleEditor } from '../components/ScheduleEditor'
 import { BUTTON } from '../lib/controls'
+import { formatDuration } from '../lib/format'
 
-const hhmm = (iso: string) => new Date(iso).toISOString().slice(11, 16)
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
-function lastRun(job: ServiceJob): string {
+/** A run time in UTC: HH:MM on the day of `now`, "Nov 23 HH:MM" on any other. */
+function when(iso: string, now: string): string {
+  const d = new Date(iso)
+  const day = d.toISOString().slice(0, 10) === new Date(now).toISOString().slice(0, 10)
+    ? '' : `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()} `
+  return `${day}${d.toISOString().slice(11, 16)}`
+}
+
+function lastRun(job: ServiceJob, now: string): string {
   const run = job.last_run
   if (!run) return 'never ran'
-  return `${hhmm(run.at)} · ${run.duration_seconds ?? 0} s`
+  return `${when(run.at, now)} · ${run.duration_seconds ?? 0} s`
 }
 
 function nextRun(job: ServiceJob, now: string): string {
   if (!job.next_run) return '—'
-  const mins = Math.round((Date.parse(job.next_run) - Date.parse(now)) / 60_000)
-  return mins <= 0 ? 'now' : `in ${mins} min`
+  const mins = Math.ceil((Date.parse(job.next_run) - Date.parse(now)) / 60_000)
+  if (mins <= 0) return 'now'
+  return mins < 60 ? `in ${mins} min` : `in ${formatDuration(mins * 60)}`
 }
 
-function RecentRuns({ recent }: { recent: NonNullable<ServiceJob['recent_runs']> }) {
+function RecentRuns({ recent, now }: { recent: NonNullable<ServiceJob['recent_runs']>; now: string }) {
   if (recent.length === 0) return <p className="text-ink-muted">No runs recorded</p>
   return (
     <ul>
       {recent.map((r) => (
         <li key={r.at} className="flex gap-3">
-          <span>{hhmm(r.at)} · {r.duration_seconds === null ? '…' : `${r.duration_seconds} s`}</span>
+          <span>{when(r.at, now)} · {r.duration_seconds === null ? '…' : `${r.duration_seconds} s`}</span>
           <span className={r.result === 'failed' ? 'text-failed-fg' : 'text-ink-muted'}>{r.result}</span>
         </li>
       ))}
@@ -33,22 +43,22 @@ function RecentRuns({ recent }: { recent: NonNullable<ServiceJob['recent_runs']>
   )
 }
 
-function UpcomingRuns({ upcoming }: { upcoming: string[] }) {
+function UpcomingRuns({ upcoming, now }: { upcoming: string[]; now: string }) {
   if (upcoming.length === 0) return <p className="text-ink-muted">No runs scheduled</p>
-  return <ul>{upcoming.map((at) => <li key={at}>{hhmm(at)}</li>)}</ul>
+  return <ul>{upcoming.map((at) => <li key={at}>{when(at, now)}</li>)}</ul>
 }
 
-function Runs({ job }: { job: ServiceJob }) {
+function Runs({ job, now }: { job: ServiceJob; now: string }) {
   return (
     <>
       {!job.read_only && (
         <>
           <h3 className="pt-2 text-sm font-semibold">Recent runs</h3>
-          <RecentRuns recent={job.recent_runs ?? []} />
+          <RecentRuns recent={job.recent_runs ?? []} now={now} />
         </>
       )}
       <h3 className="pt-2 text-sm font-semibold">Upcoming runs</h3>
-      <UpcomingRuns upcoming={job.upcoming ?? []} />
+      <UpcomingRuns upcoming={job.upcoming ?? []} now={now} />
     </>
   )
 }
@@ -114,7 +124,7 @@ function Actions({ job }: { job: ServiceJob }) {
 function Detail({ job, now }: { job: ServiceJob; now: string }) {
   const rows: [string, string][] = [
     ['State', job.state], ['Schedule', job.schedule],
-    ['Last run', lastRun(job)], ['Next run', nextRun(job, now)],
+    ['Last run', lastRun(job, now)], ['Next run', nextRun(job, now)],
   ]
   // On a phone the detail sits under the list: bring it into view when a job is picked.
   const ref = useRef<HTMLElement>(null)
@@ -139,7 +149,7 @@ function Detail({ job, now }: { job: ServiceJob; now: string }) {
       <ChangeApplying change={job.change} />
       {!job.read_only && <ScheduleEditor job={job} />}
       <Actions job={job} />
-      <div className="space-y-1 text-sm"><Runs job={job} /></div>
+      <div className="space-y-1 text-sm"><Runs job={job} now={now} /></div>
     </section>
   )
 }

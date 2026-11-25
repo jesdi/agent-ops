@@ -21,7 +21,7 @@ describe('a read-only job', () => {
     renderWithProviders(<ServicesPage />)
     await userEvent.click(await screen.findByRole('button', { name: 'Secret cache refresh' }))
     expect(screen.getByText('Upcoming runs')).toBeInTheDocument()
-    expect(screen.getByText('in 108 min')).toBeInTheDocument()
+    expect(screen.getByText('in 1h 48m')).toBeInTheDocument()
     expect(screen.queryByText('Recent runs')).not.toBeInTheDocument()
     expect(screen.queryByText('No runs recorded')).not.toBeInTheDocument()
   })

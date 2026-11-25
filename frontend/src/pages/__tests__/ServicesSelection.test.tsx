@@ -39,3 +39,41 @@ describe('services page: selecting another job', () => {
     expect(screen.queryByText(/whole number/)).not.toBeInTheDocument()
   })
 })
+
+describe('services page: next run', () => {
+  it.each([
+    ['2026-11-24T10:13:00+00:00', 'in 1 min'],
+    ['2026-11-24T11:00:00+00:00', 'in 48 min'],
+    ['2026-11-25T07:18:00+00:00', 'in 21h 6m'],
+  ])('a next run at %s reads %s', async (next_run, words) => {
+    serve(job('agent-ops-digest', 'Daily digest', { next_run }))
+    renderWithProviders(<ServicesPage />)
+    await userEvent.click(await screen.findByText('Daily digest'))
+    expect(screen.getByText(words)).toBeInTheDocument()
+  })
+})
+
+describe('services page: run times on other days', () => {
+  it('dates a run or an upcoming run that is not today, and keeps today\'s as HH:MM', async () => {
+    serve(job('agent-ops-digest', 'Daily digest', {
+      last_run: { at: '2026-11-24T08:00:00+00:00', duration_seconds: 12 },
+      recent_runs: [
+        { at: '2026-11-24T08:00:00+00:00', duration_seconds: 12, result: 'success' },
+        { at: '2026-11-23T08:00:00+00:00', duration_seconds: 11, result: 'success' },
+      ],
+      upcoming: ['2026-11-25T08:00:00+00:00'],
+    }))
+    renderWithProviders(<ServicesPage />)
+    await userEvent.click(await screen.findByText('Daily digest'))
+    expect(screen.getAllByText('08:00 · 12 s')).toHaveLength(2)
+    expect(screen.getByText('Nov 23 08:00 · 11 s')).toBeInTheDocument()
+    expect(screen.getByText('Nov 25 08:00')).toBeInTheDocument()
+  })
+
+  it('reads a next run under a minute away as in 1 min', async () => {
+    serve(job('agent-ops-digest', 'Daily digest', { next_run: '2026-11-24T10:12:20+00:00' }))
+    renderWithProviders(<ServicesPage />)
+    await userEvent.click(await screen.findByText('Daily digest'))
+    expect(screen.getByText('in 1 min')).toBeInTheDocument()
+  })
+})
