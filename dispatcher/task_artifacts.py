@@ -146,18 +146,22 @@ def _manifest(task: TaskState) -> list[Registration]:
     if not manifest.exists():
         return []
     try:
-        raw = json.loads(_source(task.worktree, str(manifest)).read_text())
-        if not isinstance(raw, list) or len(raw) > 100:
-            raise ValueError("expected an array of at most 100 artifacts")
-        entries = [Registration.parse(entry) for entry in raw]
-        if len({entry.id for entry in entries}) != len(entries):
-            raise ValueError("duplicate artifact IDs")
-        # The answers ids belong to the capture, never to a session's copy.
-        reserved = {artifact_id for artifact_id, _ in ANSWERS_ARTIFACTS.values()}
-        return [entry for entry in entries if entry.id not in reserved]
+        entries = _parse_manifest(json.loads(_source(task.worktree, str(manifest)).read_text()))
     except (OSError, ValueError, KeyError, TypeError) as exc:
         log.warning("Invalid artifact manifest for %s/%s: %s", task.repository, task.issue, exc)
         return []
+    # The answers ids belong to the capture, never to a session's copy.
+    reserved = {artifact_id for artifact_id, _ in ANSWERS_ARTIFACTS.values()}
+    return [entry for entry in entries if entry.id not in reserved]
+
+
+def _parse_manifest(raw: object) -> list[Registration]:
+    if not isinstance(raw, list) or len(raw) > 100:
+        raise ValueError("expected an array of at most 100 artifacts")
+    entries = [Registration.parse(entry) for entry in raw]
+    if len({entry.id for entry in entries}) != len(entries):
+        raise ValueError("duplicate artifact IDs")
+    return entries
 
 
 def _automatic_registrations(task: TaskState) -> list[Registration]:
@@ -234,6 +238,9 @@ class Collector:
             except (OSError, ValueError) as exc:
                 log.warning("Cannot collect artifact %s/%s/%s: %s", self.task.repository, self.task.issue, entry.id, exc)
         index.items = list(items.values())
+        self.capture(index)
+
+    def capture(self, index: ArtifactIndex) -> None:
         for kind, (artifact_id, _) in ANSWERS_ARTIFACTS.items():
             before = index.items
             try:
@@ -276,25 +283,39 @@ def _capture(index: ArtifactIndex, task: TaskState, kind: str, now: datetime) ->
     Raises OSError or ValueError when the file or the page cannot be used."""
     name, _ = answers.ANSWERS_FILES[kind]
     path = f".agent/{name}"
-    raw = state.read_regular(Path(task.worktree) / path, answers.ANSWERS_FILE_MAX_BYTES)
-    doc = json.loads(raw) if raw is not None else None
-    if not isinstance(doc, dict) or doc.get("submitted") is None:
+    submission = _submission(task, path)
+    if submission is None:
         return None
+    raw, doc = submission
     artifact_id, artifact_name = ANSWERS_ARTIFACTS[kind]
     digest = hashlib.sha256(raw).hexdigest()
     items = {item.id: item for item in index.items}
     if artifact_id in items and items[artifact_id].digest == digest:
         return None
+    rendered = answered_page.render(_request_page(task, kind), doc.get("answers")).encode()
+    items[artifact_id] = StoredArtifact(artifact_id, artifact_name, path, "text/html", digest,
+                                        task.stage.value, now.isoformat())
+    index.items = list(items.values())
+    return rendered
+
+
+def _submission(task: TaskState, path: str) -> tuple[bytes, dict] | None:
+    """The answers file at `path` and its document, when it is a submission."""
+    raw = state.read_regular(Path(task.worktree) / path, answers.ANSWERS_FILE_MAX_BYTES)
+    doc = json.loads(raw) if raw is not None else None
+    if not isinstance(doc, dict) or doc.get("submitted") is None:
+        return None
+    return raw, doc
+
+
+def _request_page(task: TaskState, kind: str) -> str:
+    """The open request's page when it is of `kind`, else the default page of `kind`."""
     request = operator_request(task)
     page_path = request.path if getattr(request, "kind", None) == kind else DEFAULT_PAGES[kind]
     page = state.read_regular(Path(task.worktree) / page_path, REVIEW_PAGE_MAX_BYTES)
     if page is None:
         raise OSError("request page is not a readable regular file")
-    rendered = answered_page.render(page.decode(), doc.get("answers")).encode()
-    items[artifact_id] = StoredArtifact(artifact_id, artifact_name, path, "text/html", digest,
-                                        task.stage.value, now.isoformat())
-    index.items = list(items.values())
-    return rendered
+    return page.decode()
 
 
 def capture_answers(state_dir, task: TaskState, now: datetime | None = None) -> None:
