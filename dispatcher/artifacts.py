@@ -5,9 +5,9 @@ from __future__ import annotations
 import hashlib
 import html
 import os
-import tempfile
 import re
 import stat
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
@@ -15,6 +15,7 @@ from urllib.parse import quote
 
 from dispatcher.answers import QUESTION_ID
 from dispatcher.state import read_regular
+from dispatcher.workspace import write_worktree_file
 
 MIN_BYTES = 1500
 MIN_TICKET_BYTES = 200   # a small ticket is legitimately short
@@ -132,20 +133,10 @@ def stamp_console_link(worktree: str | Path, artifact: str, console_url: str,
     stamped = _CONSOLE_META.sub(b"", raw).replace(marker, marker + meta, 1)
     if stamped == raw or len(stamped) > REVIEW_PAGE_MAX_BYTES:
         return
-    _replace_page(page, stamped)
-
-
-def _replace_page(page: Path, data: bytes) -> None:
-    """Atomic, beside the page, with its mode: a symlink put there since the
-    read is replaced, never written through."""
-    fd, tmp = tempfile.mkstemp(dir=page.parent, prefix=".console-meta-")
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-        os.chmod(tmp, stat.S_IMODE(os.lstat(page).st_mode))
-        os.replace(tmp, page)
-    except OSError:
-        Path(tmp).unlink(missing_ok=True)
+    # Never through a symlink, the page's mode kept. A failed write leaves the
+    # page as it is: the request is armed on the unstamped bytes.
+    with suppress(OSError):
+        write_worktree_file(root, Path(rel).parent.as_posix(), Path(rel).name, stamped, mode=None)
 
 
 def count_open_questions(page: str | Path) -> int | None:
