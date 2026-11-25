@@ -59,13 +59,10 @@ runtime, ctl = sys.argv[1], pathlib.Path(sys.argv[2])
 prompt = sys.stdin.read()
 (ctl / f"run-{len(list(ctl.glob('run-*')))}").write_text(prompt)
 
-def emit(text):
+def emit(text):   # Codex's exec --json has no deltas: it sends the whole message at the end
     if runtime == "claude":
-        line = {"type": "stream_event", "event": {"type": "content_block_delta", "index": 0,
-                                                    "delta": {"type": "text_delta", "text": text}}}
-    else:
-        line = {"type": "item.completed", "item": {"id": "i", "type": "agent_message", "text": text}}
-    print(json.dumps(line), flush=True)
+        print(json.dumps({"type": "stream_event", "event": {"type": "content_block_delta", "index": 0,
+                          "delta": {"type": "text_delta", "text": text}}}), flush=True)
 
 emit("%s")
 if (ctl / "hold").exists():
@@ -80,8 +77,10 @@ emit("%s")
 if runtime == "claude":
     print(json.dumps({"type": "result", "subtype": "success", "result": "%s"}), flush=True)
 else:
+    print(json.dumps({"type": "item.completed",
+                      "item": {"id": "i", "type": "agent_message", "text": "%s"}}), flush=True)
     print(json.dumps({"type": "turn.completed"}), flush=True)
-''' % (ONE, TWO, ONE + TWO)
+''' % (ONE, TWO, ONE + TWO, ONE + TWO)
 
 
 class Chat(Recording):
@@ -325,26 +324,23 @@ def test_the_turn_command_is_the_sandbox_of_an_inspection_without_a_clone_or_too
         assert "--dangerously-bypass-approvals-and-sandbox" not in argv
 
 
-def test_a_codex_entry_runs_codex_and_its_reply_streams_in_more_than_one_chunk(box):
+def test_a_codex_entry_runs_codex_and_its_whole_reply_streams_as_one_chunk(box):
     body = opened(box)
     box.usages = {"anthropic": session_usage(util=1.0, provider="anthropic", now=NOW),
                   "openai": session_usage(provider="openai", now=NOW)}
-    box.hold()
 
     async def go():
         async with box.aclient() as c:
             r = await box.ask(c, body, "tip", "q5", "the token only grows")
             assert r.status_code == 202, r.text
             _, q, _, wait = await box.stream(r.json()["id"])
-            first = await first_delta(q)
-            box.release()
             chunks, final = await follow(q)
             await wait()
-            return first, chunks, final, await box.view(c)
+            return chunks, final, await box.view(c)
 
-    first, chunks, final, view = asyncio.run(go())
+    chunks, final, view = asyncio.run(go())
     assert [c["model"] for c in box.cmds] == [box.cmds[0]["model"]] and "gpt-5" in box.cmds[0]["model"]
-    assert ONE.strip() in first and chunks and final == {"status": "done"}
+    assert chunks == [ONE + TWO] and final == {"status": "done"}
     [turn] = question(view, "q5")["thread"]
     assert ONE.strip() in turn["text"] and TWO in turn["text"] and turn["status"] == "done"
     assert box.stdin(0) == "CONTEXT tip q5 :: the token only grows"
