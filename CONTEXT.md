@@ -580,6 +580,14 @@ the cached answer without another `gh` call. Descriptions use 300 seconds
 after a stale serve or 30 seconds after a cold failure; rank rows use 15
 seconds. The payload timestamp still names the earlier fetch.
 
+**Answered page**:
+The request page (plan review or questionnaire) with one submission's answers
+filled in, every control disabled, and any answer that lands on no input
+listed as text. The dispatcher captures it into the archive as
+`review-answers` or `questionnaire-answers` when it records the submission;
+only the next submission of the same kind replaces it.
+_Avoid_: answers file (the JSON the session reads), answers artifact as JSON
+
 ## Loop-policy ownership
 
 **Single owner**: `dispatcher/loops.py` owns all round accounting, cap arithmetic, and reset scopes.
