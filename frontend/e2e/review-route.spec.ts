@@ -15,10 +15,11 @@ const request = (text: string, revision = 'r1', answers: object = {}): Req => ({
   answers,
 })
 
-/** Mocks the request route and records every POST to the answers route. */
-async function open(page: Page, req: () => Req, url = ROUTE) {
+/** Mocks the request and delivery routes and records every POST to the answers route. */
+async function open(page: Page, req: () => Req | null, url = ROUTE, delivery: () => object | null = () => null) {
   const posts: Record<string, unknown>[] = []
   await page.route('**/api/task/widget/42/request', r => r.fulfill({ json: req() }))
+  await page.route('**/api/task/widget/42/delivery', r => r.fulfill({ json: delivery() }))
   await page.route('**/api/task/widget/42/answers', r => r.fulfill({ status: 202, json: { status: 'pending', intent: 'x' } }))
   page.on('request', r => {
     if (r.method() === 'POST' && r.url().endsWith('/api/task/widget/42/answers')) posts.push(r.postDataJSON())
@@ -188,4 +189,55 @@ test('a new revision reloads the page, restores answers, and shows the notice', 
   await expect(f.locator('#rev')).toHaveText('second page', { timeout: 20_000 })
   await expect(page.getByTestId('review-notice')).toHaveText(CHANGED)
   await expect(f.locator('input[name=format][value=b]')).toBeChecked()
+})
+
+// Ticket 04: the Send bar shows the delivery, Resend, and the restore after a page change.
+const PAGE_CHANGED = 'page changed, check and resend'
+
+test('scenario 19: at 390x844 the bar with a drop and Resend fits, Send answers fully inside, no scroll', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  let delivery: object | null = null
+  const posts = await open(page, () => ({ ...request(PAGE.replace('data-mode="plan"', 'data-mode="questionnaire"')), kind: 'answers' }), ROUTE, () => delivery)
+  await frame(page).locator('input[name=format][value=b]').check()
+  await page.getByRole('button', { name: 'Send answers' }).click()
+  await expect.poll(() => posts.length, { timeout: 500 }).toBe(1)
+  delivery = { state: 'dropped', reason: 'no open request', submit: 'changes', revision: 'r1' }
+  await expect(page.getByTestId('review-delivery')).toHaveText(/dropped: no open request/, { timeout: 20_000 })
+  for (const name of ['Send answers', 'Resend']) {
+    const b = (await page.getByRole('button', { name }).boundingBox())!
+    expect(b.x).toBeGreaterThanOrEqual(0)
+    expect(b.y).toBeGreaterThanOrEqual(0)
+    expect(b.x + b.width).toBeLessThanOrEqual(390)
+    expect(b.y + b.height).toBeLessThanOrEqual(844)
+    expect(b.height).toBeGreaterThanOrEqual(44)
+  }
+  expect(await page.evaluate(() => document.documentElement.scrollHeight)).toBeLessThanOrEqual(844)
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390)
+})
+
+test('scenario 18: a stale-revision drop restores what still fits into the new page and submits nothing', async ({ page }) => {
+  const scope = `<div class="q" data-q="scope"><header><h3>Scope?</h3></header><div class="opts">
+    <label class="opt"><input type="radio" name="scope" value="narrow"><span>narrow</span></label>
+    <label class="opt"><input type="radio" name="scope" value="wide"><span>wide</span></label></div></div>`
+  const page1 = PAGE.replace('<!-- /slot -->', `${scope}\n    <!-- /slot -->`)
+  const page2 = PAGE.replace('</body>', '<p id="rev">second page</p></body>')
+  let next = false
+  const posts = await open(page, () => (next ? request(page2, 'r2') : request(page1, 'r1')), ROUTE,
+    () => (next ? { state: 'dropped', reason: 'stale revision', submit: 'changes', revision: 'r1' } : null))
+  const f = frame(page)
+  await f.locator('input[name=format][value=b]').check()
+  await f.locator('input[name=scope][value=wide]').check()
+  await f.locator('#note-format').fill('x')
+  await page.getByRole('button', { name: 'Send changes' }).click()
+  await expect.poll(() => posts.length, { timeout: 500 }).toBe(1)
+  expect(posts[0]).toMatchObject({ answers: { format: 'b', scope: 'wide', 'format.note': 'x' }, submit: 'changes', revision: 'r1' })
+  next = true
+  await expect(f.locator('#rev')).toHaveText('second page', { timeout: 20_000 })
+  await expect(page.getByText(PAGE_CHANGED)).toBeVisible({ timeout: 20_000 })
+  await expect(f.locator('input[name=format][value=b]')).toBeChecked()
+  await expect(f.locator('#note-format')).toHaveValue('x')
+  await expect(f.locator('input[name=scope]')).toHaveCount(0)
+  await page.waitForTimeout(1500)
+  expect(posts.filter(p => p.submit !== null)).toHaveLength(1)
+  expect(posts.every(p => !('scope' in (p.answers as object)) || p.revision === 'r1')).toBe(true)
 })
