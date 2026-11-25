@@ -33,8 +33,11 @@ def test_a_calendar_heartbeat_two_gaps_old_is_dead():
     assert pass_clock(hb, at(9, day=26)) == PassClock(False, "")
 
 
-def test_a_calendar_heartbeat_without_a_due_time_counts_as_alive():
-    assert pass_clock({"finished_at": FINISHED, "custom": True}, at(9, day=30)).alive
+def test_a_calendar_heartbeat_without_a_due_time_is_alive_for_two_days():
+    hb = {"finished_at": FINISHED, "custom": True}
+    assert pass_clock(hb, at(9, day=26)).alive
+    assert not pass_clock(hb, at(11, day=26)).alive
+    assert not pass_clock({**hb, "next_at": "garbage"}, at(9, day=30)).alive
     assert not pass_clock({"custom": True}, at(9)).alive
 
 

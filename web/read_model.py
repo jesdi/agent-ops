@@ -959,11 +959,17 @@ def pass_clock(heartbeat: dict | None, now: datetime) -> PassClock:
     return PassClock(eta is not None, eta or "")
 
 
+UNKNOWN_CALENDAR_GAP = timedelta(days=1)
+
+
 def _calendar_alive(finished: datetime | None, due: datetime | None, now: datetime) -> bool:
     """A pass on record and not two gaps past it. Without a `next_at` (systemd could
-    not walk the calendar) the gap is unknown: a recorded pass counts as alive."""
+    not walk the calendar, or an older heartbeat) the gap is taken as a day."""
+    # ponytail: a calendar sparser than daily whose next_at is missing reads as down after
+    # two days; have the console walk the calendar itself if that ever happens.
     try:
-        return finished is not None and (due is None or now <= due + (due - finished))
+        gap = (due - finished) if due else UNKNOWN_CALENDAR_GAP
+        return finished is not None and now <= finished + 2 * gap
     except TypeError:  # a naive stamp: staleness cannot be judged
         return False
 
