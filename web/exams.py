@@ -67,27 +67,26 @@ class ExamQuestionResult(BaseModel):
     feedback: str | None = None   # the grader's line, only for a missed or partial free-text question
 
 
-class ExamAttempt(BaseModel):
-    attempt: int
+class ExamResult(BaseModel):
     passed: bool
     score: int | float
     max: int | float
     questions: list[ExamQuestionResult]
 
 
-class ExamKeptAttempt(BaseModel):
-    """A failed attempt kept: its served questions and its result, never a key."""
+class ExamAttempt(BaseModel):
+    """A submitted attempt of this head: its served questions, never a key, and its result
+    once graded. `questions` is empty for an attempt kept from before attempts had their own."""
     attempt: int
     questions: list[ExamQuestion]
-    result: ExamAttempt
+    result: ExamResult | None
 
 
 class ExamView(Exam):
     detail: str
     attempt: int
-    exam: ExamQuestions | None
-    results: list[ExamAttempt]
-    attempts: list[ExamKeptAttempt] = []
+    exam: ExamQuestions | None   # the open attempt, while it waits for answers
+    attempts: list[ExamAttempt]
 
 
 class ExamEntry(Exam):
@@ -128,13 +127,10 @@ def router(sources, cfg: Callable[[], Config]) -> APIRouter:
 
     def view(repo: str, pr: int) -> ExamView:
         """The exam as its page reads it; the questions only while they wait for answers."""
-        doc = sources.exam_state(repo, pr)
+        doc = sources.exam_view(repo, pr)
         if doc is None:
             raise HTTPException(404, "exam not found")
-        waiting = doc["state"] == ExamState.OPEN
-        state_dir = cfg().state_dir
-        return ExamView(**doc, exam=state.public(state_dir, repo, pr, doc["attempt"]) if waiting else None,
-                        attempts=state.kept(state_dir, doc))
+        return ExamView(**doc)
 
     @routes.get("/api/exam/{owner}/{name}/{pr}", response_model=ExamView, response_model_exclude_unset=True)
     def read_exam(owner: Annotated[str, Path(pattern=rf"^{Slug}$")],

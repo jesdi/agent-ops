@@ -69,7 +69,7 @@ def test_each_request_kicks_the_dispatcher_once(console):
     assert calls == [KICK, KICK]
 
 
-def test_get_returns_the_state_without_exam_or_results(console):
+def test_get_returns_the_state_without_exam_or_attempts(console):
     client, _, _ = console
     posted = client.post("/api/exam", headers=HEADERS, json=REQUEST).json()
     response = client.get("/api/exam/jesdi/general-skills/240", headers=HEADERS)
@@ -77,7 +77,7 @@ def test_get_returns_the_state_without_exam_or_results(console):
     body = response.json()
     assert body["state"] == posted["state"] == "new"
     assert body["exam"] is None
-    assert body["results"] == []
+    assert body["attempts"] == []
 
 
 def test_get_unknown_pr_is_404(console):

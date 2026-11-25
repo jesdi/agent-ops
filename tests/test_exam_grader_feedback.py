@@ -1,7 +1,7 @@
 """The grader's one-line feedback on the result (pr-exam-host-assist requirement 11).
 
 Interface under test (defined here, built by the ticket), on top of test_exam_grading.py:
-    GET .../ `results[].questions[]` of a missed or partial free-text question also carries
+    GET .../ `attempts[].result.questions[]` of a missed or partial free-text question also carries
     "feedback": the grader's one line for it. A choice question and a passed question carry none.
 """
 import json

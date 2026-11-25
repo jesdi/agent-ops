@@ -973,18 +973,17 @@ export interface components {
             /** Url */
             url: string;
         };
-        /** ExamAttempt */
+        /**
+         * ExamAttempt
+         * @description A submitted attempt of this head: its served questions, never a key, and its result
+         *     once graded. `questions` is empty for an attempt kept from before attempts had their own.
+         */
         ExamAttempt: {
             /** Attempt */
             attempt: number;
-            /** Max */
-            max: number;
-            /** Passed */
-            passed: boolean;
             /** Questions */
-            questions: components["schemas"]["ExamQuestionResult"][];
-            /** Score */
-            score: number;
+            questions: components["schemas"]["ExamQuestion"][];
+            result: components["schemas"]["ExamResult"] | null;
         };
         /** ExamEntry */
         ExamEntry: {
@@ -1001,17 +1000,6 @@ export interface components {
             title: string;
             /** Url */
             url: string;
-        };
-        /**
-         * ExamKeptAttempt
-         * @description A failed attempt kept: its served questions and its result, never a key.
-         */
-        ExamKeptAttempt: {
-            /** Attempt */
-            attempt: number;
-            /** Questions */
-            questions: components["schemas"]["ExamQuestion"][];
-            result: components["schemas"]["ExamAttempt"];
         };
         /** ExamQuestion */
         ExamQuestion: {
@@ -1065,6 +1053,17 @@ export interface components {
             /** Repo */
             repo: string;
         };
+        /** ExamResult */
+        ExamResult: {
+            /** Max */
+            max: number;
+            /** Passed */
+            passed: boolean;
+            /** Questions */
+            questions: components["schemas"]["ExamQuestionResult"][];
+            /** Score */
+            score: number;
+        };
         /**
          * ExamState
          * @enum {string}
@@ -1074,11 +1073,8 @@ export interface components {
         ExamView: {
             /** Attempt */
             attempt: number;
-            /**
-             * Attempts
-             * @default []
-             */
-            attempts: components["schemas"]["ExamKeptAttempt"][];
+            /** Attempts */
+            attempts: components["schemas"]["ExamAttempt"][];
             /** Debt */
             debt: boolean;
             /** Detail */
@@ -1090,8 +1086,6 @@ export interface components {
             pr: number;
             /** Repo */
             repo: string;
-            /** Results */
-            results: components["schemas"]["ExamAttempt"][];
             state: components["schemas"]["ExamState"];
         };
         /** ExamsView */

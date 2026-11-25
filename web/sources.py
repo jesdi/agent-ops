@@ -191,8 +191,8 @@ class Sources:
         subprocess.run(("systemctl", "--user", "start", "--no-block", "agent-ops-services-record.service"),
                        capture_output=True, timeout=5)
 
-    def exam_state(self, repo: str, pr: int) -> dict | None:
-        return exams.read(self.state_dir, repo, pr)
+    def exam_view(self, repo: str, pr: int) -> dict | None:
+        return exams.view(self.state_dir, repo, pr)
 
     def tasks(self) -> list[TaskState]:
         return state.load_all(self._state_dir)

@@ -15,7 +15,7 @@ const q1 = { id: 'q1', type: 'choice', prompt: 'Which SHA does the lease compare
 const q2 = { id: 'q2', type: 'text', prompt: 'Why is the base SHA rechecked before merging?' }
 const open = {
   repo: 'jesdi/general-skills', pr: 240, state: 'open', head_sha: SHA, debt: false, detail: 'attempt 1, 2 questions',
-  attempt: 1, exam: { version: 1, repo: 'jesdi/general-skills', pr: 240, head_sha: SHA, questions: [q1, q2] }, results: [],
+  attempt: 1, exam: { version: 1, repo: 'jesdi/general-skills', pr: 240, head_sha: SHA, questions: [q1, q2] }, attempts: [],
 }
 
 function renderExam() {
@@ -85,7 +85,7 @@ describe('exam page', () => {
   it('after a pass shows the score and that exam is posted', async () => {
     serve({
       ...open, state: 'passed', exam: null,
-      results: [{ attempt: 1, passed: true, score: 9, max: 10, questions: [] }],
+      attempts: [{ attempt: 1, questions: [], result: { passed: true, score: 9, max: 10, questions: [] } }],
     })
     renderExam()
     expect(await screen.findByText(/\b9\b.*\b10\b/)).toBeInTheDocument()
@@ -96,7 +96,7 @@ describe('exam page', () => {
   it('after a pass of a debt exam does not say a status is posted', async () => {
     serve({
       ...open, debt: true, state: 'passed', exam: null,
-      results: [{ attempt: 1, passed: true, score: 9, max: 10, questions: [] }],
+      attempts: [{ attempt: 1, questions: [], result: { passed: true, score: 9, max: 10, questions: [] } }],
     })
     renderExam()
     expect(await screen.findByText(/\b9\b.*\b10\b/)).toBeInTheDocument()
@@ -129,13 +129,15 @@ describe('exam page', () => {
     serve({
       ...open, attempt: 2, detail: 'attempt 2, 1 question',
       exam: { version: 1, repo: open.repo, pr: 240, head_sha: SHA, questions: [followUp] },
-      results: [{
-        attempt: 1, passed: false, score: 7, max: 10,
-        questions: [
-          { id: 'q0', concept: 'lease-expiry', points: 1 },
-          { id: 'q1', concept: 'lease-ownership', points: 0, explanation: 'The lease belongs to the runner that took it.', hunk: hunk1 },
-          { id: 'q2', concept: 'base-sha-recheck', points: 0.5, explanation: 'Main can move between grading and merge.', hunk: hunk2 },
-        ],
+      attempts: [{
+        attempt: 1, questions: [], result: {
+          passed: false, score: 7, max: 10,
+          questions: [
+            { id: 'q0', concept: 'lease-expiry', points: 1 },
+            { id: 'q1', concept: 'lease-ownership', points: 0, explanation: 'The lease belongs to the runner that took it.', hunk: hunk1 },
+            { id: 'q2', concept: 'base-sha-recheck', points: 0.5, explanation: 'Main can move between grading and merge.', hunk: hunk2 },
+          ],
+        },
       }],
     })
     renderExam()
@@ -153,13 +155,15 @@ describe('exam page', () => {
   it('shows the grader feedback under a partial free-text question explanation, and none on a choice or passed one', async () => {
     serve({
       ...open, state: 'open', exam: null,
-      results: [{
-        attempt: 1, passed: false, score: 2.5, max: 4,
-        questions: [
-          { id: 'q1', concept: 'lease-ownership', points: 0, explanation: 'The lease belongs to the runner that took it.', hunk: '@@ -1 +1 @@\n+x' },
-          { id: 'q5', concept: 'token-growth', points: 0.5, explanation: 'The token only ever grows.', hunk: '@@ -2 +2 @@\n+y', feedback: 'misses that the token only grows' },
-          { id: 'q6', concept: 'base-sha-recheck', points: 1 },
-        ],
+      attempts: [{
+        attempt: 1, questions: [], result: {
+          passed: false, score: 2.5, max: 4,
+          questions: [
+            { id: 'q1', concept: 'lease-ownership', points: 0, explanation: 'The lease belongs to the runner that took it.', hunk: '@@ -1 +1 @@\n+x' },
+            { id: 'q5', concept: 'token-growth', points: 0.5, explanation: 'The token only ever grows.', hunk: '@@ -2 +2 @@\n+y', feedback: 'misses that the token only grows' },
+            { id: 'q6', concept: 'base-sha-recheck', points: 1 },
+          ],
+        },
       }],
     })
     renderExam()
@@ -173,12 +177,14 @@ describe('exam page', () => {
   it('shows the grader feedback of a partial question on a passed attempt', async () => {
     serve({
       ...open, state: 'passed', exam: null,
-      results: [{
-        attempt: 1, passed: true, score: 4.5, max: 5,
-        questions: [
-          { id: 't1', concept: 'token-growth', points: 0.5, explanation: 'The token only ever grows.', hunk: '@@ -2 +2 @@\n+y', feedback: 'misses that the token only grows' },
-          { id: 'c1', concept: 'lease-ownership', points: 1 },
-        ],
+      attempts: [{
+        attempt: 1, questions: [], result: {
+          passed: true, score: 4.5, max: 5,
+          questions: [
+            { id: 't1', concept: 'token-growth', points: 0.5, explanation: 'The token only ever grows.', hunk: '@@ -2 +2 @@\n+y', feedback: 'misses that the token only grows' },
+            { id: 'c1', concept: 'lease-ownership', points: 1 },
+          ],
+        },
       }],
     })
     renderExam()

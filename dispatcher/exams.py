@@ -146,16 +146,31 @@ def public(state_dir: str | Path, repo: str, pr: int, attempt: int) -> dict | No
         return None
 
 
-def kept(state_dir: str | Path, doc: dict) -> list[dict]:
-    """The failed attempts before the current one, oldest first, with their questions and result."""
-    out = []
-    for result in doc["results"]:
-        n = result["attempt"]
-        if result["passed"] or n >= doc["attempt"]:
-            continue
-        if questions := public(state_dir, doc["repo"], doc["pr"], n):
-            out.append({"attempt": n, "questions": questions["questions"], "result": result})
-    return out
+def view(state_dir: str | Path, repo: str, pr: int) -> dict | None:
+    """The exam as its page reads it, the state and every attempt file read under one lock:
+    `exam` is the open attempt's served questions, and `attempts` every submitted attempt
+    of this head, oldest first, as {attempt, questions, result | None}. Neither holds a key."""
+    with state_lock(state_dir, LOCK):
+        doc = _load(state_dir, repo, pr)
+        if doc is None:
+            return None
+        waiting = doc["state"] == ExamState.OPEN
+        return {**doc, "exam": public(state_dir, repo, pr, doc["attempt"]) if waiting else None,
+                "attempts": _submitted(state_dir, doc)}
+
+
+def _submitted(state_dir, doc: dict) -> list[dict]:
+    """The graded attempts of this head with their result, then the one grading, if any."""
+    graded = [(r["attempt"], r) for r in doc["results"]]
+    grading = [(doc["grading"]["attempt"], None)] if doc["grading"] else []
+    return [{"attempt": n, "questions": _questions(state_dir, doc, n), "result": result}
+            for n, result in graded + grading]
+
+
+def _questions(state_dir, doc: dict, n: int) -> list[dict]:
+    """Attempt `n`'s served questions; [] for one whose questions the flat layout replaced."""
+    served = public(state_dir, doc["repo"], doc["pr"], n)
+    return served["questions"] if served else []
 
 
 def app(state_dir: str | Path) -> dict | None:

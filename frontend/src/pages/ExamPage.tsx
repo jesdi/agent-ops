@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useParams } from 'react-router'
-import { api, ApiError, type ExamAttempt, type ExamQuestion, type ExamState, type ExamView } from '../lib/api'
+import { api, ApiError, type ExamQuestion, type ExamResult, type ExamState, type ExamView } from '../lib/api'
 import { queryKeys } from '../hooks/queryKeys'
 import { useExam } from '../hooks/useResources'
 
@@ -34,7 +34,7 @@ function Question({ q, value, onChange }: { q: ExamQuestion; value: number | str
   )
 }
 
-function Misses({ result, showScore = true }: { result: ExamAttempt; showScore?: boolean }) {
+function Misses({ result, showScore = true }: { result: ExamResult; showScore?: boolean }) {
   const missed = result.questions.filter((m) => m.points < 1)
   return (
     <section className="space-y-3">
@@ -99,8 +99,13 @@ function useAnswerExam(owner: string, name: string, pr: string, data: ExamView |
 
 type ViewProps = { data: ExamView; answer: Answering }
 
+/** The result of the last graded attempt of this head. */
+function lastResult(data: ExamView) {
+  return data.attempts.findLast((a) => a.result)?.result
+}
+
 function LastMisses({ data }: { data: ExamView }) {
-  const last = data.results.at(-1)
+  const last = lastResult(data)
   return last && !last.passed ? <Misses result={last} /> : null
 }
 
@@ -117,7 +122,7 @@ function ErrorView({ data }: ViewProps) {
 }
 
 function PassedView({ data }: ViewProps) {
-  const last = data.results.at(-1)
+  const last = lastResult(data)
   return last ? (
     <>
       <section className="space-y-1">

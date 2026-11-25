@@ -4,9 +4,9 @@ Interface under test (defined here, built by the ticket), on top of test_exam_gr
     <state>/exams/<owner>/<name>/<pr>/attempts/<n>/ holds the attempt's exam.json, public.json,
         answers.json, grades.json and result.json; state.json stays at the exam level.
         They stay until the exam is deleted or a new head restarts it.
-    GET .../ `attempts` lists every failed attempt kept, oldest first:
-        {"attempt", "questions": [public question], "result": {as in `results`}}
-        The current attempt is not listed. No key and no rubric appear in it.
+    GET .../ `attempts` lists every submitted attempt of this head, oldest first:
+        {"attempt", "questions": [public question], "result": the graded result | None}
+        The open attempt is not listed; it is `exam`. No key and no rubric appear in it.
     An exam left in the flat layout (files at the exam level) is moved into attempts/<attempt>/
         on the first read or work, once.
 """
@@ -14,6 +14,8 @@ import json
 import shutil
 from pathlib import Path
 
+from dispatcher import exams
+from dispatcher.state import state_lock
 from tests.test_exam_debt import Gh, request
 from tests.test_exam_generation import HEAD, REPO
 from tests.test_exam_grading import (
@@ -151,7 +153,7 @@ def test_fail_pass_empty_delta_and_deletion_preserve_states_statuses_and_records
             assert (attempt_dir(box, n) / name).is_file(), f"attempt {n}: {name}"
         result = json.loads((attempt_dir(box, n) / "result.json").read_text())
         assert result["passed"] is (n == 2)
-    assert [r["attempt"] for r in body["results"]] == [1, 2]
+    assert [a["attempt"] for a in body["attempts"]] == [1, 2]
 
     box.github.merge(REPO, 240)
     request(box, REPO, 240)
@@ -257,3 +259,39 @@ def test_a_flat_passed_exam_moves_whole_into_its_attempt_and_its_summary_gains_t
     questions = {q["id"]: q for q in result_of(body, 1)["questions"]}
     assert questions["t1"]["feedback"] == "FB-t1"
     assert "feedback" not in questions["t0"]
+
+
+def test_a_failed_attempt_stays_in_the_view_while_its_follow_up_is_generated(tmp_path, monkeypatch):
+    box = box_for(tmp_path, monkeypatch, spec=FAIL_SPEC)
+    first = opened(box)
+    session, seen = box.session, []
+
+    def peek(request, **kw):
+        if json.loads(Path(request).read_text())["mode"] == "followup":
+            seen.append(box.read().json())
+        return session(request, **kw)
+    box.session = peek
+    assert submit(box, first, answers=answers_for(first, wrong=("q0",))).status_code == 202
+    box.work()
+    [during] = seen
+    assert (during["state"], during["attempt"], during["exam"]) == ("generating", 1, None)
+    [failed] = during["attempts"]
+    assert failed["attempt"] == 1 and failed["result"]["passed"] is False
+    assert [q["id"] for q in failed["questions"]] == ["q0", "q1", "q2", "t0", "t1"]
+
+
+def test_the_view_reads_every_attempt_file_under_the_exams_lock(tmp_path, monkeypatch):
+    box, _, _ = failed_once(tmp_path, monkeypatch)
+    real, held = exams.public, []
+
+    def public(state_dir, repo, pr, attempt):
+        try:
+            with state_lock(state_dir, exams.LOCK, timeout=0):
+                held.append(False)
+        except TimeoutError:
+            held.append(True)
+        return real(state_dir, repo, pr, attempt)
+    monkeypatch.setattr(exams, "public", public)
+    body = box.read().json()
+    assert [a["attempt"] for a in body["attempts"]] == [1] and body["exam"]
+    assert held == [True, True]
