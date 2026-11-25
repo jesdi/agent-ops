@@ -316,30 +316,24 @@ def _observation(turn: _Turn, task: TaskState, policy: ModelPolicy) -> Observati
         grace_elapsed=_grace_elapsed(cfg, task), caps=cfg.loop_caps,
         tracks=frozenset(policy.tracks),
         gate_free=frozenset(n for n, t in policy.tracks.items() if not t.plan_review),
-        reads=_reads(turn, task), look=_look(turn, task))
+        reads=_stamp_and_read(turn, task), look=_look(turn, task))
 
 
-def _reads(turn: _Turn, task: TaskState) -> Reads:
+def _stamp_and_read(turn: _Turn, task: TaskState) -> Reads:
     """What the worktree says about the report: a ready plan's tickets,
     revision and page; an approval's tickets; a spec; an answers page. A
-    request about to be armed gets the console link stamped into its page
+    report that arms a request gets the console link stamped into its page
     first, so its revision covers the bytes on disk."""
     signal = turn.signal
-    reader = _READS.get(signal.status) if signal is not None else None
-    if reader is None:
+    entry = _READS.get(signal.status) if signal is not None else None
+    if entry is None:
         return Reads()
-    _stamp_armed(turn, task, signal)
-    return reader(task, signal)
-
-
-def _stamp_armed(turn: _Turn, task: TaskState, signal: StageSignal) -> None:
-    """Stamp the console link into the page of a request about to be armed."""
+    reader, arms = entry
     # An answers park without a page arms no request: nothing to stamp.
-    armed = signal.status == "awaiting-review" or (
-        signal.status == "awaiting-answers" and signal.artifact)
-    if armed and not turn.dry_run:
+    if arms and signal.artifact and not turn.dry_run:
         stamp_console_link(task.worktree, signal.artifact, turn.cfg.console_url,
                            task.repository, task.issue)
+    return reader(task, signal)
 
 
 def _ready_reads(task: TaskState, signal: StageSignal) -> Reads:
@@ -379,5 +373,6 @@ def _answers_reads(task: TaskState, signal: StageSignal) -> Reads:
     return Reads(answers=_answers_page(task, signal.artifact))
 
 
-_READS = {"awaiting-review": _ready_reads, "done": _done_reads,
-          "awaiting-answers": _answers_reads}
+# Each report's reader, and whether the report arms an operator request.
+_READS = {"awaiting-review": (_ready_reads, True), "done": (_done_reads, False),
+          "awaiting-answers": (_answers_reads, True)}
