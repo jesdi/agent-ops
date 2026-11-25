@@ -44,33 +44,44 @@ function Question({ q, value, onChange, bypassing, chat, tipCap, takes }: {
   const draft = typeof value === 'string' ? value : ''
   return (
     <li className="space-y-2" {...quotes(chat.attempt, q.id)}>
-      <Prompt id={promptId} q={q} help={bypassed ? 'bypassed' : q.assisted ? 'assisted' : null} />
-      {q.type === 'choice' ? (
-        <div role="radiogroup" aria-labelledby={promptId} className="space-y-1">
-          {(q.options ?? []).map((option, i) => (
-            <label key={option} className="flex items-center gap-2 py-1">
-              <input type="radio" name={q.id} checked={value === i} onChange={() => onChange(i)} />
-              {option}
-            </label>
-          ))}
-        </div>
-      ) : (
-        <textarea
-          aria-labelledby={promptId}
-          rows={4}
-          value={draft}
-          onChange={(e) => onChange(e.target.value)}
-          className="w-full rounded border border-ink-muted bg-transparent p-2"
-        />
-      )}
+      <Prompt id={promptId} q={q} help={bypassed ? 'bypassed' : openHelp(q)} />
+      <Answer q={q} promptId={promptId} value={value} draft={draft} onChange={onChange} />
       <ExamThread q={q} draft={draft} target={chat} tipCap={tipCap} chat={takes.chat}>
-        {takes.bypass && (
-          <button type="button" onClick={() => bypassing.toggle(q.id)} className="rounded border px-2 py-1 text-sm">
-            {bypassed ? 'Undo bypass' : 'Bypass'}
-          </button>
-        )}
+        {takes.bypass && <BypassButton bypassed={bypassed} onToggle={() => bypassing.toggle(q.id)} />}
       </ExamThread>
     </li>
+  )
+}
+
+/** The help an unsubmitted question has had so far. */
+const openHelp = (q: ExamQuestion): Help => (q.assisted ? 'assisted' : null)
+
+function Answer({ q, promptId, value, draft, onChange }: {
+  q: ExamQuestion; promptId: string; value: number | string | undefined; draft: string; onChange: (v: number | string) => void
+}) {
+  if (q.type !== 'choice') {
+    return (
+      <textarea aria-labelledby={promptId} rows={4} value={draft} onChange={(e) => onChange(e.target.value)}
+        className="w-full rounded border border-ink-muted bg-transparent p-2" />
+    )
+  }
+  return (
+    <div role="radiogroup" aria-labelledby={promptId} className="space-y-1">
+      {(q.options ?? []).map((option, i) => (
+        <label key={option} className="flex items-center gap-2 py-1">
+          <input type="radio" name={q.id} checked={value === i} onChange={() => onChange(i)} />
+          {option}
+        </label>
+      ))}
+    </div>
+  )
+}
+
+function BypassButton({ bypassed, onToggle }: { bypassed: boolean; onToggle: () => void }) {
+  return (
+    <button type="button" onClick={onToggle} className="rounded border px-2 py-1 text-sm">
+      {bypassed ? 'Undo bypass' : 'Bypass'}
+    </button>
   )
 }
 
@@ -100,19 +111,34 @@ function AttemptReview({ data, kept }: { data: ExamView; kept: ExamAttempt }) {
     <section className="space-y-3">
       <h2 className="font-medium">Attempt {kept.attempt}{kept.result && ` · ${scoreLine(kept.result)}`}</h2>
       <ol className="space-y-6">
-        {kept.questions.map((q) => {
-          const r = results.get(q.id)
-          return (
-            <li key={q.id} className="space-y-2" {...quotes(kept.attempt, q.id)}>
-              <Prompt q={q} help={r ? r.help : q.assisted ? 'assisted' : null} />
-              {r?.points != null && <p className="text-sm text-ink-muted">{r.points} / 1</p>}
-              {r && <Explained r={r} />}
-              <ExamThread q={q} draft="" target={chat} tipCap={data.tip_cap} chat={kept.chat} />
-            </li>
-          )
-        })}
+        {kept.questions.map((q) => (
+          <KeptQuestion key={q.id} q={q} r={results.get(q.id)} chat={chat} tipCap={data.tip_cap} chats={kept.chat} />
+        ))}
       </ol>
     </section>
+  )
+}
+
+/** A submitted question: its help (the flags sealed at submit once graded), its points, its explanation, and its thread. */
+function KeptQuestion({ q, r, chat, tipCap, chats }: {
+  q: ExamQuestion; r: ExamResultQuestion | undefined; chat: ChatTarget; tipCap: number; chats: boolean
+}) {
+  return (
+    <li className="space-y-2" {...quotes(chat.attempt, q.id)}>
+      <Prompt q={q} help={r ? r.help : openHelp(q)} />
+      {r && <Outcome r={r} />}
+      <ExamThread q={q} draft="" target={chat} tipCap={tipCap} chat={chats} />
+    </li>
+  )
+}
+
+/** A graded question's points (none for a bypassed one), then its explanation. */
+function Outcome({ r }: { r: ExamResultQuestion }) {
+  return (
+    <>
+      {r.points != null && <p className="text-sm text-ink-muted">{r.points} / 1</p>}
+      <Explained r={r} />
+    </>
   )
 }
 

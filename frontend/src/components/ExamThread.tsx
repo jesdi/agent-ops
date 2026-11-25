@@ -120,6 +120,21 @@ function Turn({ turn, onRetry }: { turn: Pick<ExamTurn, 'kind' | 'message' | 'te
 
 const ACTION = 'rounded border px-2 py-1 text-sm disabled:opacity-50'
 
+type Chat = ReturnType<typeof useChat>
+
+/** Retries a failed turn of `chat` while its attempt takes turns; an attempt that no longer does offers no retry. */
+const retryIn = (chat: Chat, open: boolean) => (open ? (kind: ExamTurn['kind'], text: string) => void chat.run(kind, text) : undefined)
+
+/** "Tip n / cap" while the attempt takes tips (`tips_left` not null), disabled once none is left or a turn runs. */
+function TipButton({ q, tipCap, chat, draft }: { q: ExamQuestion; tipCap: number; chat: Chat; draft: string }) {
+  if (q.tips_left === null) return null
+  return (
+    <button type="button" disabled={chat.busy || q.tips_left === 0} onClick={() => void chat.run('tip', draft)} className={ACTION}>
+      Tip {q.tips} / {tipCap}
+    </button>
+  )
+}
+
 /** A question's actions in one row (Tip n / cap while the attempt takes tips, Ask while it chats, then `children`) with its
  *  thread inline under them. */
 export function ExamThread({ q, draft, target, tipCap, chat, children }: {
@@ -129,24 +144,23 @@ export function ExamThread({ q, draft, target, tipCap, chat, children }: {
   const [asking, setAsking] = useState(false)
   const [message, setMessage] = useDraft(useQuoteFor(target.attempt, q.id), () => setAsking(true))
   const send = async () => { if (await thread.run('question', message)) setMessage('') }
-  const retry = chat ? (kind: ExamTurn['kind'], text: string) => void thread.run(kind, text) : undefined
 
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap gap-2">
-        {q.tips_left !== null && (
-          <button type="button" disabled={thread.busy || q.tips_left === 0} onClick={() => void thread.run('tip', draft)} className={ACTION}>
-            Tip {q.tips} / {tipCap}
-          </button>
-        )}
+        <TipButton q={q} tipCap={tipCap} chat={thread} draft={draft} />
         {chat && <button type="button" aria-expanded={asking} onClick={() => setAsking((a) => !a)} className={ACTION}>Ask</button>}
         {children}
       </div>
       {chat && asking && <AskBox label="Message about this question" message={message} onChange={setMessage} busy={thread.busy} onSend={() => void send()} />}
-      {thread.refusal && <p role="alert" className="text-failed-fg">{thread.refusal}</p>}
-      <Turns thread={q.thread} live={thread.live} onRetry={retry} />
+      <Refusal chat={thread} />
+      <Turns thread={q.thread} live={thread.live} onRetry={retryIn(thread, chat)} />
     </div>
   )
+}
+
+function Refusal({ chat }: { chat: Chat }) {
+  return chat.refusal ? <p role="alert" className="text-failed-fg">{chat.refusal}</p> : null
 }
 
 /** The general chats, in a drawer on the right, a bottom sheet below `md`: one section per attempt, oldest first, each
@@ -170,18 +184,18 @@ export function GeneralChat({ chats, open, setOpen }: { chats: GeneralThread[]; 
   )
 }
 
+/** One attempt's general chat; titled by its attempt when the drawer holds more than one. */
 function GeneralSection({ target, thread, chat, titled, onQuote }: GeneralThread & { titled: boolean; onQuote: () => void }) {
   const general = useChat(target, null, thread)
   const [message, setMessage] = useDraft(useQuoteFor(target.attempt, null), onQuote)
   const send = async () => { if (await general.run('general', message)) setMessage('') }
-  const retry = chat ? (kind: ExamTurn['kind'], text: string) => void general.run(kind, text) : undefined
+  const of = titled ? ` of attempt ${target.attempt}` : ''
   return (
     <section className="space-y-2">
       {titled && <h3 className="text-sm text-ink-muted">Attempt {target.attempt}</h3>}
-      <Turns thread={thread} live={general.live} onRetry={retry} />
-      {general.refusal && <p role="alert" className="text-failed-fg">{general.refusal}</p>}
-      {chat && <AskBox label={titled ? `Message to the general chat of attempt ${target.attempt}` : 'Message to the general chat'}
-        message={message} onChange={setMessage} busy={general.busy} onSend={() => void send()} />}
+      <Turns thread={thread} live={general.live} onRetry={retryIn(general, chat)} />
+      <Refusal chat={general} />
+      {chat && <AskBox label={`Message to the general chat${of}`} message={message} onChange={setMessage} busy={general.busy} onSend={() => void send()} />}
     </section>
   )
 }

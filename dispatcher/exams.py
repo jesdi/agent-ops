@@ -766,9 +766,13 @@ def _open_to(state_dir, doc: dict | None, ask: Ask) -> Path:
     if doc is None or doc["head_sha"] != ask.head_sha:
         raise Refused(Refusal.CONFLICT, "this attempt cannot take that turn")
     adir = attempt_dir(state_dir, doc["repo"], doc["pr"], ask.attempt)
-    if not (_chatting(adir, doc, ask.attempt) and (ask.kind != "tip" or _taking(doc, ask.attempt))):
+    if not _takes(adir, doc, ask):
         raise Refused(Refusal.CONFLICT, "this attempt cannot take that turn")
     return adir
+
+
+def _takes(adir: Path, doc: dict, ask: Ask) -> bool:
+    return _chatting(adir, doc, ask.attempt) and (ask.kind != "tip" or _taking(doc, ask.attempt))
 
 
 def _free(turns: list, ask: Ask) -> None:
