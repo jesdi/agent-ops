@@ -17,6 +17,13 @@ export type GeneralThread = { target: ChatTarget; thread: ExamTurn[]; chat: bool
 
 type Live = { id: string; kind: ExamTurn['kind']; message: string; text: string; error: string | null }
 
+/** A turn as its thread asks for it: a tip or a question message on a question, or a general message; the thread's
+ *  attempt is added when it is sent. */
+type Ask<B = TurnBody> = B extends unknown ? Omit<B, 'attempt' | 'head_sha'> : never
+
+/** The retry of one turn of a thread, or none where the thread no longer takes that kind of turn. */
+type RetryFor = (turn: Pick<ExamTurn, 'kind' | 'message'>) => (() => void) | undefined
+
 /** Code in a reply or a result: the console's monospace, wrapped so a long line never widens the page. */
 export const CODE = 'whitespace-pre-wrap wrap-anywhere rounded border border-border bg-surface p-2 font-mono text-xs'
 
@@ -28,7 +35,7 @@ function useQuoteFor(attempt: number, question: string | null) {
 
 /** One thread's turns: it starts them, and it alone watches the reply of the one running, whether this page started it or
  *  a reload found it running. A turn runs on the console, so the stored thread, read again once the turn ends, is what stays. */
-function useChat(target: ChatTarget, question: string | null, thread: ExamTurn[]) {
+function useChat(target: ChatTarget, thread: ExamTurn[]) {
   const queryClient = useQueryClient()
   const [live, setLive] = useState<Live | null>(null)
   const [refusal, setRefusal] = useState<string | null>(null)
@@ -52,11 +59,11 @@ function useChat(target: ChatTarget, question: string | null, thread: ExamTurn[]
   }, [running, watch])
 
   /** Starts a turn; true once the console took it. */
-  const run = async (kind: TurnBody['kind'], message: string) => {
+  const run = async (ask: Ask) => {
     setRefusal(null)
     try {
-      const { id } = await api.startTurn(owner, name, pr, { attempt: target.attempt, head_sha: target.head_sha, kind, question, message } as TurnBody)
-      void watch({ id, kind, message, text: '', error: null })
+      const { id } = await api.startTurn(owner, name, pr, { attempt: target.attempt, head_sha: target.head_sha, ...ask })
+      void watch({ id, kind: ask.kind, message: ask.message, text: '', error: null })
       return true
     } catch (e) {
       setRefusal((e as Error).message)
@@ -122,28 +129,29 @@ const ACTION = 'rounded border px-2 py-1 text-sm disabled:opacity-50'
 
 type Chat = ReturnType<typeof useChat>
 
-/** Retries a failed turn of `chat` while its attempt takes turns; an attempt that no longer does offers no retry. */
-const retryIn = (chat: Chat, open: boolean) => (open ? (kind: ExamTurn['kind'], text: string) => void chat.run(kind, text) : undefined)
-
 /** "Tip n / cap" while the attempt takes tips (`tips_left` not null), disabled once none is left or a turn runs. */
 function TipButton({ q, tipCap, chat, draft }: { q: ExamQuestion; tipCap: number; chat: Chat; draft: string }) {
   if (q.tips_left === null) return null
   return (
-    <button type="button" disabled={chat.busy || q.tips_left === 0} onClick={() => void chat.run('tip', draft)} className={ACTION}>
+    <button type="button" disabled={chat.busy || q.tips_left === 0} onClick={() => void chat.run({ kind: 'tip', question: q.id, message: draft })} className={ACTION}>
       Tip {q.tips} / {tipCap}
     </button>
   )
 }
 
 /** A question's actions in one row (Tip n / cap while the attempt takes tips, Ask while it chats, then `children`) with its
- *  thread inline under them. */
+ *  thread inline under them. A failed tip is retried while the attempt takes tips, a failed message while it chats. */
 export function ExamThread({ q, draft, target, tipCap, chat, children }: {
   q: ExamQuestion; draft: string; target: ChatTarget; tipCap: number; chat: boolean; children?: ReactNode
 }) {
-  const thread = useChat(target, q.id, q.thread)
+  const thread = useChat(target, q.thread)
   const [asking, setAsking] = useState(false)
   const [message, setMessage] = useDraft(useQuoteFor(target.attempt, q.id), () => setAsking(true))
-  const send = async () => { if (await thread.run('question', message)) setMessage('') }
+  const send = async () => { if (await thread.run({ kind: 'question', question: q.id, message })) setMessage('') }
+  const retryFor: RetryFor = (t) => {
+    const kind = t.kind === 'tip' ? 'tip' : 'question'
+    return (kind === 'tip' ? q.tips_left !== null : chat) ? () => void thread.run({ kind, question: q.id, message: t.message }) : undefined
+  }
 
   return (
     <div className="space-y-2">
@@ -154,7 +162,7 @@ export function ExamThread({ q, draft, target, tipCap, chat, children }: {
       </div>
       {chat && asking && <AskBox label="Message about this question" message={message} onChange={setMessage} busy={thread.busy} onSend={() => void send()} />}
       <Refusal chat={thread} />
-      <Turns thread={q.thread} live={thread.live} onRetry={retryIn(thread, chat)} />
+      <Turns thread={q.thread} live={thread.live} retryFor={retryFor} />
     </div>
   )
 }
@@ -186,14 +194,15 @@ export function GeneralChat({ chats, open, setOpen }: { chats: GeneralThread[]; 
 
 /** One attempt's general chat; titled by its attempt when the drawer holds more than one. */
 function GeneralSection({ target, thread, chat, titled, onQuote }: GeneralThread & { titled: boolean; onQuote: () => void }) {
-  const general = useChat(target, null, thread)
+  const general = useChat(target, thread)
   const [message, setMessage] = useDraft(useQuoteFor(target.attempt, null), onQuote)
-  const send = async () => { if (await general.run('general', message)) setMessage('') }
+  const send = async () => { if (await general.run({ kind: 'general', message })) setMessage('') }
+  const retryFor: RetryFor = (t) => (chat ? () => void general.run({ kind: 'general', message: t.message }) : undefined)
   const of = titled ? ` of attempt ${target.attempt}` : ''
   return (
     <section className="space-y-2">
       {titled && <h3 className="text-sm text-ink-muted">Attempt {target.attempt}</h3>}
-      <Turns thread={thread} live={general.live} onRetry={retryIn(general, chat)} />
+      <Turns thread={thread} live={general.live} retryFor={retryFor} />
       <Refusal chat={general} />
       {chat && <AskBox label={`Message to the general chat${of}`} message={message} onChange={setMessage} busy={general.busy} onSend={() => void send()} />}
     </section>
@@ -213,15 +222,14 @@ function AskBox({ label, message, onChange, busy, onSend }: {
 }
 
 /** The stored thread, then the reply as it streams until the stored turn has it. */
-function Turns({ thread, live, onRetry }: { thread: ExamTurn[]; live: Live | null; onRetry?: (kind: ExamTurn['kind'], text: string) => void }) {
+function Turns({ thread, live, retryFor }: { thread: ExamTurn[]; live: Live | null; retryFor: RetryFor }) {
   const showLive = live && !thread.some((t) => t.id === live.id)
-  const retry = (t: Pick<ExamTurn, 'kind' | 'message'>) => (onRetry ? () => onRetry(t.kind, t.message) : undefined)
   return (
     <>
       {thread.map((t) => (
-        <Turn key={t.id} turn={t.id === live?.id && t.status === 'running' ? { ...t, text: live.text, error: live.error } : t} onRetry={retry(t)} />
+        <Turn key={t.id} turn={t.id === live?.id && t.status === 'running' ? { ...t, text: live.text, error: live.error } : t} onRetry={retryFor(t)} />
       ))}
-      {showLive && <Turn turn={live} onRetry={retry(live)} />}
+      {showLive && <Turn turn={live} onRetry={retryFor(live)} />}
     </>
   )
 }

@@ -26,18 +26,18 @@ const quotes = (attempt: number, question: string) => ({ 'data-quote-attempt': a
 
 /** The help a question had, as a badge: assisted, or bypassed. */
 function HelpBadge({ help }: { help: Help | undefined }) {
-  return help ? <span className={`ml-2 align-middle ${help === 'bypassed' ? chip.parked : chip.waiting}`}>{help}</span> : null
+  return help ? <span className={help === 'bypassed' ? chip.parked : chip.waiting}>{help}</span> : null
 }
 
-/** A question's prompt, as the title of its item, with the help it had. */
+/** A question's prompt, as the title of its item, with the help it had; a badge that wraps starts its own line flush left. */
 function Prompt({ q, help, id }: { q: ExamQuestion; help: Help | undefined; id?: string }) {
-  return <p id={id} className="font-medium">{q.prompt}<HelpBadge help={help} /></p>
+  return <p id={id} className="flex flex-wrap items-baseline gap-x-2 gap-y-1 font-medium"><span>{q.prompt}</span><HelpBadge help={help} /></p>
 }
 
 /** An open question: its answer, its actions (Tip, Ask, Bypass) in one row, and its thread. */
-function Question({ q, value, onChange, bypassing, chat, tipCap, takes }: {
+function Question({ q, value, onChange, bypassing, chat, tipCap, chats }: {
   q: ExamQuestion; value: number | string | undefined; onChange: (v: number | string) => void; bypassing: Bypassing
-  chat: ChatTarget; tipCap: number; takes: { chat: boolean; bypass: boolean }
+  chat: ChatTarget; tipCap: number; chats: boolean
 }) {
   const promptId = `prompt-${q.id}`
   const bypassed = bypassing.bypassed === q.id
@@ -46,8 +46,8 @@ function Question({ q, value, onChange, bypassing, chat, tipCap, takes }: {
     <li className="space-y-2" {...quotes(chat.attempt, q.id)}>
       <Prompt id={promptId} q={q} help={bypassed ? 'bypassed' : openHelp(q)} />
       <Answer q={q} promptId={promptId} value={value} draft={draft} onChange={onChange} />
-      <ExamThread q={q} draft={draft} target={chat} tipCap={tipCap} chat={takes.chat}>
-        {takes.bypass && <BypassButton bypassed={bypassed} onToggle={() => bypassing.toggle(q.id)} />}
+      <ExamThread q={q} draft={draft} target={chat} tipCap={tipCap} chat={chats}>
+        <BypassButton bypassed={bypassed} onToggle={() => bypassing.toggle(q.id)} />
       </ExamThread>
     </li>
   )
@@ -167,7 +167,7 @@ function AttemptForm({ data, exam, onSubmit, pending, bypassing }: {
     <form onSubmit={(e) => { e.preventDefault(); if (ready) onSubmit(Object.fromEntries(Object.entries(answers).filter(([id]) => id !== data.bypassed))) }} className="space-y-4">
       <ol className="space-y-6">
         {exam.questions.map((q) => (
-          <Question key={q.id} q={q} bypassing={bypassing} chat={chat} tipCap={data.tip_cap} takes={exam}
+          <Question key={q.id} q={q} bypassing={bypassing} chat={chat} tipCap={data.tip_cap} chats={exam.chat}
             value={answers[q.id]} onChange={(v) => setAnswers((a) => ({ ...a, [q.id]: v }))} />
         ))}
       </ol>

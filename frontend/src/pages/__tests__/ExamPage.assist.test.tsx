@@ -57,4 +57,16 @@ describe('exam page tip cap, assisted mark and grading', () => {
     expect(within(questionOf(q2.prompt)).getByRole('button', { name: /^ask$/i })).toBeEnabled()
     expect(within(questionOf(q2.prompt)).getByText('Because it grows.')).toBeInTheDocument()
   })
+
+  it('offers no retry of a failed tip once the attempt is submitted, and still retries a failed message', async () => {
+    const lostTip = { id: 't3', kind: 'tip', message: 'hint', text: '', status: 'failed', error: 'console restarted' }
+    const lostAsk = { id: 't4', kind: 'question', message: 'why?', text: '', status: 'failed', error: 'the model stopped: exit 3' }
+    const kept = keptQuestion({ ...q2, thread: [lostTip] })
+    const asked = keptQuestion({ ...q1, thread: [lostAsk] })
+    serve({ ...view(q1, q2), state: 'grading', exam: null, attempts: [keptAttempt(1, [asked, kept], null)] })
+    renderExam()
+    expect(await screen.findByText(/console restarted/)).toBeInTheDocument()
+    expect(within(questionOf(q2.prompt)).queryByRole('button', { name: /^retry$/i })).not.toBeInTheDocument()
+    expect(within(questionOf(q1.prompt)).getByRole('button', { name: /^retry$/i })).toBeInTheDocument()
+  })
 })

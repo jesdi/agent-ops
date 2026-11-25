@@ -1106,11 +1106,9 @@ export interface components {
         };
         /**
          * ExamQuestions
-         * @description The open attempt, as the skill's projection serves it; `bypass` while it takes one.
+         * @description The open attempt, as the skill's projection serves it.
          */
         ExamQuestions: {
-            /** Bypass */
-            bypass: boolean;
             /** Chat */
             chat: boolean;
             /** General */
