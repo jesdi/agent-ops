@@ -40,7 +40,7 @@ def run(box, sh=_sh, get=None) -> None:
     try:
         with state_lock(state_dir, "services-record.lock", 0):
             for job, entry in services_changes.read(state_dir).items():
-                if not (entry.get("record") or {}).get("failed"):
+                if not services_changes.failed(entry):
                     _record(state_dir, sh, job, entry)
     except TimeoutError:
         return  # another pass is running
@@ -58,10 +58,13 @@ def _record(state_dir: str, sh, job: str, entry: dict) -> None:
             return _edit(state_dir, job, want, lambda e: {})
         _one(state_dir, sh, job, want, entry.get("record") or {})
     except Exception as e:
-        pr = e.pr if isinstance(e, Failed) else None
-        _edit(state_dir, job, want, lambda ent: {**ent, "record": {
-            **(ent.get("record") or {}), "failed": True,
-            **({"pr": pr.number, "url": pr.url} if pr else {})}})
+        _mark_failed(state_dir, job, want, e.pr if isinstance(e, Failed) else None)
+
+
+def _mark_failed(state_dir: str, job: str, want: dict, pr: infra_pr.OpenPr | None) -> None:
+    link = {"pr": pr.number, "url": pr.url} if pr else {}
+    _edit(state_dir, job, want, lambda ent: {**ent, "record": {
+        **(ent.get("record") or {}), "failed": True, **link}})
 
 
 def _edit(state_dir: str, job: str, want: dict, change) -> bool:
@@ -92,36 +95,62 @@ def _says(cfg: dict, job: str, want: dict) -> bool:
 
 
 def _one(state_dir: str, sh, job: str, want: dict, rec: dict) -> None:
-    if not (env := infra_pr.infra_env()):
-        raise Failed("GH_INFRA_TOKEN is unset")
+    env = _env()
     scratch = Path(state_dir) / "services-record" / "infra"
     text = infra_pr.fetch_main(sh, scratch, env, SERVICES)
-    branch = f"services/{job}"
-    pr = infra_pr.open_pr(sh, branch, env)
+    pr = infra_pr.open_pr(sh, f"services/{job}", env)
     if _says(yaml.safe_load(text), job, want):
-        if pr:
-            _close(sh, pr, env)
-        # Kept until the box's installed config says the same, or the sync would undo it.
-        if _installed_says(state_dir, job, want):
-            return _edit(state_dir, job, want, lambda e: {})
-        # A record stays, so a Resume before the install keeps the entry (and records itself).
-        return _edit(state_dir, job, want, lambda e: {**want, "record": {
-            **{k: v for k, v in (e.get("record") or {}).items() if k in ("pr", "url")}, "recorded": True}})
+        return _settled(state_dir, sh, job, want, pr, env)
     if pr is None:
         return _open(state_dir, sh, job, want, text, env, rec.get("head", ""), None)
-    if pr.head != rec.get("head") or rec.get("pr") != pr.number:
-        raise Failed("the pull request is not the one the recorder opened", pr)
+    _check_ours(pr, rec)
     if rec.get("sets") != want:
         _close(sh, pr, env)
         return _open(state_dir, sh, job, want, text, env, "", None)
+    _check_files(sh, pr, env)
+    if _stale(sh, scratch, env, rec, pr):
+        return _open(state_dir, sh, job, want, text, env, pr.head, pr)
+    _merge_when_green(state_dir, sh, job, want, pr, env)
+
+
+def _env() -> dict:
+    if not (env := infra_pr.infra_env()):
+        raise Failed("GH_INFRA_TOKEN is unset")
+    return env
+
+
+def _settled(state_dir: str, sh, job: str, want: dict, pr: infra_pr.OpenPr | None, env: dict) -> None:
+    """Infra main already says `want`: close any pull request and settle the entry."""
+    if pr:
+        _close(sh, pr, env)
+    # Kept until the box's installed config says the same, or the sync would undo it.
+    if _installed_says(state_dir, job, want):
+        return _edit(state_dir, job, want, lambda e: {})
+    # A record stays, so a Resume before the install keeps the entry (and records itself).
+    return _edit(state_dir, job, want, lambda e: {**want, "record": {
+        **{k: v for k, v in (e.get("record") or {}).items() if k in ("pr", "url")}, "recorded": True}})
+
+
+def _check_ours(pr: infra_pr.OpenPr, rec: dict) -> None:
+    if pr.head != rec.get("head") or rec.get("pr") != pr.number:
+        raise Failed("the pull request is not the one the recorder opened", pr)
+
+
+def _check_files(sh, pr: infra_pr.OpenPr, env: dict) -> None:
     files = [f["path"] for f in json.loads(sh(
         ["gh", "pr", "view", str(pr.number), "--repo", infra_pr.INFRA_REPO, "--json", "files"],
         env=env))["files"]]
     if files != [SERVICES]:
         raise Failed(f"the pull request touches {files}", pr)
+
+
+def _stale(sh, scratch: Path, env: dict, rec: dict, pr: infra_pr.OpenPr) -> bool:
+    """The pull request's commit must be rebuilt: its ci was red, or infra main moved."""
     base = infra_pr.git(sh, scratch, env, "rev-parse", "origin/main").strip()
-    if rec.get("red") == pr.head or rec.get("base") != base:
-        return _open(state_dir, sh, job, want, text, env, pr.head, pr)
+    return rec.get("red") == pr.head or rec.get("base") != base
+
+
+def _merge_when_green(state_dir: str, sh, job: str, want: dict, pr: infra_pr.OpenPr, env: dict) -> None:
     waiting = infra_pr.ci_waiting_on(sh, pr.head, env)
     if isinstance(waiting, infra_pr.Check):
         _save(state_dir, job, want, red=pr.head)

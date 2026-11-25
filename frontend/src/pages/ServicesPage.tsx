@@ -63,10 +63,32 @@ const PAUSE_CONSEQUENCE: Record<string, string> = {
   'agent-ops-deploy-sync': 'Deploys and config changes stop being applied while this is paused.',
 }
 
+function ChangeFailed({ change, onRetry }: { change: ServiceJob['change']; onRetry: () => void }) {
+  if (change?.state !== 'failed') return null
+  return (
+    <>
+      <span className="text-failed-fg">change failed</span>
+      {change.url && <a href={change.url} className="underline">#{change.pr}</a>}
+      <button type="button" onClick={onRetry}>Retry</button>
+    </>
+  )
+}
+
+function ChangeApplying({ change }: { change: ServiceJob['change'] }) {
+  if (change?.state !== 'applying') return null
+  return (
+    <p>
+      <span>applying change</span>
+      {change.pr != null && <> · <span>PR </span>{change.url
+        ? <a href={change.url} className="underline">#{change.pr}</a> : `#${change.pr}`}</>}
+    </p>
+  )
+}
+
 function Actions({ job }: { job: ServiceJob }) {
   const { run, stop, pause, resume, retry } = useServiceActions()
   if (job.read_only) return null
-  const error = run.error ?? stop.error ?? pause.error ?? resume.error ?? retry.error
+  const error = [run, stop, pause, resume, retry].find((m) => m.error)?.error
   const askThenPause = () => {
     const consequence = PAUSE_CONSEQUENCE[job.id]
     if (!consequence || window.confirm(`Pause ${job.name}? ${consequence}`)) pause.mutate(job.id)
@@ -78,13 +100,7 @@ function Actions({ job }: { job: ServiceJob }) {
         ? <button type="button" onClick={() => resume.mutate(job.id)}>Resume</button>
         : <button type="button" onClick={askThenPause}>Pause</button>}
       {job.state === 'running' && <button type="button" onClick={() => stop.mutate(job.id)}>Stop run</button>}
-      {job.change?.state === 'failed' && (
-        <>
-          <span className="text-failed-fg">change failed</span>
-          {job.change.url && <a href={job.change.url} className="underline">#{job.change.pr}</a>}
-          <button type="button" onClick={() => retry.mutate(job.id)}>Retry</button>
-        </>
-      )}
+      <ChangeFailed change={job.change} onRetry={() => retry.mutate(job.id)} />
       {error && <p className="text-failed-fg">{error.message}</p>}
     </div>
   )
@@ -109,13 +125,7 @@ function Detail({ job, now }: { job: ServiceJob; now: string }) {
         ))}
       </dl>
       {job.warning && <p className="text-failed-fg">{job.warning}</p>}
-      {job.change?.state === 'applying' && (
-        <p>
-          <span>applying change</span>
-          {job.change.pr != null && <> · <span>PR </span>{job.change.url
-            ? <a href={job.change.url} className="underline">#{job.change.pr}</a> : `#${job.change.pr}`}</>}
-        </p>
-      )}
+      <ChangeApplying change={job.change} />
       {!job.read_only && <ScheduleEditor job={job} />}
       <Actions job={job} />
       <Runs job={job} />
