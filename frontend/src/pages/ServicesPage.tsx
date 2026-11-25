@@ -8,12 +8,12 @@ import { formatDuration } from '../lib/format'
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
-/** A run time in UTC: HH:MM on the day of `now`, "Nov 23 HH:MM" on any other. */
+/** A run time in UTC, labelled so: "HH:MM UTC" on the day of `now`, "Nov 23 HH:MM UTC" on any other. */
 function when(iso: string, now: string): string {
   const d = new Date(iso)
   const day = d.toISOString().slice(0, 10) === new Date(now).toISOString().slice(0, 10)
     ? '' : `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()} `
-  return `${day}${d.toISOString().slice(11, 16)}`
+  return `${day}${d.toISOString().slice(11, 16)} UTC`
 }
 
 function lastRun(job: ServiceJob, now: string): string {

@@ -65,9 +65,9 @@ describe('services page: run times on other days', () => {
     }))
     renderWithProviders(<ServicesPage />)
     await userEvent.click(await screen.findByText('Daily digest'))
-    expect(screen.getAllByText('08:00 · 12 s')).toHaveLength(2)
-    expect(screen.getByText('Nov 23 08:00 · 11 s')).toBeInTheDocument()
-    expect(screen.getByText('Nov 25 08:00')).toBeInTheDocument()
+    expect(screen.getAllByText('08:00 UTC · 12 s')).toHaveLength(2)
+    expect(screen.getByText('Nov 23 08:00 UTC · 11 s')).toBeInTheDocument()
+    expect(screen.getByText('Nov 25 08:00 UTC')).toBeInTheDocument()
   })
 
   it('reads a next run under a minute away as in 1 min', async () => {

@@ -56,7 +56,7 @@ describe('services page', () => {
 
     expect(within(await screen.findByRole('region', { name: 'Job detail' })).getByText('active')).toBeInTheDocument()
     expect(screen.getByText('every 5 min')).toBeInTheDocument()
-    expect(screen.getByText('10:08 · 27 s')).toBeInTheDocument()
+    expect(screen.getByText('10:08 UTC · 27 s')).toBeInTheDocument()
     expect(screen.getByText('in 1 min')).toBeInTheDocument()
   })
 
@@ -77,7 +77,7 @@ describe('services page', () => {
 
     expect(await screen.findByText(/read-only/i)).toBeInTheDocument()
     expect(screen.getByText('00:00, 12:00 UTC')).toBeInTheDocument()
-    expect(screen.getByText('00:00 · 3 s')).toBeInTheDocument()
+    expect(screen.getByText('00:00 UTC · 3 s')).toBeInTheDocument()
     const detail = screen.getByRole('region', { name: 'Job detail' })
     await waitFor(() => expect(within(detail).queryAllByRole('button', { name: BUTTONS })).toHaveLength(0))
     expect(screen.queryByRole('textbox')).toBeNull()
@@ -111,14 +111,14 @@ describe('services page detail: runs', () => {
     renderWithProviders(<ServicesPage />)
     await userEvent.click(await screen.findByText('Subject job'))
 
-    expect(await screen.findByText('10:18')).toBeInTheDocument()
-    expect(screen.getByText('10:23')).toBeInTheDocument()
-    const runs = screen.getAllByText(/^09:\d\d · \d+ s/)
+    expect(await screen.findByText('10:18 UTC')).toBeInTheDocument()
+    expect(screen.getByText('10:23 UTC')).toBeInTheDocument()
+    const runs = screen.getAllByText(/^09:\d\d UTC · \d+ s/)
     expect(runs).toHaveLength(5)
     expect(runs.map((r) => r.textContent)).toEqual([
-      expect.stringMatching(/^09:55 · 41 s/), expect.stringMatching(/^09:50 · 52 s/),
-      expect.stringMatching(/^09:45 · 43 s/), expect.stringMatching(/^09:40 · 34 s/),
-      expect.stringMatching(/^09:35 · 35 s/),
+      expect.stringMatching(/^09:55 UTC · 41 s/), expect.stringMatching(/^09:50 UTC · 52 s/),
+      expect.stringMatching(/^09:45 UTC · 43 s/), expect.stringMatching(/^09:40 UTC · 34 s/),
+      expect.stringMatching(/^09:35 UTC · 35 s/),
     ])
     expect(runs[1]?.closest('li, tr, div')).toHaveTextContent(/failed/i)
   })
@@ -131,7 +131,7 @@ describe('services page detail: runs', () => {
     renderWithProviders(<ServicesPage />)
     await userEvent.click(await screen.findByText('Subject job'))
 
-    expect(await screen.findByText('Nov 25 03:00')).toBeInTheDocument()
+    expect(await screen.findByText('Nov 25 03:00 UTC')).toBeInTheDocument()
   })
 
   it('says "No runs recorded" for a job with no runs', async () => {
