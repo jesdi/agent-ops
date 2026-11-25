@@ -4,6 +4,7 @@ and a next run."""
 import subprocess
 from types import SimpleNamespace
 
+from dispatcher import services_config
 from web import box_status
 from web.services import describe_schedule
 
@@ -113,7 +114,7 @@ def test_calendar_runs_walks_the_expression_with_systemd_analyze(monkeypatch):
         return SimpleNamespace(returncode=0, stdout=ANALYZE, stderr="")
     monkeypatch.setattr(box_status.subprocess, "run", run)
 
-    assert box_status.calendar_runs("Mon..Fri *-*-* 09:00 Europe/Madrid") == [
+    assert services_config.calendar_runs("Mon..Fri *-*-* 09:00 Europe/Madrid") == [
         "2026-11-27T08:00:00+00:00", "2026-11-30T08:00:00+00:00", "2026-12-01T08:00:00+00:00"]
     assert seen == [(["systemd-analyze", "calendar", "--iterations=3", "Mon..Fri *-*-* 09:00 Europe/Madrid"], "UTC")]
 
@@ -121,4 +122,4 @@ def test_calendar_runs_walks_the_expression_with_systemd_analyze(monkeypatch):
 def test_calendar_runs_is_empty_when_systemd_analyze_fails(monkeypatch):
     monkeypatch.setattr(box_status.subprocess, "run",
                         lambda *a, **k: SimpleNamespace(returncode=1, stdout="", stderr="bad"))
-    assert box_status.calendar_runs("every tuesday-ish") == []
+    assert services_config.calendar_runs("every tuesday-ish") == []

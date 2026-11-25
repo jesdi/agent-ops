@@ -914,7 +914,7 @@ def local_blocker(heartbeat: dict | None, *, now: datetime,
     `agent-ops status`: the first blocker readable from local state, or None.
     Order: heartbeat, triage hold, usage (unavailable = auth-dark, any other
     denial = budget-blocked), every project paused, no claim room."""
-    if _pass_eta(heartbeat, now) is None:
+    if not pass_clock(heartbeat, now).alive:
         return "dispatcher-down"
     if claims_paused:
         return "claims-paused"
@@ -927,16 +927,32 @@ def local_blocker(heartbeat: dict | None, *, now: datetime,
     return None
 
 
-def _pass_eta(heartbeat: dict | None, now: datetime) -> str | None:
-    """When the next dispatcher pass is due (ISO), or None when that is
-    unknowable: no heartbeat, a malformed one, or one older than two
-    intervals — the dispatcher may not be running. A custom schedule has no
-    countdown: "" while a pass is on record."""
+class PassClock(NamedTuple):
+    """Whether the dispatcher is passing (`alive`), and the next-pass countdown
+    (`eta`, ISO; "" when there is none to show)."""
+    alive: bool
+    eta: str
+
+
+def pass_clock(heartbeat: dict | None, now: datetime) -> PassClock:
+    """Dead: no heartbeat, a malformed one, or one older than two of its gaps
+    (the interval, or for a calendar schedule the gap to the `next_at` it
+    recorded). A calendar schedule shows no countdown."""
     hb = heartbeat or {}
     finished = _parse_ts(hb.get("finished_at", ""))
     if hb.get("custom") is True:
-        return "" if finished is not None else None
-    return _interval_eta(finished, hb.get("interval_minutes"), now)
+        return PassClock(_calendar_alive(finished, _parse_ts(hb.get("next_at") or ""), now), "")
+    eta = _interval_eta(finished, hb.get("interval_minutes"), now)
+    return PassClock(eta is not None, eta or "")
+
+
+def _calendar_alive(finished: datetime | None, due: datetime | None, now: datetime) -> bool:
+    """A pass on record and not two gaps past it. Without a `next_at` (systemd could
+    not walk the calendar) the gap is unknown: a recorded pass counts as alive."""
+    try:
+        return finished is not None and (due is None or now <= due + (due - finished))
+    except TypeError:  # a naive stamp: staleness cannot be judged
+        return False
 
 
 def _interval_eta(finished: datetime | None, interval_minutes, now: datetime) -> str | None:
@@ -1062,7 +1078,7 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
                             gate=gate, claims_paused=claims_paused,
                             triage_running=triage_running, projects=projects,
                             max_open=max_open)
-    eta = _pass_eta(heartbeat, now) or ""
+    eta = pass_clock(heartbeat, now).eta
     early = _early_verdict(blocker, gate, eta)
     if early:
         return early

@@ -9,9 +9,11 @@ Only a change's `paused` overrides the config; its `schedule` is never applied.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -92,14 +94,46 @@ def load(path: str) -> dict:
     return cfg
 
 
-def pass_interval(state_dir: str) -> int | None:
-    """Minutes between dispatcher passes in the installed config: 5 when none is
-    installed (or it is unusable), None when the schedule is not an `every`."""
+def _pass_schedule(state_dir: str) -> dict:
+    """The dispatcher pass's schedule in the installed config: every 5 minutes when none
+    is installed (or it is unusable)."""
     try:
-        sched = load(str(Path(state_dir) / "services.yaml"))["dispatcher"]["schedule"]
+        return load(str(Path(state_dir) / "services.yaml"))["dispatcher"]["schedule"]
     except (OSError, ValueError, yaml.YAMLError):
-        return 5
-    return sched.get("every")
+        return {"every": 5}
+
+
+def pass_interval(state_dir: str) -> int | None:
+    """Minutes between dispatcher passes in the installed config, None when the schedule
+    is not an `every`."""
+    return _pass_schedule(state_dir).get("every")
+
+
+def next_pass(state_dir: str) -> str | None:
+    """When the next dispatcher pass on a calendar schedule is due (ISO), as systemd
+    computes it; None for an `every` schedule or when systemd cannot say."""
+    when = _when(_pass_schedule(state_dir))
+    runs = calendar_runs(when.removeprefix("OnCalendar="), 1) if when.startswith("OnCalendar=") else []
+    return runs[0] if runs else None
+
+
+_ELAPSE = re.compile(r"(?:Next elapse|Iter\. #\d+): \w+ (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) UTC$", re.M)
+
+
+def parse_calendar_runs(output: str) -> list[str]:
+    """The run times `TZ=UTC systemd-analyze calendar --iterations=N` lists, as ISO stamps."""
+    return [datetime.fromisoformat(m).replace(tzinfo=timezone.utc).isoformat() for m in _ELAPSE.findall(output)]
+
+
+def calendar_runs(calendar: str, count: int = 3) -> list[str]:
+    """The next `count` runs of an OnCalendar expression, as systemd itself computes them
+    (timezones and daylight-saving included); none when systemd-analyze fails."""
+    try:
+        proc = subprocess.run(["systemd-analyze", "calendar", f"--iterations={count}", calendar],
+                              capture_output=True, text=True, timeout=10, env={**os.environ, "TZ": "UTC"})
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    return [] if proc.returncode else parse_calendar_runs(proc.stdout)
 
 
 def _when(sched: dict) -> str:

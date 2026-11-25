@@ -6,7 +6,6 @@ the injected `Probes`, which only query."""
 from __future__ import annotations
 
 import json
-import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -122,25 +121,6 @@ def _next_run(t: dict[str, str], interval: int | None) -> str | None:
     return None
 
 
-_ELAPSE = re.compile(r"(?:Next elapse|Iter\. #\d+): \w+ (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d) UTC$", re.M)
-
-
-def parse_calendar_runs(output: str) -> list[str]:
-    """The run times `TZ=UTC systemd-analyze calendar --iterations=N` lists, as ISO stamps."""
-    return [datetime.fromisoformat(m).replace(tzinfo=timezone.utc).isoformat() for m in _ELAPSE.findall(output)]
-
-
-def calendar_runs(calendar: str, count: int = 3) -> list[str]:
-    """The next `count` runs of an OnCalendar expression, as systemd itself computes them
-    (timezones and daylight-saving included); none when systemd-analyze fails."""
-    try:
-        proc = subprocess.run(["systemd-analyze", "calendar", f"--iterations={count}", calendar],
-                              capture_output=True, text=True, timeout=10, env={**os.environ, "TZ": "UTC"})
-    except (OSError, subprocess.TimeoutExpired):
-        return []
-    return [] if proc.returncode else parse_calendar_runs(proc.stdout)
-
-
 def _timer(scope: str, t: dict[str, str], services: dict[str, dict]) -> dict:
     calendar = re.search(r"OnCalendar=([^;}]*?)\s*(?:;|\})", t.get("TimersCalendar", ""))
     monotonic, interval = _monotonic_schedule(t.get("TimersMonotonic", ""))
@@ -152,7 +132,7 @@ def _timer(scope: str, t: dict[str, str], services: dict[str, dict]) -> dict:
         "last_run": _last_run(services.get(t["Id"].removesuffix(".timer") + ".service", {})),
         "next_run": _next_run(t, interval),
         "drop_ins": t.get("DropInPaths", "").split(),
-        "upcoming": calendar_runs(calendar[1]) if calendar and t["ActiveState"] == "active" else []}
+        "upcoming": services_config.calendar_runs(calendar[1]) if calendar and t["ActiveState"] == "active" else []}
 
 
 def systemd_timers() -> list[dict]:
