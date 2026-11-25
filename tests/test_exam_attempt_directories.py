@@ -194,3 +194,66 @@ def test_an_exam_left_in_the_flat_layout_is_migrated_once_and_graded_with_its_an
     box.work()
     assert {p.name: p.stat().st_mtime_ns for p in new.iterdir()} == before
     assert len(box.session.graded()) == 1
+
+
+def flatten(box, owners):
+    """Put the box back as the flat layout left it: each file at the exam level, taken from
+    the attempt `owners` names for it, attempts/ gone, and no feedback in state.json."""
+    root = exam_dir(box)
+    for name, n in owners.items():
+        shutil.move(str(attempt_dir(box, n) / name), root / name)
+    shutil.rmtree(root / "attempts")
+    doc = json.loads((root / "state.json").read_text())
+    for result in doc["results"]:
+        for q in result["questions"]:
+            q.pop("feedback", None)
+    (root / "state.json").write_text(json.dumps(doc))
+
+
+def names(box, n):
+    return sorted(p.name for p in attempt_dir(box, n).iterdir())
+
+
+def test_a_flat_exam_with_its_follow_up_open_keeps_the_failed_submission_with_the_failed_attempt(
+        tmp_path, monkeypatch):
+    box, _, _ = failed_once(tmp_path, monkeypatch)
+    flatten(box, {"exam.json": 2, "public.json": 2,
+                  "answers.json": 1, "grades.json": 1, "result.json": 1})
+    body = box.read().json()
+    assert (body["state"], body["attempt"]) == ("open", 2)
+    assert names(box, 2) == ["exam.json", "public.json"]
+    assert names(box, 1) == ["answers.json", "grades.json", "result.json"]
+    assert json.loads((attempt_dir(box, 1) / "answers.json").read_text())["q0"] == 0
+    failed = {q["id"]: q for q in result_of(body, 1)["questions"]}
+    assert failed["t1"]["feedback"] == "FB-t1"   # the summary is backfilled from result.json
+    passed = graded_once(box, body)
+    assert passed["state"] == "passed" and result_of(passed, 2)["passed"] is True
+    assert json.loads((attempt_dir(box, 2) / "answers.json").read_text()) == answers_for(body)
+    assert json.loads((attempt_dir(box, 1) / "result.json").read_text())["passed"] is False
+
+
+def test_a_flat_exam_grading_its_follow_up_is_graded_with_the_follow_ups_answers(
+        tmp_path, monkeypatch):
+    box, _, second = failed_once(tmp_path, monkeypatch)
+    assert submit(box, second).status_code == 202
+    flatten(box, {"exam.json": 2, "public.json": 2, "answers.json": 2,
+                  "grades.json": 1, "result.json": 1})
+    assert box.read().json()["state"] == "grading"
+    assert names(box, 2) == ["answers.json", "exam.json", "public.json"]
+    assert names(box, 1) == ["grades.json", "result.json"]
+    box.work()
+    assert box.read().json()["state"] == "passed"
+    assert json.loads((attempt_dir(box, 2) / "result.json").read_text())["passed"] is True
+    assert json.loads((attempt_dir(box, 1) / "result.json").read_text())["passed"] is False
+
+
+def test_a_flat_passed_exam_moves_whole_into_its_attempt_and_its_summary_gains_the_feedback(
+        tmp_path, monkeypatch):
+    box = box_for(tmp_path, monkeypatch)
+    assert graded_once(box, opened(box))["state"] == "passed"
+    flatten(box, {name: 1 for name in FILES})
+    body = box.read().json()
+    assert names(box, 1) == sorted(FILES)
+    questions = {q["id"]: q for q in result_of(body, 1)["questions"]}
+    assert questions["t1"]["feedback"] == "FB-t1"
+    assert "feedback" not in questions["t0"]

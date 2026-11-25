@@ -42,28 +42,59 @@ def _dir(state_dir, repo: str, pr: int) -> Path:
     return _path(state_dir, repo, pr).parent
 
 
-ATTEMPT_FILES = ("exam.json", "public.json", "answers.json", "grades.json", "result.json")
-
-
 def _attempt_dir(state_dir, repo: str, pr: int, n: int) -> Path:
     """Where attempt `n` keeps its exam, answers, grades and result."""
     return _dir(state_dir, repo, pr) / "attempts" / str(n)
 
 
+# The flat-layout migration (pr-exam-host-assist ticket 01): before attempts/<n>/, each of
+# these files sat at the exam level and held the last attempt that reached the step writing
+# it. Delete it once the deploy has run and every exam on the box has been read, as ADR 0004
+# does for task files: FLAT_STEPS, _flat_owner, _backfill, _migrate, their call in `_load`,
+# and the flat-layout tests in tests/test_exam_attempt_directories.py. `read` takes the exams
+# lock only for this migration, so it can drop it then.
+FLAT_STEPS = {"exam.json": "opened", "public.json": "opened", "answers.json": "submitted",
+              "grades.json": "graded", "result.json": "graded"}
+
+
+def _flat_owner(doc: dict, name: str) -> int:
+    """The attempt the flat file `name` belongs to: the current one once it reached the step
+    that writes the file, else the one before, which did."""
+    n = doc["attempt"]
+    graded = any(r["attempt"] == n for r in doc["results"])
+    reached = {"opened": True, "submitted": graded or bool(doc["grading"]), "graded": graded}
+    return n if reached[FLAT_STEPS[name]] else n - 1
+
+
+def _backfill(doc: dict, n: int, result: Path) -> bool:
+    """Give attempt `n`'s result summary the feedback its result.json holds, as `_grades`
+    would have let it through; False when `n` has no summary."""
+    summary = next((r for r in doc["results"] if r["attempt"] == n), None)
+    if summary is None:
+        return False
+    lines = {q["id"]: _line(q.get("feedback")) for q in json.loads(result.read_text())["questions"]}
+    for q in summary["questions"]:
+        if q["points"] < 1 and lines.get(q["id"]):
+            q["feedback"] = lines[q["id"]]
+    return True
+
+
 def _migrate(state_dir, doc: dict) -> None:
-    """Move an exam left in the flat layout (per-attempt files at the exam level) into its
-    attempt's directory. The caller holds the exams lock. Each file moves by an atomic rename
-    and any file left at the flat path asks for the move, so an interrupted move resumes."""
+    """Move each file an exam left in the flat layout into the directory of the attempt it
+    belongs to. The caller holds the exams lock. Each file moves by an atomic rename, after
+    its backfill is written, and a file left at the flat path asks for the move again, so an
+    interrupted migration resumes."""
     d = _dir(state_dir, doc["repo"], doc["pr"])
-    if not any((d / name).exists() for name in ATTEMPT_FILES):
-        return
-    target = _attempt_dir(state_dir, doc["repo"], doc["pr"], doc["attempt"])
-    target.mkdir(parents=True, exist_ok=True)
-    for name in ATTEMPT_FILES:
-        try:
-            (d / name).replace(target / name)
-        except FileNotFoundError:
-            pass
+    for name in FLAT_STEPS:
+        flat = d / name
+        if not flat.exists():
+            continue
+        n = _flat_owner(doc, name)
+        if name == "result.json" and _backfill(doc, n, flat):
+            _write(state_dir, doc)
+        target = _attempt_dir(state_dir, doc["repo"], doc["pr"], n)
+        target.mkdir(parents=True, exist_ok=True)
+        flat.replace(target / name)
 
 
 def read(state_dir: str | Path, repo: str, pr: int) -> dict | None:
@@ -79,7 +110,7 @@ def _load(state_dir: str | Path, repo: str, pr: int) -> dict | None:
     except FileNotFoundError:
         return None
     if doc["attempt"]:
-        _migrate(state_dir, doc)
+        _migrate(state_dir, doc)   # the flat-layout migration: deleted with it
     return doc
 
 
