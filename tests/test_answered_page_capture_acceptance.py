@@ -437,6 +437,32 @@ def test_a_failed_archive_write_still_records_and_wakes(tmp_path, monkeypatch, c
     _assert_answers_kept_and_warned(c, wt, captured, messages_before, caplog)
 
 
+def test_a_failed_capture_is_not_retried_on_a_newer_page(tmp_path, monkeypatch, caplog):
+    c, wt = _answered(tmp_path, monkeypatch)
+    captured, _ = _second_round(c, wt)
+    with monkeypatch.context() as m:
+        _fail_archive_writes(m, c)
+        _drain(c, {"format": "csv"}, "changes", page=NEXT_PAGE)
+    (wt / QUESTIONNAIRE).write_bytes(NEXT_PAGE.replace(b"import", b"archive"))
+
+    _collect(c)
+
+    assert _get(c, "questionnaire-answers").content == captured
+
+
+def test_a_failed_capture_is_retried_by_the_collector_on_the_same_page(tmp_path, monkeypatch):
+    c, wt = _answered(tmp_path, monkeypatch)
+    _second_round(c, wt)
+    with monkeypatch.context() as m:
+        _fail_archive_writes(m, c)
+        _drain(c, {"format": "csv"}, "changes", page=NEXT_PAGE)
+
+    _collect(c)
+
+    retried = _Page(_get(c, "questionnaire-answers").content.decode())
+    assert retried.checked("format") == ["csv"]
+
+
 def _fail_index_writes(monkeypatch, c):
     """The content write into the task's archive goes through; then the disk
     is full: the write of index.json and every later write that allocates

@@ -274,11 +274,11 @@ def collect(state_dir, task: TaskState, repo: str, *, publish: bool = True,
 
 def _capture(root: Path, index: ArtifactIndex, task: TaskState, kind: str, now: datetime) -> None:
     """Archive the answered page of the task's answers file of `kind` when it
-    is a submission the index does not hold yet. The item's digest is the
-    answers file's, not the page's. The page is written in atomically and only
-    then entered in `index`, so a failed write leaves the earlier page and its
-    entry. The caller saves `index`. Raises OSError or ValueError when the
-    file or the page cannot be used."""
+    is a submission the index does not hold yet, on the page it was made on.
+    The item's digest is the answers file's, not the page's. The page is
+    written in atomically and only then entered in `index`, so a failed write
+    leaves the earlier page and its entry. The caller saves `index`. Raises
+    OSError or ValueError when the file or the page cannot be used."""
     name, _ = answers.ANSWERS_FILES[kind]
     path = f".agent/{name}"
     submission = _submission(task, path)
@@ -290,6 +290,8 @@ def _capture(root: Path, index: ArtifactIndex, task: TaskState, kind: str, now: 
     items = {item.id: item for item in index.items}
     if artifact_id in items and items[artifact_id].digest == digest:
         return
+    if doc.get("revision") and answers.disk_revision(task) != doc["revision"]:
+        raise ValueError("the request page is no longer the revision the answers were made on")
     page = answered_page.render(_request_page(task, kind), doc.get("answers")).encode()
     _copy_content(root / "content" / artifact_id, page)
     items[artifact_id] = StoredArtifact(artifact_id, artifact_name, path, "text/html", digest,
