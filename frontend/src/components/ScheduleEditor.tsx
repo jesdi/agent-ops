@@ -46,7 +46,7 @@ export function ScheduleEditor({ job }: { job: ServiceJob }) {
           </>
         )}
         {kind === 'calendar' && (
-          <label className={`${LABEL} min-w-0 flex-1 basis-48`}>Expression
+          <label className={`${LABEL} min-w-0 max-w-sm flex-1 basis-48`}>Expression
             <input className={`${FIELD} font-mono text-ink`} value={calendar} onChange={(e) => setCalendar(e.target.value)} placeholder="Mon..Fri *-*-* 09:00" />
           </label>
         )}
