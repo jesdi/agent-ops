@@ -914,12 +914,25 @@ def local_blocker(heartbeat: dict | None, *, now: datetime,
     `agent-ops status`: the first blocker readable from local state, or None.
     Order: heartbeat, triage hold, usage (unavailable = auth-dark, any other
     denial = budget-blocked), every project paused, no claim room."""
+    return (_dispatch_blocker(heartbeat, now, gate, claims_paused)
+            or _room_blocker(tasks, capacity, triage_running, projects, max_open))
+
+
+def _dispatch_blocker(heartbeat: dict | None, now: datetime, gate: GateView,
+                      claims_paused: bool) -> Blocker | None:
+    """Heartbeat, triage hold, usage: whether the dispatcher claims at all."""
     if not pass_clock(heartbeat, now).alive:
         return "dispatcher-down"
     if claims_paused:
         return "claims-paused"
     if not gate.admitted:
         return "auth-dark" if gate.reason == "unavailable" else "budget-blocked"
+    return None
+
+
+def _room_blocker(tasks: list[TaskState], capacity: int, triage_running: bool,
+                  projects: Mapping[str, Project], max_open: int) -> Blocker | None:
+    """Every project paused, or no claim room."""
     if projects and all(p.paused for p in projects.values()):
         return "projects-paused"
     if claim_room(capacity, max_open, tasks, triage_running) <= 0:
