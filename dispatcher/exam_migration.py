@@ -135,7 +135,12 @@ def _fill_chat_inputs(d: Path) -> None:
     kept = {"diff.patch": (d / "passed.diff", d / "job" / "diff.patch"), "body.md": (d / "job" / "body.md",)}
     for name, found in kept.items():
         if not (d / name).exists():
-            write_atomic(d / name, next((p.read_text() for p in found if p.is_file() and not p.is_symlink()), NOT_KEPT[name]))
+            write_atomic(d / name, _first_text(found, NOT_KEPT[name]))
+
+
+def _first_text(paths: tuple[Path, ...], default: str) -> str:
+    """The text of the first of `paths` that is a regular file, not a symlink; else `default`."""
+    return next((p.read_text() for p in paths if p.is_file() and not p.is_symlink()), default)
 
 
 def _fill_attempt(adir: Path, doc: dict, n: int) -> None:
