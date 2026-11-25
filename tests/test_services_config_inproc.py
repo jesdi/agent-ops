@@ -30,7 +30,7 @@ def calendar_ok(monkeypatch):
 @pytest.mark.parametrize("sched", [
     {"every": 5}, {"daily": "08:00", "tz": "UTC"}, {"calendar": "Mon *-*-* 09:00"}])
 def test_valid(sched):
-    sc._check_schedule("j", sched)
+    sc.check_schedule("j", sched)
 
 
 @pytest.mark.parametrize("sched", [
@@ -40,7 +40,7 @@ def test_valid(sched):
     {"calendar": "a\nb"}, {"calendar": 5}, {"calendar": "bad"}])
 def test_invalid(sched):
     with pytest.raises(ValueError):
-        sc._check_schedule("j", sched)
+        sc.check_schedule("j", sched)
 
 
 @pytest.mark.parametrize("bad", [
