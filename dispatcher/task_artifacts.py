@@ -287,13 +287,18 @@ def _capture(root: Path, index: ArtifactIndex, task: TaskState, kind: str, now: 
     items = {item.id: item for item in index.items}
     if artifact_id in items and items[artifact_id].digest == digest:
         return
-    if doc.get("revision") and answers.disk_revision(task) != doc["revision"]:
-        raise ValueError("the request page is no longer the revision the answers were made on")
-    page = answered_page.render(_request_page(task, kind), doc.get("answers")).encode()
-    _copy_content(root / "content" / artifact_id, page)
+    _copy_content(root / "content" / artifact_id, _answered_page(task, kind, doc))
     items[artifact_id] = StoredArtifact(artifact_id, artifact_name, path, "text/html", digest,
                                         task.stage.value, now.isoformat())
     index.items = list(items.values())
+
+
+def _answered_page(task: TaskState, kind: str, doc: dict) -> bytes:
+    """The request page of `kind` answered with `doc`, when it is still the
+    revision `doc` was made on (a session's text answer has none)."""
+    if doc.get("revision") and answers.disk_revision(task) != doc["revision"]:
+        raise ValueError("the request page is no longer the revision the answers were made on")
+    return answered_page.render(_request_page(task, kind), doc.get("answers")).encode()
 
 
 def _submission(task: TaskState, path: str) -> tuple[bytes, dict] | None:

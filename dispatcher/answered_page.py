@@ -74,21 +74,19 @@ class _Renderer(HTMLParser):
         self.skipping = True
         return escape(note, quote=False)
 
-    def handle_starttag(self, tag, attrs):
+    def _start(self, tag, attrs, close):
         if self.skipping:   # markup inside a filled textarea (Python < 3.12 parses it)
             return
         if tag in _CONTROLS:
-            self.out.append(self._control(tag, attrs, ""))
+            self.out.append(self._control(tag, attrs, close))
         else:
             self.out.append(self.get_starttag_text())
 
+    def handle_starttag(self, tag, attrs):
+        self._start(tag, attrs, "")
+
     def handle_startendtag(self, tag, attrs):
-        if self.skipping:
-            return
-        if tag in _CONTROLS:
-            self.out.append(self._control(tag, attrs, " /"))
-        else:
-            self.out.append(self.get_starttag_text())
+        self._start(tag, attrs, " /")
 
     def handle_endtag(self, tag):
         if tag == "textarea":

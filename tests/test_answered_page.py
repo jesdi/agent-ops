@@ -14,3 +14,9 @@ def test_a_filled_note_replaces_the_textarea_markup_too():
     page = '<textarea id="note-q"><b>old</b></textarea>'
     assert answered_page.render(page, {"q.note": "new"}) == (
         '<textarea id="note-q" disabled>new</textarea>')
+
+
+def test_a_self_closing_control_is_disabled_and_other_tags_are_kept():
+    page = '<p>a<br/>b</p><input type="radio" name="q" value="x" />'
+    assert answered_page.render(page, {"q": "x"}) == (
+        '<p>a<br/>b</p><input type="radio" name="q" value="x" checked disabled />')
