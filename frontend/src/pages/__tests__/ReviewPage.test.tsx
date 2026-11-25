@@ -318,3 +318,19 @@ test('a revision change after a delivered submission still shows the changed not
   act(() => { window.dispatchEvent(new MessageEvent('message', { data: { type: 'ready', v: 1 }, source: win })) })
   expect(restore).toHaveBeenCalledWith({ type: 'restore', v: 1, answers: { format: 'a' } }, '*')
 })
+
+test('a stale-revision drop offers no Resend until the changed page shows: it would post on the old revision', async () => {
+  const { queryClient } = await renderReview()
+  fireEvent.click(screen.getByRole('button', { name: 'Send changes' }))
+  await waitFor(() => expect(posts).toHaveLength(1))
+  delivery = { state: 'dropped', reason: 'stale revision', submit: 'changes', revision: 'r1' }
+  await poll(queryClient)
+  await waitFor(() => expect(shown()).toHaveTextContent('dropped: stale revision'))
+  expect(screen.queryByRole('button', { name: 'Resend' })).not.toBeInTheDocument()
+  req = request('r2')
+  await poll(queryClient)
+  await waitFor(() => expect(shown()).toHaveTextContent(PAGE_CHANGED))
+  fireEvent.click(screen.getByRole('button', { name: 'Resend' }))
+  await waitFor(() => expect(posts).toHaveLength(2))
+  expect(posts[1]).toMatchObject({ submit: 'changes', revision: 'r2' })
+})

@@ -79,9 +79,11 @@ function pageChanged(state: Delivery | null, sent: Sent | null, shown: Shown | n
 
 function statusOf(state: Delivery | null, changed: boolean): Status | null {
   if (!state) return null
+  // A stale-revision Resend before the changed page shows would post on the old revision again.
+  const resendable = state.state === 'dropped' && (changed || state.reason !== 'stale revision')
   return {
     text: changed ? PAGE_CHANGED : state.state === 'dropped' ? `dropped: ${state.reason}` : state.state,
-    resend: state.state === 'dropped' ? state.submit : null,
+    resend: resendable ? state.submit : null,
   }
 }
 
