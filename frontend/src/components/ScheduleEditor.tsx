@@ -7,8 +7,9 @@ type Kind = 'every' | 'daily' | 'calendar'
 
 const LABEL = 'flex flex-col gap-0.5 text-xs text-ink-muted'
 
-/** Schedule editor of a managed job: locked while a change applies; a refusal shows its message. */
-export function ScheduleEditor({ job }: { job: ServiceJob }) {
+/** Schedule editor of a managed job: locked while a change applies, or when `locked` (no
+ * services config installed); a refusal shows its message. */
+export function ScheduleEditor({ job, locked }: { job: ServiceJob; locked: boolean }) {
   const { schedule } = useServiceActions()
   const [kind, setKind] = useState<Kind>('every')
   const [every, setEvery] = useState('')
@@ -50,7 +51,7 @@ export function ScheduleEditor({ job }: { job: ServiceJob }) {
             <input className={`${FIELD} font-mono text-ink`} value={calendar} onChange={(e) => setCalendar(e.target.value)} placeholder="Mon..Fri *-*-* 09:00" />
           </label>
         )}
-        <button type="submit" className={PRIMARY} disabled={job.change?.state === 'applying' || schedule.isPending}>Save schedule</button>
+        <button type="submit" className={PRIMARY} disabled={locked || job.change?.state === 'applying' || schedule.isPending}>Save schedule</button>
       </div>
       {schedule.error && <p className="text-sm text-failed-fg">{schedule.error.message}</p>}
     </form>

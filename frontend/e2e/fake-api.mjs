@@ -120,6 +120,7 @@ const seedState = () => ({
   messages: {},
   services: {
     now: '2026-11-24T10:12:00+00:00',
+    config_installed: true,
     managed: [{
       id: 'agent-ops-dispatcher', name: 'Dispatcher pass', description: 'Dispatcher pass',
       state: 'active', schedule: 'every 5 min', read_only: false,

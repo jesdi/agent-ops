@@ -1762,6 +1762,8 @@ export interface components {
         };
         /** ServicesView */
         ServicesView: {
+            /** Config Installed */
+            config_installed: boolean;
             /** Managed */
             managed: components["schemas"]["Job"][];
             /** Now */

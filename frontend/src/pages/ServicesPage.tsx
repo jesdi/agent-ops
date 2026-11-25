@@ -96,7 +96,7 @@ function ChangeApplying({ change }: { change: ServiceJob['change'] }) {
   )
 }
 
-function Actions({ job }: { job: ServiceJob }) {
+function Actions({ job, locked }: { job: ServiceJob; locked: boolean }) {
   const { run, stop, pause, resume, retry } = useServiceActions()
   if (job.read_only) return null
   const error = [run, stop, pause, resume, retry].find((m) => m.error)?.error
@@ -109,8 +109,8 @@ function Actions({ job }: { job: ServiceJob }) {
       <div className="flex flex-wrap gap-2">
         <button type="button" className={BUTTON} onClick={() => run.mutate(job.id)}>Run now</button>
         {job.state === 'paused'
-          ? <button type="button" className={BUTTON} onClick={() => resume.mutate(job.id)}>Resume</button>
-          : <button type="button" className={BUTTON} onClick={askThenPause}>Pause</button>}
+          ? <button type="button" className={BUTTON} disabled={locked} onClick={() => resume.mutate(job.id)}>Resume</button>
+          : <button type="button" className={BUTTON} disabled={locked} onClick={askThenPause}>Pause</button>}
         {job.state === 'running' && (
           <button type="button" className={`${BUTTON} text-failed-fg`} onClick={() => stop.mutate(job.id)}>Stop run</button>
         )}
@@ -121,7 +121,8 @@ function Actions({ job }: { job: ServiceJob }) {
   )
 }
 
-function Detail({ job, now }: { job: ServiceJob; now: string }) {
+// `locked`: no services config is installed, so Pause, Resume and a schedule cannot be recorded.
+function Detail({ job, now, locked }: { job: ServiceJob; now: string; locked: boolean }) {
   const rows: [string, string][] = [
     ['State', job.state], ['Schedule', job.schedule],
     ['Last run', lastRun(job, now)], ['Next run', nextRun(job, now)],
@@ -147,8 +148,8 @@ function Detail({ job, now }: { job: ServiceJob; now: string }) {
       </dl>
       {job.warning && <p className="rounded bg-waiting-bg px-2 py-1 text-sm text-waiting-fg">{job.warning}</p>}
       <ChangeApplying change={job.change} />
-      {!job.read_only && <ScheduleEditor job={job} />}
-      <Actions job={job} />
+      {!job.read_only && <ScheduleEditor job={job} locked={locked} />}
+      <Actions job={job} locked={locked} />
       <div className="space-y-1 text-sm"><Runs job={job} now={now} /></div>
     </section>
   )
@@ -184,13 +185,19 @@ export function ServicesPage() {
   if (isPending) return <p className="p-4 text-ink-muted">loading services…</p>
   if (isError) return <p className="p-4 text-failed-fg">services unavailable: {error.message}</p>
   const job = [...data.managed, ...data.read_only].find((j) => j.id === selected)
+  const locked = data.config_installed === false
   return (
     <div className="grid gap-6 p-4 md:grid-cols-[18rem_1fr]">
+      {locked && (
+        <p className="rounded bg-waiting-bg px-2 py-1 text-sm text-waiting-fg md:col-span-2">
+          The services config is not installed on the box yet. Pause, Resume and schedule changes wait for it.
+        </p>
+      )}
       <div className="space-y-4">
         <Group title="Managed" jobs={data.managed} selected={selected} onSelect={setSelected} />
         <Group title="Root jobs" jobs={data.read_only} selected={selected} onSelect={setSelected} />
       </div>
-      {job ? <Detail key={job.id} job={job} now={data.now} /> : <p className="text-sm text-ink-muted">Select a job.</p>}
+      {job ? <Detail key={job.id} job={job} now={data.now} locked={locked} /> : <p className="text-sm text-ink-muted">Select a job.</p>}
     </div>
   )
 }

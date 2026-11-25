@@ -53,6 +53,7 @@ class Job(BaseModel):
 
 class ServicesView(BaseModel):
     now: str
+    config_installed: bool
     managed: list[Job]
     read_only: list[Job]
 
@@ -203,7 +204,8 @@ def services_view(timers: list[dict], runs: dict[str, list[dict]], now: datetime
     return ServicesView(
         now=now.isoformat(),
         managed=managed,
-        read_only=[_job(t, runs, read_only=True) for t in timers if _read_only(t)])
+        read_only=[_job(t, runs, read_only=True) for t in timers if _read_only(t)],
+        config_installed=installed is not None)
 
 
 def _deploy_sync_paused(timers: list[dict], changes: dict) -> bool:
@@ -234,8 +236,15 @@ def router(sources, now: Callable[[], datetime], state_dir: Callable[[], str]) -
                 sources.service_timers(), {}, now()).managed):
             raise HTTPException(404, "not a managed job")
 
+    def check_installed() -> None:
+        """Pause, Resume and a schedule are recorded in the services config: refused before it
+        is installed, since nothing would apply or record them."""
+        if _installed(state_dir()) is None:
+            raise HTTPException(409, "The services config is not installed on the box yet.")
+
     def switch(job: str, paused: bool) -> dict:
         check_managed(job)
+        check_installed()
         change = sources.disable_timer if paused else sources.enable_timer
         try:
             services_changes.set_paused(state_dir(), job.removeprefix(USER_JOB_PREFIX), paused,
@@ -251,6 +260,7 @@ def router(sources, now: Callable[[], datetime], state_dir: Callable[[], str]) -
         name = job.removeprefix(USER_JOB_PREFIX)
         if name not in services_config.JOBS:
             raise HTTPException(404, "not a managed job")
+        check_installed()
         try:
             services_config.check_schedule(name, schedule)
         except ValueError as e:

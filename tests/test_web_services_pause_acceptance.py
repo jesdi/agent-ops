@@ -136,3 +136,44 @@ def test_overlapping_pause_and_resume_leave_one_entry_matching_the_timer(tmp_pat
     assert results["pause"].status_code == 200 and results["resume"].status_code == 200
     paused = recorded(tmp_path).get("digest", {}).get("paused", False)
     assert (job(client, DIGEST)["state"] == "paused") == paused
+
+
+NOT_INSTALLED = "The services config is not installed on the box yet."
+
+
+@pytest.mark.parametrize("verb", ["pause", "resume"])
+def test_with_no_services_config_installed_pause_and_resume_are_refused_and_change_nothing(tmp_path, verb):
+    fake, client = box(tmp_path, [user_timer(DIGEST)], installed=False)
+
+    res = post(client, DIGEST, verb)
+
+    assert res.status_code == 409
+    assert res.json()["detail"] == NOT_INSTALLED
+    assert fake.systemctl_calls == [] and fake.recorder_kicks == 0
+    assert not (tmp_path / "services-changes.yaml").exists()
+
+
+def test_with_no_services_config_installed_a_schedule_save_is_refused_and_writes_nothing(tmp_path):
+    fake, client = box(tmp_path, [user_timer(DIGEST)], installed=False)
+
+    res = client.put(f"/api/services/{DIGEST}/schedule", json={"every": 10}, headers=HEADERS)
+
+    assert res.status_code == 409
+    assert res.json()["detail"] == NOT_INSTALLED
+    assert fake.recorder_kicks == 0
+    assert not (tmp_path / "services-changes.yaml").exists()
+
+
+def test_with_no_services_config_installed_run_now_and_stop_run_still_work(tmp_path):
+    fake, client = box(tmp_path, [user_timer(DIGEST)], installed=False)
+
+    assert post(client, DIGEST, "run").status_code == 200
+    assert post(client, DIGEST, "stop").status_code == 200
+    assert fake.systemctl_calls == [("start", f"{DIGEST}.service"), ("stop", f"{DIGEST}.service")]
+
+
+def test_the_page_is_told_whether_a_services_config_is_installed(tmp_path):
+    _, missing = box(tmp_path, [user_timer(DIGEST)], installed=False)
+    assert missing.get("/api/services", headers=HEADERS).json()["config_installed"] is False
+    (tmp_path / "services.yaml").write_text(yaml.safe_dump(base_config()))
+    assert missing.get("/api/services", headers=HEADERS).json()["config_installed"] is True
