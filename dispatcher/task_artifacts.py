@@ -242,13 +242,9 @@ class Collector:
 
     def capture(self, index: ArtifactIndex) -> None:
         for kind, (artifact_id, _) in ANSWERS_ARTIFACTS.items():
-            before = index.items
             try:
-                page = _capture(index, self.task, kind, self.now)
-                if page is not None:
-                    _copy_content(self.root / "content" / artifact_id, page)
+                _capture(self.root, index, self.task, kind, self.now)
             except (OSError, ValueError) as exc:
-                index.items = before
                 log.warning("Cannot capture artifact %s/%s/%s: %s", self.task.repository, self.task.issue, artifact_id, exc)
 
 
@@ -276,27 +272,36 @@ def collect(state_dir, task: TaskState, repo: str, *, publish: bool = True,
     state.archive(state_dir, task)
 
 
-def _capture(index: ArtifactIndex, task: TaskState, kind: str, now: datetime) -> bytes | None:
-    """Store in `index` the item of the answered page of the task's answers
-    file of `kind` when it is a submission the index does not hold yet, and
-    return the page. The item's digest is the answers file's, not the page's.
+def _capture(root: Path, index: ArtifactIndex, task: TaskState, kind: str, now: datetime) -> None:
+    """Archive the answered page of the task's answers file of `kind` when it
+    is a submission the index does not hold yet. The item's digest is the
+    answers file's, not the page's. The page is staged, renamed in, and only
+    then entered in `index`: a full disk fails before the earlier page is
+    touched, and an index that is not saved after the rename keeps the earlier
+    digest, so the next collection captures again. The caller saves `index`.
     Raises OSError or ValueError when the file or the page cannot be used."""
     name, _ = answers.ANSWERS_FILES[kind]
     path = f".agent/{name}"
     submission = _submission(task, path)
     if submission is None:
-        return None
+        return
     raw, doc = submission
     artifact_id, artifact_name = ANSWERS_ARTIFACTS[kind]
     digest = hashlib.sha256(raw).hexdigest()
     items = {item.id: item for item in index.items}
     if artifact_id in items and items[artifact_id].digest == digest:
-        return None
-    rendered = answered_page.render(_request_page(task, kind), doc.get("answers")).encode()
+        return
+    page = answered_page.render(_request_page(task, kind), doc.get("answers")).encode()
+    content = root / "content" / artifact_id
+    staged = content.with_name(f".{content.name}.staged")
+    try:
+        _copy_content(staged, page)
+        os.replace(staged, content)
+    finally:
+        staged.unlink(missing_ok=True)
     items[artifact_id] = StoredArtifact(artifact_id, artifact_name, path, "text/html", digest,
                                         task.stage.value, now.isoformat())
     index.items = list(items.values())
-    return rendered
 
 
 def _submission(task: TaskState, path: str) -> tuple[bytes, dict] | None:
@@ -324,21 +329,7 @@ def capture_answers(state_dir, task: TaskState, now: datetime | None = None) -> 
     root = state.archive_root(state_dir, task.repository, task.issue)
     index = read(state_dir, task.repository, task.issue)
     index.retain_for(task)
-    kind = operator_request(task).kind
-    page = _capture(index, task, kind, now or datetime.now(timezone.utc))
-    if page is None:
-        index.save(root / "index.json")
-        return
-    # Stage the page, rename it in, then save the index: a full disk fails
-    # before the earlier page is touched, and an index not saved after the
-    # rename keeps the earlier digest, so the next collection captures again.
-    content = root / "content" / ANSWERS_ARTIFACTS[kind][0]
-    staged = content.with_name(f".{content.name}.staged")
-    try:
-        _copy_content(staged, page)
-        os.replace(staged, content)
-    finally:
-        staged.unlink(missing_ok=True)
+    _capture(root, index, task, operator_request(task).kind, now or datetime.now(timezone.utc))
     index.save(root / "index.json")
 
 
