@@ -118,6 +118,25 @@ const seedState = () => ({
   intents: [],
   // issue -> [{ id, text, actor, created_at, delivered_at }]
   messages: {},
+  services: {
+    now: '2026-11-24T10:12:00+00:00',
+    config_installed: true,
+    managed: [{
+      id: 'agent-ops-dispatcher', name: 'Dispatcher pass', description: 'Dispatcher pass',
+      state: 'active', running: false, schedule: 'every 5 min', read_only: false,
+      last_run: { at: '2026-11-24T10:08:00+00:00', duration_seconds: 27 },
+      next_run: '2026-11-24T10:13:00+00:00',
+      recent_runs: [{ at: '2026-11-24T10:08:00+00:00', duration_seconds: 27, result: 'success' }],
+      upcoming: ['2026-11-24T10:13:00+00:00', '2026-11-24T10:18:00+00:00', '2026-11-24T10:23:00+00:00'],
+    }],
+    read_only: [{
+      id: 'secret-cache-refresh', name: 'Secret cache refresh', description: 'Secret cache refresh',
+      state: 'active', running: false, schedule: '00:00, 12:00 UTC', read_only: true,
+      last_run: { at: '2026-11-24T00:00:00+00:00', duration_seconds: 3 },
+      next_run: '2026-11-24T12:00:00+00:00',
+      recent_runs: [], upcoming: ['2026-11-24T12:00:00+00:00'],
+    }],
+  },
 })
 
 const state = seedState()
@@ -216,6 +235,20 @@ const server = createServer(async (req, res) => {
   ] })
   if (url.pathname === '/api/queue') return json(200, state.queue)
   if (url.pathname === '/api/usage') return json(200, state.usage)
+  if (url.pathname === '/api/services') return json(200, state.services)
+  if (/^\/api\/services\/[^/]+\/(run|stop|retry)$/.test(url.pathname) && req.method === 'POST') return json(200, {})
+  const sched = url.pathname.match(/^\/api\/services\/([^/]+)\/schedule$/)
+  if (sched && req.method === 'PUT') {
+    const job = state.services.managed.find((j) => j.id === sched[1])
+    if (job) job.change = { state: 'applying', pr: 1, url: null }
+    return json(200, {})
+  }
+  const flip = url.pathname.match(/^\/api\/services\/([^/]+)\/(pause|resume)$/)
+  if (flip && req.method === 'POST') {
+    const job = state.services.managed.find((j) => j.id === flip[1])
+    if (job) job.state = flip[2] === 'pause' ? 'paused' : 'active'
+    return json(200, {})
+  }
   if (url.pathname === '/api/failures') return json(200, state.failures)
   if (url.pathname === '/api/history') return json(200, state.history)
   if (url.pathname === '/api/pending-intents') {

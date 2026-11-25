@@ -22,6 +22,7 @@ from dispatcher.intents import write_intent
 from dispatcher.queue_ops import QueuePlan
 from dispatcher.sessions import session_name
 from dispatcher.state import TaskState
+from web import box_status
 
 RANK_TTL_SECONDS = 15.0
 DESCRIPTION_TTL_SECONDS = 300.0
@@ -162,6 +163,33 @@ class Sources:
 
     def exams(self) -> list[dict]:
         return exams.listing(self.state_dir)
+
+    def service_timers(self) -> list[dict]:
+        return box_status.systemd_timers()
+
+    def service_runs(self) -> dict[str, list[dict]]:
+        return box_status.service_runs()
+
+    def start_unit(self, unit: str) -> None:
+        subprocess.run(("systemctl", "--user", "start", "--no-block", unit),
+                       capture_output=True, timeout=5, check=True)
+
+    def stop_unit(self, unit: str) -> None:
+        subprocess.run(("systemctl", "--user", "stop", unit),
+                       capture_output=True, timeout=30, check=True)
+
+    def disable_timer(self, unit: str) -> None:
+        subprocess.run(("systemctl", "--user", "disable", "--now", unit),
+                       capture_output=True, timeout=30, check=True)
+
+    def enable_timer(self, unit: str) -> None:
+        subprocess.run(("systemctl", "--user", "enable", "--now", unit),
+                       capture_output=True, timeout=30, check=True)
+
+    def kick_recorder(self) -> None:
+        """Start a services recorder pass; the console never fails on it."""
+        subprocess.run(("systemctl", "--user", "start", "--no-block", "agent-ops-services-record.service"),
+                       capture_output=True, timeout=5)
 
     def exam_state(self, repo: str, pr: int) -> dict | None:
         return exams.read(self.state_dir, repo, pr)

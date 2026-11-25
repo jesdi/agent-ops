@@ -324,12 +324,10 @@ def test_done_retention_days_loaded_and_defaults_seven(tmp_path):
     assert load_config(write_yaml(tmp_path)).done_retention_days == 7
 
 
-def test_pass_interval_minutes_default_and_override(tmp_path):
+def test_a_stale_pass_interval_minutes_still_loads(tmp_path):
     p = tmp_path / "targets.yaml"
-    p.write_text("state_dir: /tmp/s\nprojects: []\n")
-    assert load_config(p).pass_interval_minutes == 5
     p.write_text("state_dir: /tmp/s\npass_interval_minutes: 7\nprojects: []\n")
-    assert load_config(p).pass_interval_minutes == 7
+    load_config(p)
 
 
 GATED_YAML = """

@@ -77,7 +77,6 @@ def test_stopped_codex_session_with_marker_is_poked(tmp_path, monkeypatch):
 
 def test_pass_interval_defaults_to_5_and_status_reports_it(tmp_path, monkeypatch):
     c = _load(tmp_path)
-    assert c.pass_interval_minutes == 5
     patch_usage(monkeypatch)
     main.run_pass(c, deps())
     hb = json.loads((Path(c.state_dir) / "pass.json").read_text())
@@ -96,10 +95,9 @@ def test_example_config_comments_and_still_loads(tmp_path, monkeypatch):
         block.append(ln)
     comment = " ".join(block).lower()
     assert "hang" in comment and "poke" in comment and "every pass" in comment
-    pi = next(ln for ln in lines if re.match(r"#?\s*pass_interval_minutes:", ln))
-    assert "5" in pi and "systemd" in pi and "10" not in pi
+    assert "pass_interval_minutes" not in text
     monkeypatch.setenv("AGENT_OPS_STATE_DIR", str(tmp_path))
-    assert load_config(ROOT / "targets.example.yaml").pass_interval_minutes == 5
+    load_config(ROOT / "targets.example.yaml")
 
 
 def test_codex_design_note_states_herdr_detection():
