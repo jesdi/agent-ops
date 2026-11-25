@@ -69,6 +69,10 @@ Terms used below:
 21. While the deploy sync is paused, saving a schedule change is refused with a message saying
     the deploy sync is paused, and no recording pull request is opened. Pause, Resume, Run now
     and Stop run still work.
+22. While no services config is installed on the box, Pause, Resume and saving a schedule change
+    are refused with a message saying the services config is not installed on the box yet, and
+    nothing changes on the box. The page says so and disables them. Run now and Stop run still
+    work. This is the one exception to requirements 6 and 11.
 
 ## Scenarios
 
@@ -88,15 +92,17 @@ Terms used below:
 - **When** the operator opens the page
 - **Then** the stale worktree sweep is first, the daily digest and backlog triage follow, and
   the five active jobs come last
+- **And** the stale worktree sweep's row is labelled "paused · drift", and the daily digest's
+  and backlog triage's rows "paused"
 
 ### Scenario: Detail of a frequent job
 
 - **Given** the dispatcher pass runs every 5 minutes, last ran at 10:08 UTC for 27 seconds, and
   it is 10:12 UTC
 - **When** the operator selects it
-- **Then** the panel shows state "active", schedule "every 5 min", last run "10:08 · 27 s",
-  next run "in 1 min", the next three run times, and its last five runs with result and
-  duration
+- **Then** the panel shows state "active", schedule "every 5 min", last run
+  "10:08 UTC · 27 s", next run "in 1 min", the next three run times "10:13 UTC", "10:18 UTC"
+  and "10:23 UTC", and its last five runs with result and duration
 
 ### Scenario: Detail of a job that never ran
 
@@ -156,15 +162,17 @@ Terms used below:
 ### Scenario: Run now on an active job
 
 - **Given** the stale worktree sweep is active, scheduled daily at 03:00 UTC, and it is 10:12
+  UTC on Nov 25
 - **When** the operator presses Run now
-- **Then** the job shows "running", and when it ends its last run is 10:12
-- **And** its next run is still 03:00
+- **Then** the job shows "running", and when it ends its last run is "10:12 UTC"
+- **And** its next run is still the next day's 03:00, listed as "Nov 26 03:00 UTC"
 
 ### Scenario: Run now on a paused job
 
 - **Given** backlog triage is paused
 - **When** the operator presses Run now
-- **Then** the job runs once and is still paused afterwards
+- **Then** the job runs once, showing "paused · running now" meanwhile, and is still paused
+  afterwards
 
 ### Scenario: Stop a run in progress
 
@@ -193,7 +201,8 @@ Terms used below:
 
 - **Given** backlog triage is scheduled daily at 04:00 Europe/Madrid
 - **When** the operator saves "daily at 05:00 Europe/Madrid"
-- **Then** once the change has applied, the job's next run is 05:00 Europe/Madrid
+- **Then** once the change has applied, the job's schedule reads "daily at 05:00 Europe/Madrid"
+  and its next run is 05:00 in Madrid, listed in UTC (04:00 UTC in winter)
 
 ### Scenario: An interval below 1 minute is refused
 
@@ -231,8 +240,8 @@ Terms used below:
 - **Given** the services config says the stale worktree sweep is not paused, its timer is
   switched off on the box, and no console change is being recorded
 - **When** the operator opens the page
-- **Then** the stale worktree sweep shows "paused" with a warning that the box differs from
-  the config
+- **Then** the stale worktree sweep shows "paused" with the warning "Paused on the box but not
+  in the services config.", and its row is labelled "drift"
 
 ### Scenario: A console change still being recorded is not flagged
 
@@ -319,6 +328,15 @@ Terms used below:
 - **Given** the deploy sync is paused and the daily digest is active
 - **When** the operator presses Pause on the daily digest
 - **Then** the daily digest shows "paused" at once and a recording pull request is opened
+
+### Scenario: Pause, Resume and schedule saves wait for the services config
+
+- **Given** no services config is installed on the box yet and the daily digest is active
+- **When** the operator selects it
+- **Then** the page says "The services config is not installed on the box yet.", and Pause and
+  the schedule editor are disabled
+- **And** a pause or schedule save sent anyway is refused with that message and changes nothing
+- **And** Run now still starts the job, and Stop run still ends a run in progress
 
 ## Out of scope
 
