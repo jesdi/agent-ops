@@ -64,7 +64,7 @@ test('a general chat message streams a reply in the chat', async ({ page, reques
   await expect(drawer(page).getByText('The lease expiry.')).toBeVisible()
 })
 
-test('the general chat is a bottom sheet at 390 px with no horizontal scroll, even with a long diff reply', async ({ page, request, isMobile }) => {
+test('the general chat is a bottom sheet at 390 px with no horizontal scroll, even with a long diff reply', async ({ page, isMobile }) => {
   test.skip(!isMobile, 'the phone project covers the narrow screen')
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto(PAGE)
