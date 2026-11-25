@@ -52,11 +52,9 @@ class Submission:
     def of(cls, intent: intents.Intent) -> Submission | None:
         """The intent's submission; None for a draft or another action."""
         p = intent.payload if isinstance(intent.payload, dict) else {}
-        submit, revision = p.get("submit"), p.get("revision")
-        if (intent.action != "answers" or submit not in SUBMITS
-                or not isinstance(revision, (str, type(None)))):
+        if intent.action != "answers" or not _submits(p.get("submit"), p.get("revision")):
             return None
-        return cls(submit, revision, str(intent.created_at))
+        return cls(p["submit"], p.get("revision"), str(intent.created_at))
 
     def to_event(self) -> dict:
         return asdict(self)
@@ -65,14 +63,16 @@ class Submission:
     def from_event(cls, raw: object) -> Submission | None:
         """The submission of an event line; None when the line holds none
         or a hand-edited one of the wrong shape."""
-        if not isinstance(raw, dict):
+        raw = raw if isinstance(raw, dict) else {}
+        at = raw.get("created_at")
+        if not (_submits(raw.get("submit"), raw.get("revision")) and isinstance(at, str)):
             return None
-        submit, revision, created_at = (raw.get("submit"), raw.get("revision"),
-                                        raw.get("created_at"))
-        if (submit not in SUBMITS or not isinstance(revision, (str, type(None)))
-                or not isinstance(created_at, str)):
-            return None
-        return cls(submit, revision, created_at)
+        return cls(raw["submit"], raw.get("revision"), at)
+
+
+def _submits(submit: object, revision: object) -> bool:
+    """A submit kind, on a revision or none (a session wrote the file)."""
+    return submit in SUBMITS and isinstance(revision, (str, type(None)))
 
 
 class AnswersDoc(TypedDict, total=False):
@@ -329,14 +329,20 @@ def delivery(task: TaskState, pending: Iterable[intents.Intent],
     """A pending submission of the task is queued; otherwise the newer of
     the answers files' submission and the latest drop of one decides.
     None when the task has no submission. Drafts never count."""
-    queued = [s for i in pending if (i.repository, i.issue) == (task.repository, task.issue)
-              and (s := Submission.of(i)) is not None and s.revision is not None]
+    queued = _queued(task, pending)
     if queued:
-        s = max(queued, key=lambda s: s.created_at)
-        return Delivery("queued", "", s.submit, s.revision)
+        return queued
     latest = max(_delivered(task) + _dropped(task, events), default=None,
                  key=lambda o: o[:2])
     return latest.delivery if latest else None
+
+
+def _queued(task: TaskState, pending: Iterable[intents.Intent]) -> Delivery | None:
+    """The task's latest pending submission made on a revision."""
+    queued = [s for i in pending if (i.repository, i.issue) == (task.repository, task.issue)
+              and (s := Submission.of(i)) is not None and s.revision is not None]
+    s = max(queued, default=None, key=lambda s: s.created_at)
+    return Delivery("queued", "", s.submit, s.revision) if s else None
 
 
 def _delivered(task: TaskState) -> list[_Outcome]:
@@ -345,7 +351,7 @@ def _delivered(task: TaskState) -> list[_Outcome]:
     for kind in ANSWERS_FILES:
         doc = read(task.worktree, kind) or {}
         submit, revision = doc.get("submitted"), doc.get("revision")
-        if submit in SUBMITS and isinstance(revision, (str, type(None))):
+        if _submits(submit, revision):
             out.append(_Outcome(str(doc.get("submitted_at") or ""), True,
                                 Delivery("delivered", "", submit, revision)))
     return out
@@ -354,12 +360,14 @@ def _delivered(task: TaskState) -> list[_Outcome]:
 def _dropped(task: TaskState, events: Iterable[dict]) -> list[_Outcome]:
     """The latest drop of a submission of the task; none when that event
     line was hand-edited out of shape."""
-    for e in reversed(list(events)):
-        if (e.get("event"), e.get("repository"), e.get("issue")) != (
-                "intent-dropped", task.repository, task.issue) or "submission" not in e:
-            continue
-        s, reason = Submission.from_event(e["submission"]), e.get("detail")
-        if s is None or reason not in get_args(DropReason):
-            return []
-        return [_Outcome(s.created_at, False, Delivery("dropped", reason, s.submit, s.revision))]
-    return []
+    e = next((e for e in reversed(list(events)) if _is_drop(task, e)), {})
+    s, reason = Submission.from_event(e.get("submission")), e.get("detail")
+    if s is None or reason not in get_args(DropReason):
+        return []
+    return [_Outcome(s.created_at, False, Delivery("dropped", reason, s.submit, s.revision))]
+
+
+def _is_drop(task: TaskState, e: dict) -> bool:
+    """e records the drop of a submission of the task."""
+    return (e.get("event"), e.get("repository"), e.get("issue")) == (
+        "intent-dropped", task.repository, task.issue) and "submission" in e

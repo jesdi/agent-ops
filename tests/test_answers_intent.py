@@ -330,3 +330,15 @@ def test_a_questionnaire_without_the_marker_arms_no_revision(tmp_path, monkeypat
     req = operator_request(_task(c))
     assert req.path == ".agent/questionnaire.html" and req.fingerprint == ""
     assert "review page lacks the template marker" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("raw", [None, [], {}, {"submit": 1, "revision": "r1", "created_at": "t"},
+                                 {"submit": "changes", "revision": 2, "created_at": "t"},
+                                 {"submit": "changes", "revision": "r1", "created_at": None}])
+def test_a_drop_record_out_of_shape_is_no_submission(raw):
+    assert answers.Submission.from_event(raw) is None
+
+
+def test_a_drop_record_reads_back_as_written():
+    s = answers.Submission("approve", None, "2026-11-24T10:00:00Z")
+    assert answers.Submission.from_event(s.to_event()) == s
