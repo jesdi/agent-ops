@@ -117,20 +117,25 @@ def _warning(unit: dict, key: str, changes: dict, installed: dict | None) -> str
 
 def _job(unit: dict, runs: dict[str, list[dict]], *, read_only: bool,
          changes: dict | None = None, installed: dict | None = None) -> Job:
-    schedule = describe_schedule(unit["on_calendar"])
     job_id = unit["unit"].removesuffix(".timer")
-    mine = runs.get(job_id, [])
-    running = not read_only and bool(mine) and mine[-1]["result"] is None
-    return Job(
-        recent_runs=[] if read_only else _recent(runs.get(job_id, [])),
-        upcoming=_upcoming(unit),
-        change=None if read_only else _change((changes or {}).get(job_id.removeprefix(USER_JOB_PREFIX))),
-        warning=None if read_only else _warning(unit, job_id.removeprefix(USER_JOB_PREFIX), changes or {}, installed),
+    job = Job(
+        recent_runs=[], upcoming=_upcoming(unit), change=None, warning=None,
         id=job_id, name=unit["description"],
         description=unit["description"],
-        state="running" if running else "active" if unit["active_state"] == "active" else "paused",
-        schedule=schedule,
+        state="active" if unit["active_state"] == "active" else "paused",
+        schedule=describe_schedule(unit["on_calendar"]),
         last_run=unit["last_run"], next_run=unit["next_run"], read_only=read_only)
+    return job if read_only else _live(job, unit, runs.get(job_id, []), changes or {}, installed)
+
+
+def _live(job: Job, unit: dict, mine: list[dict], changes: dict, installed: dict | None) -> Job:
+    """A managed job's runs, console change and warning."""
+    key = job.id.removeprefix(USER_JOB_PREFIX)
+    running = bool(mine) and mine[-1]["result"] is None
+    return job.model_copy(update={
+        "recent_runs": _recent(mine), "change": _change(changes.get(key)),
+        "warning": _warning(unit, key, changes, installed),
+        "state": "running" if running else job.state})
 
 
 def _managed(t: dict) -> bool:
@@ -161,9 +166,12 @@ def services_view(timers: list[dict], runs: dict[str, list[dict]], now: datetime
 
 
 def _deploy_sync_paused(timers: list[dict], changes: dict) -> bool:
-    sync = next((t for t in timers if t["unit"] == f"{USER_JOB_PREFIX}update.timer" and _managed(t)), None)
-    return (sync is not None and sync["active_state"] != "active") or bool(
-        (changes.get("update") or {}).get("paused"))
+    return _sync_off(timers) or bool((changes.get("update") or {}).get("paused"))
+
+
+def _sync_off(timers: list[dict]) -> bool:
+    return any(t["unit"] == f"{USER_JOB_PREFIX}update.timer" and _managed(t) and t["active_state"] != "active"
+               for t in timers)
 
 
 def _installed(state_dir: str) -> dict | None:
