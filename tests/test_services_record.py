@@ -1,7 +1,9 @@
 """Recorder races with the console: a Resume landing mid-pass or before the deploy, and a
 pull request on the branch that the recorder never saved as its own."""
+import yaml
+
 from dispatcher import services_record
-from tests.infrafakes import failure
+from tests.infrafakes import SERVICES, failure
 from tests.test_services_record_acceptance import World
 
 
@@ -59,3 +61,36 @@ def test_a_pull_request_on_the_pushed_head_that_the_recorder_did_not_open_is_not
 
     assert world.infra.merged == []
     assert world.job()["change"]["state"] == "failed"
+
+
+def test_retrying_a_failure_on_another_pull_request_never_merges_it(tmp_path, monkeypatch):
+    world = World(tmp_path, monkeypatch)
+    world.post("pause")
+    world.record()
+    number = world.infra.created[0]
+    world.infra.ci(number, "success")
+    original = world.infra.prs[number]
+    original["state"] = "CLOSED"
+    world.infra.prs[99] = {**original, "number": 99, "state": "OPEN"}
+    world.record()
+    assert world.job()["change"] == {"state": "failed", "pr": 99, "url": world.infra._row(original | {"number": 99})["url"]}
+
+    for _ in range(3):
+        world.post("retry")
+        world.record()
+
+    assert world.infra.merged == []
+    assert world.job()["change"]["state"] == "failed"
+
+
+def test_infra_main_already_matching_leaves_a_pull_request_the_recorder_did_not_open(tmp_path, monkeypatch):
+    world = World(tmp_path, monkeypatch)
+    world.post("pause")
+    world.infra.rogue = {"config/other.yaml": "x: 1\n"}
+    cfg = world.infra.main_config()
+    cfg["digest"]["paused"] = True
+    world.infra.main[SERVICES] = yaml.safe_dump(cfg)
+
+    world.record(passes=2)
+
+    assert world.infra.closed == [] and world.infra.prs[99]["state"] == "OPEN"

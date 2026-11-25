@@ -101,8 +101,9 @@ def _change(entry: dict | None) -> Change | None:
     if not entry:
         return None
     rec = entry.get("record") or {}
+    link = rec["failed"] if isinstance(rec.get("failed"), dict) else rec
     return Change(state="failed" if rec.get("failed") else "applying",
-                  pr=rec.get("pr"), url=rec.get("url"))
+                  pr=link.get("pr"), url=link.get("url"))
 
 
 def _warning(unit: dict, key: str, changes: dict, installed: dict | None) -> str | None:

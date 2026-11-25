@@ -9,7 +9,8 @@ failed in the entry (shown as `change: {state: "failed", pr, url}` by `GET /api/
 and is not retried until `POST /api/services/{job}/retry` clears the mark.
 
 The entry's `record` holds what the recorder pushed: `head` and `base` of its commit, `sets`
-(the paused / schedule values it carries), `pr`, `url`, and `failed` / `red` (the head whose ci was red).
+(the paused / schedule values it carries), `pr` and `url` of the pull request it opened, `red`
+(the head whose ci was red), and `failed`: true, or the `{pr, url}` to link.
 Run on the box as `python -m dispatcher.services_record <targets.yaml>`."""
 from __future__ import annotations
 
@@ -62,9 +63,10 @@ def _record(state_dir: str, sh, job: str, entry: dict) -> None:
 
 
 def _mark_failed(state_dir: str, job: str, want: dict, pr: infra_pr.OpenPr | None) -> None:
-    link = {"pr": pr.number, "url": pr.url} if pr else {}
-    _edit(state_dir, job, want, lambda ent: {**ent, "record": {
-        **(ent.get("record") or {}), "failed": True, **link}})
+    """The link lives in the failed mark, never in `pr`: a pull request the recorder did not
+    open must not become one it trusts once Retry clears the mark."""
+    link = {"pr": pr.number, "url": pr.url} if pr else True
+    _edit(state_dir, job, want, lambda ent: {**ent, "record": {**(ent.get("record") or {}), "failed": link}})
 
 
 def _edit(state_dir: str, job: str, want: dict, change) -> bool:
@@ -100,7 +102,7 @@ def _one(state_dir: str, sh, job: str, want: dict, rec: dict) -> None:
     text = infra_pr.fetch_main(sh, scratch, env, SERVICES)
     pr = infra_pr.open_pr(sh, f"services/{job}", env)
     if _says(yaml.safe_load(text), job, want):
-        return _settled(state_dir, sh, job, want, pr, env)
+        return _settled(state_dir, sh, job, want, pr if _ours(pr, rec) else None, env)
     if pr is None:
         return _open(state_dir, sh, job, want, text, env, rec.get("head", ""), None)
     _check_ours(pr, rec)
@@ -131,8 +133,12 @@ def _settled(state_dir: str, sh, job: str, want: dict, pr: infra_pr.OpenPr | Non
         **{k: v for k, v in (e.get("record") or {}).items() if k in ("pr", "url")}, "recorded": True}})
 
 
+def _ours(pr: infra_pr.OpenPr | None, rec: dict) -> bool:
+    return pr is not None and pr.head == rec.get("head") and rec.get("pr") == pr.number
+
+
 def _check_ours(pr: infra_pr.OpenPr, rec: dict) -> None:
-    if pr.head != rec.get("head") or rec.get("pr") != pr.number:
+    if not _ours(pr, rec):
         raise Failed("the pull request is not the one the recorder opened", pr)
 
 
