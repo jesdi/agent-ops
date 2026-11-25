@@ -1,9 +1,13 @@
+import { Link } from 'react-router'
 import type { ArtifactsView } from '../lib/api'
-import { useTaskArtifacts } from '../hooks/useResources'
+import { useTaskArtifacts, useTaskRequest } from '../hooks/useResources'
 import { chip } from '../lib/tone'
 
 export function ArtifactsPanel({ repository, issue }: { repository: string; issue: number }) {
   const query = useTaskArtifacts(repository, issue)
+  // #281: the open request's page has its Send bar only on the review route.
+  const requestPath = useTaskRequest(repository, issue).data?.content.path
+  const review = `/task/${repository}/${issue}/review`
   return (
     <section aria-label="Artifacts" className="overflow-hidden rounded border border-border bg-surface-raised">
       <header className="p-4">
@@ -15,7 +19,8 @@ export function ArtifactsPanel({ repository, issue }: { repository: string; issu
       {query.isPending && <p className="border-t border-border p-4 text-sm text-ink-muted">Loading artifacts…</p>}
       {query.isError && <p role="alert" className="border-t border-border p-4 text-sm text-failed-fg">Could not load artifacts: {query.error.message}</p>}
       {query.data?.items.length === 0 && <p className="border-t border-border p-4 text-sm text-ink-muted">No artifacts yet. Review material will appear here as sessions create it.</p>}
-      {query.data?.items.map((artifact) => <ArtifactRow key={artifact.id} artifact={artifact} />)}
+      {query.data?.items.map((artifact) => <ArtifactRow key={artifact.id} artifact={artifact}
+        review={requestPath && normalPath(artifact.path) === normalPath(requestPath) ? review : undefined} />)}
       {query.data && query.data.items.length > 0 && (
         <p className="border-t border-border bg-surface px-4 py-3 text-xs text-ink-muted">
           <ArtifactRetention data={query.data} />
@@ -25,7 +30,11 @@ export function ArtifactsPanel({ repository, issue }: { repository: string; issu
   )
 }
 
-function ArtifactRow({ artifact }: { artifact: ArtifactsView['items'][number] }) {
+const normalPath = (path: string) => path.replace(/\/{2,}/g, '/').replace(/^(\.\/)+/, '')
+
+const openClass = 'inline-flex min-h-11 shrink-0 items-center rounded border border-border px-3 text-sm font-medium hover:bg-surface'
+
+function ArtifactRow({ artifact, review }: { artifact: ArtifactsView['items'][number]; review?: string }) {
   return (
     <div className="flex items-center gap-3 border-t border-border p-4">
       <div className="min-w-0 flex-1">
@@ -39,10 +48,11 @@ function ArtifactRow({ artifact }: { artifact: ArtifactsView['items'][number] })
           {' · '}{artifact.stage}
         </p>
       </div>
-      {artifact.url ? (
+      {review ? (
+        <Link to={review} aria-label={`Open ${artifact.name}`} className={openClass}>Open</Link>
+      ) : artifact.url ? (
         <a href={artifact.url} target="_blank" rel="noopener noreferrer"
-          aria-label={`Open ${artifact.name}`}
-          className="inline-flex min-h-11 shrink-0 items-center rounded border border-border px-3 text-sm font-medium hover:bg-surface">
+          aria-label={`Open ${artifact.name}`} className={openClass}>
           Open ↗
         </a>
       ) : <span className="text-xs text-ink-muted">{artifact.status === 'expired' ? 'Expired' : 'Unavailable'}</span>}
