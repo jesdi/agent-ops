@@ -12,7 +12,8 @@ from typing import Callable
 
 from dispatcher import execution_overrides, github_app, messages, relogin
 from dispatcher.artifacts import (REVIEW_PAGE, TICKETS_DIR, check_spec, check_tickets,
-                                  count_open_questions, page_revision, plan_revision)
+                                  count_open_questions, page_revision, plan_revision,
+                                  stamp_console_link)
 from dispatcher.claims import box_free
 from dispatcher.classify import (BackgroundView, Observation, Reads, artifact_path,
                                  classify, config_note)
@@ -315,14 +316,25 @@ def _observation(turn: _Turn, task: TaskState, policy: ModelPolicy) -> Observati
         grace_elapsed=_grace_elapsed(cfg, task), caps=cfg.loop_caps,
         tracks=frozenset(policy.tracks),
         gate_free=frozenset(n for n, t in policy.tracks.items() if not t.plan_review),
-        reads=_reads(task, turn.signal), look=_look(turn, task))
+        reads=_reads(turn, task), look=_look(turn, task))
 
 
-def _reads(task: TaskState, signal: StageSignal | None) -> Reads:
+def _reads(turn: _Turn, task: TaskState) -> Reads:
     """What the worktree says about the report: a ready plan's tickets,
-    revision and page; an approval's tickets; a spec; an answers page."""
+    revision and page; an approval's tickets; a spec; an answers page. A
+    request about to be armed gets the console link stamped into its page
+    first, so its revision covers the bytes on disk."""
+    signal = turn.signal
     reader = _READS.get(signal.status) if signal is not None else None
-    return reader(task, signal) if reader else Reads()
+    if reader is None:
+        return Reads()
+    # An answers park without a page arms no request: nothing to stamp.
+    armed = signal.status == "awaiting-review" or (
+        signal.status == "awaiting-answers" and signal.artifact)
+    if armed and not turn.dry_run:
+        stamp_console_link(task.worktree, signal.artifact, turn.cfg.console_url,
+                           task.repository, task.issue)
+    return reader(task, signal)
 
 
 def _ready_reads(task: TaskState, signal: StageSignal) -> Reads:

@@ -101,3 +101,17 @@ def test_ticket_duplicate_number_fails(tmp_path: Path):
     d = tickets_dir(tmp_path, ticket(1, "a"), ticket(1, "b"))
     r = check_tickets(d)
     assert not r.ok and "duplicate" in r.reason
+
+
+def test_stamping_the_console_link_keeps_the_page_mode(tmp_path):
+    from dispatcher.artifacts import stamp_console_link
+    page = tmp_path / ".agent" / "review.html"
+    page.parent.mkdir()
+    page.write_text((Path(__file__).parent / "fixtures" / "review-page.html").read_text())
+    page.chmod(0o640)
+
+    stamp_console_link(tmp_path, "", "https://ops.example", "widget", 42)
+
+    assert 'content="https://ops.example/task/widget/42/review"' in page.read_text()
+    assert page.stat().st_mode & 0o777 == 0o640
+    assert [p.name for p in page.parent.iterdir()] == ["review.html"]
