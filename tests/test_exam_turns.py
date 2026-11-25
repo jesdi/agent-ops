@@ -32,6 +32,7 @@ Interface under test (defined here, built by the ticket):
 import asyncio
 import contextlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -39,7 +40,7 @@ import httpx
 import pytest
 
 from dispatcher import containers, runtimes
-from dispatcher.exam_runner import PrExam, PromptTooLong
+from dispatcher.exam_runner import SCRIPT, PrExam, PromptTooLong
 from tests.test_exam_debt import Gh
 from tests.test_exam_generation import GET, HEADERS, NOW, REPO
 from tests.test_exam_grading import answers_for, opened, submit
@@ -550,18 +551,15 @@ def test_an_exam_deleted_after_a_merge_with_a_pass_loses_its_threads_and_keeps_i
     assert box.records(REPO) == records
 
 
-SKILLS = [Path(__file__).resolve().parent.parent / ".my-skills" / "pr-exam" / "pr_exam.py",
-          Path.home() / ".my-skills" / "pr-exam" / "pr_exam.py"]
-
-
 class RealChat(Recording):
-    """Recording's fake generation and grading, with the console's own `PrExam.context` on the installed
-    assist-capable skill: only the model is faked."""
+    """Recording's fake generation and grading, with the console's own `PrExam.context` on the pinned
+    installation the console runs: only the model is faked."""
 
     def context(self, exam, diff, body, turn):
-        script = next((s for s in SKILLS if s.exists() and 'add_parser("context")' in s.read_text()), None)
-        assert script, "no installed pr-exam skill has a `context` command"
-        return PrExam(script).context(exam, diff, body, turn)
+        if not SCRIPT.is_file() and os.environ.get("CI"):
+            pytest.skip("CI installs no skills; the gate runs this against scripts/install-skills.sh's copy")
+        assert SCRIPT.is_file(), "pr-exam is not installed: run scripts/install-skills.sh"
+        return PrExam(SCRIPT).context(exam, diff, body, turn)
 
 
 class Real(Turns):
