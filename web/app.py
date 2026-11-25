@@ -105,7 +105,7 @@ _ANSWERS = TypeAdapter(read_model.Answers)
 
 class AnswersReq(BaseModel):
     answers: read_model.Answers
-    submit: Literal[answers_file.SUBMITS] | None = None
+    submit: answers_file.Submit | None = None
     revision: str = Field(min_length=1)
 
     @field_validator("answers")
@@ -547,63 +547,11 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
              response_model=read_model.Delivery | None)
     def task_delivery(repository: str, issue: int,
                       op: Operator = Depends(current_operator)):
-        """A pending submission is queued; otherwise the newer, by submission
-        time, of the answers files' submission and the latest drop of one
-        decides. Read whether or not a request is open."""
+        """The delivery of the task's latest submission, read whether or not
+        a request is open."""
         t = _find_task(repository, issue)
-        queued = _queued(repository, issue)
-        if queued:
-            return queued
-        latest = max(_delivered(t) + _dropped(repository, issue), default=None,
-                     key=lambda d: d[:2])
-        return latest and latest[-1]
-
-    def _queued(repository: str, issue: int) -> read_model.Delivery | None:
-        """The latest pending submission of the task, if any."""
-        queued = [i for i in sources.pending_intents() if _is_submission(i, repository, issue)]
-        if not queued:
-            return None
-        p = max(queued, key=lambda i: str(i["created_at"]))["payload"]
-        return read_model.Delivery(state="queued", reason="", submit=p["submit"],
-                                   revision=p.get("revision"))
-
-    def _is_submission(i: dict, repository: str, issue: int) -> bool:
-        """i is a pending answers submission of the task, with a revision."""
-        return ((i["action"], i["repository"], i["issue"]) == ("answers", repository, issue)
-                and isinstance(i["payload"], dict)
-                and i["payload"].get("submit") in answers_file.SUBMITS
-                and isinstance(i["payload"].get("revision"), str))
-
-    def _delivered(t) -> list[tuple[str, int, read_model.Delivery]]:
-        """The submission of each answers file of the task (both kinds can exist)."""
-        out = []
-        for kind in answers_file.ANSWERS_FILES:
-            doc = answers_file.read(t.worktree, kind) or {}
-            submit, revision = doc.get("submitted"), doc.get("revision")
-            if submit in answers_file.SUBMITS and isinstance(revision, (str, type(None))):
-                out.append((str(doc.get("submitted_at") or ""), 1, read_model.Delivery(
-                    state="delivered", reason="", submit=submit, revision=revision)))
-        return out
-
-    def _dropped(repository: str, issue: int) -> list[tuple[str, int, read_model.Delivery]]:
-        """The latest drop of an answers submission of the task. The answers
-        file wins a tie (rank 1 over 0)."""
-        for e in reversed(sources.events_tail(limit=sys.maxsize)):
-            sub = e.get("submission")
-            if not _is_drop(e, repository, issue):
-                continue
-            try:
-                return [(str(sub.get("created_at") or ""), 0, read_model.Delivery(
-                    state="dropped", reason=str(e.get("detail", "")),
-                    submit=sub.get("submit"), revision=sub.get("revision")))]
-            except ValidationError:   # a hand-edited line
-                return []
-        return []
-
-    def _is_drop(e: dict, repository: str, issue: int) -> bool:
-        """e records the drop of an answers submission of the task."""
-        return (e.get("event"), e.get("repository"), e.get("issue")) == (
-            "intent-dropped", repository, issue) and isinstance(e.get("submission"), dict)
+        return answers_file.delivery(t, _task_intents(t),
+                                     sources.events_tail(limit=sys.maxsize))
 
     def _request_content(req, wt: Path
                          ) -> read_model.ReadableContent | read_model.UnavailableContent:
@@ -630,17 +578,16 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
 
     def _pending_answers(t) -> list[intents.Intent]:
         """t's pending answers intents that carry an answers set."""
+        return [i for i in _task_intents(t) if i.action == "answers"
+                and isinstance(i.payload, dict) and isinstance(i.payload.get("answers"), dict)]
+
+    def _task_intents(t) -> list[intents.Intent]:
+        """t's pending intents."""
         return [intents.Intent(i["action"], i["repository"], i["issue"],
                                i["payload"], i["actor"], i["created_at"],
                                Path(i["id"]))
                 for i in sources.pending_intents()
-                if _is_answers_intent(i, t)]
-
-    def _is_answers_intent(i: dict, t) -> bool:
-        return ((i["action"], i["repository"], i["issue"])
-                == ("answers", t.repository, t.issue)
-                and isinstance(i["payload"], dict)
-                and isinstance(i["payload"].get("answers"), dict))
+                if (i["repository"], i["issue"]) == (t.repository, t.issue)]
 
     HISTORY_MAX_LINES = 10000
 

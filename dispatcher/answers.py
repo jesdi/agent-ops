@@ -14,7 +14,7 @@ import stat
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Literal, TypedDict, get_args
+from typing import Callable, Iterable, Literal, NamedTuple, TypedDict, get_args
 
 from dispatcher import intents
 from dispatcher.state import TaskState, operator_request, read_regular
@@ -305,3 +305,61 @@ def without_superseded(pending: list[intents.Intent],
         if i.path in losers:
             intents.delete_intent(i)
     return [i for i in pending if i.path not in losers]
+
+
+@dataclass(frozen=True)
+class Delivery:
+    """What became of the task's latest submission."""
+    state: Literal["queued", "delivered", "dropped"]
+    reason: DropReason | Literal[""]    # "" unless dropped
+    submit: Submit
+    revision: str | None                # None: a session wrote the answers file
+
+
+class _Outcome(NamedTuple):
+    """A submission's outcome, ordered by submission time; on a tie the
+    answers file (delivered) wins over a drop."""
+    at: str
+    delivered: bool
+    delivery: Delivery
+
+
+def delivery(task: TaskState, pending: Iterable[intents.Intent],
+             events: Iterable[dict]) -> Delivery | None:
+    """A pending submission of the task is queued; otherwise the newer of
+    the answers files' submission and the latest drop of one decides.
+    None when the task has no submission. Drafts never count."""
+    queued = [s for i in pending if (i.repository, i.issue) == (task.repository, task.issue)
+              and (s := Submission.of(i)) is not None and s.revision is not None]
+    if queued:
+        s = max(queued, key=lambda s: s.created_at)
+        return Delivery("queued", "", s.submit, s.revision)
+    latest = max(_delivered(task) + _dropped(task, events), default=None,
+                 key=lambda o: o[:2])
+    return latest.delivery if latest else None
+
+
+def _delivered(task: TaskState) -> list[_Outcome]:
+    """The submission of each answers file of the task (both kinds can exist)."""
+    out = []
+    for kind in ANSWERS_FILES:
+        doc = read(task.worktree, kind) or {}
+        submit, revision = doc.get("submitted"), doc.get("revision")
+        if submit in SUBMITS and isinstance(revision, (str, type(None))):
+            out.append(_Outcome(str(doc.get("submitted_at") or ""), True,
+                                Delivery("delivered", "", submit, revision)))
+    return out
+
+
+def _dropped(task: TaskState, events: Iterable[dict]) -> list[_Outcome]:
+    """The latest drop of a submission of the task; none when that event
+    line was hand-edited out of shape."""
+    for e in reversed(list(events)):
+        if (e.get("event"), e.get("repository"), e.get("issue")) != (
+                "intent-dropped", task.repository, task.issue) or "submission" not in e:
+            continue
+        s, reason = Submission.from_event(e["submission"]), e.get("detail")
+        if s is None or reason not in get_args(DropReason):
+            return []
+        return [_Outcome(s.created_at, False, Delivery("dropped", reason, s.submit, s.revision))]
+    return []

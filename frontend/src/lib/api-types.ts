@@ -509,9 +509,8 @@ export interface paths {
         };
         /**
          * Task Delivery
-         * @description A pending submission is queued; otherwise the newer, by submission
-         *     time, of the answers files' submission and the latest drop of one
-         *     decides. Read whether or not a request is open.
+         * @description The delivery of the task's latest submission, read whether or not
+         *     a request is open.
          */
         get: operations["task_delivery_api_task__repository___issue__delivery_get"];
         put?: never;
@@ -820,11 +819,11 @@ export interface components {
         };
         /**
          * Delivery
-         * @description The delivery of the task's latest answers submission.
+         * @description The delivery of the task's latest answers submission (answers.delivery).
          */
         Delivery: {
             /** Reason */
-            reason: string;
+            reason: ("no open request" | "stale revision" | "already submitted" | "session busy") | "";
             /** Revision */
             revision: string | null;
             /**
@@ -832,8 +831,11 @@ export interface components {
              * @enum {string}
              */
             state: "queued" | "delivered" | "dropped";
-            /** Submit */
-            submit: string;
+            /**
+             * Submit
+             * @enum {string}
+             */
+            submit: "changes" | "approve";
         };
         /** EntrySetting */
         EntrySetting: {
