@@ -217,13 +217,23 @@ def _intent_repository(cfg: Config, intent: intents.Intent) -> str:
     return intent.repository or (resolved.repository if resolved is not None else "")
 
 
+def _held(cfg: Config, intent: intents.Intent) -> bool:
+    """An answers submission the pass leaves pending (answers.held). A task
+    file that does not load holds nothing: the drain fails the intent."""
+    try:
+        return intent.action == "answers" and answers.held(_task_for_intent(cfg, intent), intent)
+    except Exception:
+        return False
+
+
 def _apply_intents(cfg: Config, deps: Deps) -> None:
     """Drain operator intents (web console writes) at the top of the pass.
     Applied-then-deleted = at-most-once; a failed intent is deleted too,
-    noted to stderr, and never aborts the pass or the remaining intents."""
+    noted to stderr, and never aborts the pass or the remaining intents.
+    A held submission is not drained: it stays for a later pass."""
     by_name = {t.name: t for t in cfg.repositories}
-    pending = answers.without_superseded(intents.list_intents(cfg.state_dir),
-                                         lambda i: _task_for_intent(cfg, i))
+    unheld = [i for i in intents.list_intents(cfg.state_dir) if not _held(cfg, i)]
+    pending = answers.without_superseded(unheld, lambda i: _task_for_intent(cfg, i))
     for intent in pending:
         try:
             _apply_one_intent(cfg, deps, by_name, intent)

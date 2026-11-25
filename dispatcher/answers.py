@@ -117,6 +117,16 @@ def waits_for_operator(task: TaskState) -> bool:
     return task.status.kind in _WAITS_FOR_OPERATOR
 
 
+_LIVE = frozenset({Kind.RUNNING, Kind.WAKING, Kind.HELD_LOGIN})
+
+
+def held(task: TaskState | None, intent: intents.Intent) -> bool:
+    """A submission made while the session is live: it stays pending until
+    the task waits for the operator again, then drains as any other."""
+    return (task is not None and task.status.kind in _LIVE
+            and intent.payload.get("submit") in SUBMITS)
+
+
 def disk_revision(task: TaskState | None) -> str:
     """The revision of the task's open request as it is on disk now; ""
     when there is no request or the revision cannot be told."""
