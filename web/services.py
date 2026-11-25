@@ -88,9 +88,13 @@ def _upcoming(unit: dict) -> list[str]:
         return []
     if unit.get("upcoming"):  # the probe's calendar walk, by systemd itself
         return unit["upcoming"][:UPCOMING]
-    first = datetime.fromisoformat(unit["next_run"])
-    step = unit.get("interval_seconds") or _calendar_interval(unit["on_calendar"])
-    count = UPCOMING if step else 1  # no walk from the probe: only the next run is known
+    return _stepped(datetime.fromisoformat(unit["next_run"]),
+                    unit.get("interval_seconds") or _calendar_interval(unit["on_calendar"]))
+
+
+def _stepped(first: datetime, step: int) -> list[str]:
+    """Runs `step` seconds apart from `first`; only `first` when no step is known."""
+    count = UPCOMING if step else 1
     return [(first + timedelta(seconds=step * i)).isoformat() for i in range(count)]
 
 
