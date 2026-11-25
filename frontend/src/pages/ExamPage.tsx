@@ -7,8 +7,13 @@ import { useExam } from '../hooks/useResources'
 
 type Answers = Record<string, number | string>
 
-function Question({ q, value, onChange }: { q: ExamQuestion; value: number | string | undefined; onChange: (v: number | string) => void }) {
+type Bypassing = { bypassed: string | null; toggle: (question: string) => void }
+
+function Question({ q, value, onChange, bypassing }: {
+  q: ExamQuestion; value: number | string | undefined; onChange: (v: number | string) => void; bypassing: Bypassing
+}) {
   const promptId = `prompt-${q.id}`
+  const bypassed = bypassing.bypassed === q.id
   return (
     <li className="space-y-2">
       <p id={promptId} className="font-medium">{q.prompt}</p>
@@ -30,13 +35,16 @@ function Question({ q, value, onChange }: { q: ExamQuestion; value: number | str
           className="w-full rounded border border-ink-muted bg-transparent p-2"
         />
       )}
+      <button type="button" onClick={() => bypassing.toggle(q.id)} className="rounded border px-2 py-1 text-sm">
+        {bypassed ? 'Undo bypass' : 'Bypass'}
+      </button>
     </li>
   )
 }
 
-/** The questions of `result` that lost points, each with its explanation, the grader's feedback and its hunk. */
+/** The questions of `result` that lost points or were bypassed, each with its explanation, the grader's feedback and its hunk. */
 function Misses({ result }: { result: ExamResult }) {
-  return result.questions.filter((m) => m.points < 1).map((m) => (
+  return result.questions.filter((m) => m.help === 'bypassed' || (m.points ?? 1) < 1).map((m) => (
     <article key={m.id} className="space-y-1">
       <h2 className="font-medium">{m.concept}</h2>
       <p>{m.explanation}</p>
@@ -50,19 +58,21 @@ function isStatus(error: unknown, status: number) {
   return error instanceof ApiError && error.status === status
 }
 
-function isAnswered(questions: ExamQuestion[], answers: Answers) {
-  return questions.every((q) => answers[q.id] !== undefined && answers[q.id] !== '')
+function isAnswered(questions: ExamQuestion[], answers: Answers, bypassed: string | null) {
+  return questions.every((q) => q.id === bypassed || (answers[q.id] !== undefined && answers[q.id] !== ''))
 }
 
-function AttemptForm({ data, onSubmit, pending }: { data: ExamView; onSubmit: (a: Answers) => void; pending: boolean }) {
+function AttemptForm({ data, onSubmit, pending, bypassing }: {
+  data: ExamView; onSubmit: (a: Answers) => void; pending: boolean; bypassing: Bypassing
+}) {
   const [answers, setAnswers] = useState<Answers>({})
   const questions = data.exam?.questions ?? []
-  const ready = isAnswered(questions, answers) && !pending
+  const ready = isAnswered(questions, answers, data.bypassed) && !pending
   return (
-    <form onSubmit={(e) => { e.preventDefault(); if (ready) onSubmit(answers) }} className="space-y-4">
+    <form onSubmit={(e) => { e.preventDefault(); if (ready) onSubmit(Object.fromEntries(Object.entries(answers).filter(([id]) => id !== data.bypassed))) }} className="space-y-4">
       <ol className="space-y-6">
         {questions.map((q) => (
-          <Question key={q.id} q={q} value={answers[q.id]} onChange={(v) => setAnswers((a) => ({ ...a, [q.id]: v }))} />
+          <Question key={q.id} q={q} bypassing={bypassing} value={answers[q.id]} onChange={(v) => setAnswers((a) => ({ ...a, [q.id]: v }))} />
         ))}
       </ol>
       <button type="submit" disabled={!ready} className="rounded border px-4 py-2 disabled:opacity-50">Submit answers</button>
@@ -70,7 +80,7 @@ function AttemptForm({ data, onSubmit, pending }: { data: ExamView; onSubmit: (a
   )
 }
 
-type Answering = { changed: boolean; error: string | null; pending: boolean; submit: (a: Answers) => void }
+type Answering = { changed: boolean; error: string | null; pending: boolean; submit: (a: Answers) => void; bypassing: Bypassing }
 
 /** Submits the open attempt: the answer is the exam as it now reads, grading. A 409 means the exam changed, so it is reloaded. */
 function useAnswerExam(owner: string, name: string, pr: string, data: ExamView | undefined): Answering {
@@ -88,8 +98,19 @@ function useAnswerExam(owner: string, name: string, pr: string, data: ExamView |
       }
     },
   })
+  const bypass = useMutation({
+    mutationFn: ({ on, question }: { on: boolean; question: string }) =>
+      api.bypassExam(owner, name, pr, on, { attempt: data!.attempt, head_sha: data!.head_sha!, question }),
+    onMutate: () => setChanged(false),
+    onSuccess: (r) => queryClient.setQueryData<ExamView>(key, r),
+    onError: () => { setChanged(true); void queryClient.invalidateQueries({ queryKey: key }) },   // refused: the exam moved on, so reload it
+  })
   const error = submit.isError && !changed ? submit.error.message : null
-  return { changed, error, pending: submit.isPending, submit: (a) => submit.mutate(a) }
+  const toggle = (question: string) => {
+    const on = data!.bypassed !== question
+    if (!on || window.confirm('Bypass this question? It will not count toward your score.')) bypass.mutate({ on, question })
+  }
+  return { changed, error, pending: submit.isPending, submit: (a) => submit.mutate(a), bypassing: { bypassed: data?.bypassed ?? null, toggle } }
 }
 
 type ViewProps = { data: ExamView; answer: Answering }
@@ -103,10 +124,16 @@ function LastMisses({ data }: { data: ExamView }) {
   const last = lastResult(data)
   return last && !last.passed ? (
     <section className="space-y-3">
-      <p>Score {last.score} / {last.max}</p>
+      <p>Score {last.score} / {last.max}{bypassedNote(last)}</p>
       <Misses result={last} />
     </section>
   ) : null
+}
+
+/** Which questions of `result` were bypassed, named in the one line that carries the score. */
+function bypassedNote(result: ExamResult) {
+  const concepts = result.questions.filter((m) => m.help === 'bypassed').map((m) => m.concept)
+  return concepts.length ? ` · bypassed: ${concepts.join(', ')}` : ''
 }
 
 function GeneratingView({ data }: ViewProps) {
@@ -126,8 +153,7 @@ function PassedView({ data }: ViewProps) {
   return last ? (
     <>
       <section className="space-y-1">
-        <h2 className="font-medium">Passed</h2>
-        <p>Score {last.score} / {last.max}</p>
+        <p className="font-medium">Passed · Score {last.score} / {last.max}{bypassedNote(last)}</p>
         {!data.debt && <p>The exam status is posted as success.</p>}
       </section>
       {/* a passing attempt can still hold partial answers, with the grader's feedback */}
@@ -141,7 +167,7 @@ function OpenView({ data, answer }: ViewProps) {
     <>
       <LastMisses data={data} />
       {data.exam && (
-        <AttemptForm key={`${data.attempt}-${data.head_sha}`} data={data} pending={answer.pending} onSubmit={answer.submit} />
+        <AttemptForm key={`${data.attempt}-${data.head_sha}`} data={data} pending={answer.pending} onSubmit={answer.submit} bypassing={answer.bypassing} />
       )}
     </>
   )

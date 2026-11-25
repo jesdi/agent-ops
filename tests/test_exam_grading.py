@@ -95,7 +95,7 @@ class Session:
 
 
 class Scoring(PrExam):
-    def score(self, exam, answers, grades):
+    def score(self, exam, answers, grades, flags=None):
         exam, answers, grades = (json.loads(Path(p).read_text()) for p in (exam, answers, grades))
         kinds = {c["id"]: c["kind"] for c in exam["concepts"]}
         out, missed, total, why_ok = [], [], 0, True

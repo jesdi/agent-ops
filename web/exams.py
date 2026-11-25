@@ -14,6 +14,10 @@ from web.auth import Operator, current_operator
 Slug = r"[A-Za-z0-9][A-Za-z0-9._-]*"
 
 
+Owner = Annotated[str, Path(pattern=rf"^{Slug}$")]
+Pr = Annotated[int, Path(ge=1)]
+
+
 class ExamRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     repo: str = Field(pattern=rf"^{Slug}/{Slug}$")
@@ -25,6 +29,13 @@ class Answers(BaseModel):
     attempt: int = Field(strict=True)
     head_sha: str
     answers: dict[str, Annotated[int, Field(strict=True)] | str]
+
+
+class Bypass(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    attempt: int = Field(strict=True)
+    head_sha: str
+    question: str
 
 
 class Exam(BaseModel):
@@ -61,7 +72,8 @@ class ExamQuestions(BaseModel):
 class ExamQuestionResult(BaseModel):
     id: str
     concept: str
-    points: int | float
+    points: int | float | None = None   # absent for a bypassed question
+    help: Literal["bypassed"] | None = None
     explanation: str | None = None   # only for a question under 1 point
     hunk: str | None = None
     feedback: str | None = None   # the grader's line, only for a missed or partial free-text question
@@ -86,6 +98,7 @@ class ExamView(Exam):
     detail: str
     attempt: int
     exam: ExamQuestions | None   # the open attempt, while it waits for answers
+    bypassed: str | None   # the open attempt's bypassed question
     attempts: list[ExamAttempt]
 
 
@@ -149,5 +162,21 @@ def router(sources, cfg: Callable[[], Config]) -> APIRouter:
         if outcome == "incomplete":
             raise HTTPException(422, "every question needs an answer")
         return view(f"{owner}/{name}", pr)
+
+    def set_bypass(body: Bypass, owner: str, name: str, pr: int, on: bool) -> ExamView:
+        outcome = sources.bypass_exam(f"{owner}/{name}", pr, body.attempt, body.head_sha, body.question, on)
+        if outcome == "conflict":
+            raise HTTPException(409, "this attempt cannot change its bypass")
+        if outcome == "unknown":
+            raise HTTPException(422, "the exam has no such question")
+        return view(f"{owner}/{name}", pr)
+
+    @routes.post("/api/exam/{owner}/{name}/{pr}/bypass", response_model=ExamView, response_model_exclude_unset=True)
+    def bypass(body: Bypass, owner: Owner, name: Owner, pr: Pr, op: Operator = Depends(current_operator)):
+        return set_bypass(body, owner, name, pr, True)
+
+    @routes.delete("/api/exam/{owner}/{name}/{pr}/bypass", response_model=ExamView, response_model_exclude_unset=True)
+    def unbypass(body: Bypass, owner: Owner, name: Owner, pr: Pr, op: Operator = Depends(current_operator)):
+        return set_bypass(body, owner, name, pr, False)
 
     return routes

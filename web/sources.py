@@ -161,6 +161,9 @@ class Sources:
             self._kick_dispatcher()
         return outcome
 
+    def bypass_exam(self, repo: str, pr: int, attempt: int, head_sha: str, question: str, on: bool) -> str:
+        return exams.bypass(self.state_dir, repo, pr, attempt, head_sha, question, on)
+
     def exams(self) -> list[dict]:
         return exams.listing(self.state_dir)
 

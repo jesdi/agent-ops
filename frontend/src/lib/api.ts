@@ -135,6 +135,8 @@ export const api = {
   exam: (owner: string, name: string, pr: string) => request<ExamView>(examPath(owner, name, pr)),
   answerExam: (owner: string, name: string, pr: string, body: { attempt: number; head_sha: string; answers: Record<string, number | string> }) =>
     post<ExamView>(`${examPath(owner, name, pr)}/answers`, body),
+  bypassExam: (owner: string, name: string, pr: string, on: boolean, body: { attempt: number; head_sha: string; question: string }) =>
+    request<ExamView>(`${examPath(owner, name, pr)}/bypass`, { method: on ? 'POST' : 'DELETE', body: JSON.stringify(body) }),
   onboardings: () => request<OnboardingsView>('/onboarding'),
   onboarding: (project: string) => request<OnboardingView>(`/onboarding/${encodeURIComponent(project)}`),
   startOnboarding: (project: string, body: OnboardingStartRequest) =>

@@ -121,6 +121,7 @@ def _load(state_dir: str | Path, repo: str, pr: int) -> dict | None:
         doc = json.loads(_path(state_dir, repo, pr).read_text())
     except FileNotFoundError:
         return None
+    doc.setdefault("bypassed", None)   # the open attempt's bypassed question
     if doc["attempt"]:
         _migrate(state_dir, doc)   # the flat-layout migration: deleted with it
     return doc
@@ -392,11 +393,44 @@ def submit(state_dir, repo: str, pr: int, attempt: int, head_sha: str, answers: 
         if not _is_open(doc, attempt, head_sha):
             return "conflict"
         questions = public(state_dir, repo, pr, attempt)["questions"]
-        if not all(_answers(q, answers.get(q["id"])) for q in questions):
+        if not _complete(questions, answers, doc["bypassed"]):
             return "incomplete"
-        write_json_atomic(_attempt_dir(state_dir, repo, pr, attempt) / "answers.json",
-                          {q["id"]: answers[q["id"]] for q in questions})
-        doc.update(state=ExamState.GRADING, grading={"attempt": attempt})
+        _save_submission(_attempt_dir(state_dir, repo, pr, attempt), questions, answers, doc["bypassed"])
+        doc.update(state=ExamState.GRADING, grading={"attempt": attempt}, bypassed=None)
+        _write(state_dir, doc)
+        return "ok"
+
+
+def _complete(questions: list, answers: dict, skipped: str | None) -> bool:
+    """Every question but the bypassed one has a well-typed answer."""
+    return all(q["id"] == skipped or _answers(q, answers.get(q["id"])) for q in questions)
+
+
+def _save_submission(attempt_dir: Path, questions: list, answers: dict, skipped: str | None) -> None:
+    """Write the submitted answers and the attempt's flags snapshot."""
+    write_json_atomic(attempt_dir / "answers.json",
+                      {q["id"]: answers[q["id"]] for q in questions if q["id"] in answers})
+    write_json_atomic(attempt_dir / "flags.json", {"bypassed": [skipped] if skipped else [], "assisted": []})
+
+
+def _bypass_refusal(doc: dict, questions: list, question: str, on: bool) -> str:
+    """"" when the bypass or its undo may go ahead, else "unknown" or "conflict"."""
+    if question not in {q["id"] for q in questions}:
+        return "unknown"
+    # a bypass needs none held, an undo needs this one held
+    return "conflict" if doc["bypassed"] != (None if on else question) else ""
+
+
+def bypass(state_dir, repo: str, pr: int, attempt: int, head_sha: str, question: str, on: bool) -> str:
+    """Bypass `question` of the open attempt, or undo it: "ok", "conflict" (not the open current
+    attempt, a second bypass, or undoing another question) or "unknown" (no such question)."""
+    with state_lock(state_dir, LOCK):
+        doc = _load(state_dir, repo, pr)
+        if not _is_open(doc, attempt, head_sha):
+            return "conflict"
+        if refusal := _bypass_refusal(doc, public(state_dir, repo, pr, attempt)["questions"], question, on):
+            return refusal
+        doc["bypassed"] = question if on else None
         _write(state_dir, doc)
         return "ok"
 
@@ -442,10 +476,19 @@ def _line(feedback) -> str:
     return feedback[:1000] if isinstance(feedback, str) else ""
 
 
+def _texts(attempt_dir: Path, key: dict) -> list:
+    """The free-text questions of the attempt left to grade: none the attempt bypassed."""
+    flags = attempt_dir / "flags.json"   # written at submit; an attempt submitted before bypass has none
+    if not flags.exists():
+        write_json_atomic(flags, {"bypassed": [], "assisted": []})
+    skipped = json.loads(flags.read_text())["bypassed"]
+    return [q for q in key["questions"] if q["type"] == "text" and q["id"] not in skipped]
+
+
 def _grade(cfg, doc, attempt_dir: Path, sha, diff: str, model, io) -> tuple[dict | None, str]:
     """Grades of the free-text answers in `attempt_dir` by a fresh session; (grades, error)."""
     key = json.loads((attempt_dir / "exam.json").read_text())
-    texts = [q for q in key["questions"] if q["type"] == "text"]
+    texts = _texts(attempt_dir, key)
     if not texts:
         return {}, ""
     answers = json.loads((attempt_dir / "answers.json").read_text())
@@ -461,7 +504,7 @@ def _score(attempt_dir: Path, grades: dict, pr_exam) -> tuple[dict | None, str]:
     (attempt_dir / "grades.json").write_text(json.dumps(grades))
     try:
         scored = pr_exam.score(attempt_dir / "exam.json", attempt_dir / "answers.json",
-                               attempt_dir / "grades.json")
+                               attempt_dir / "grades.json", attempt_dir / "flags.json")
     except (ValueError, KeyError, subprocess.SubprocessError, OSError) as exc:
         return None, f"scoring failed: {exc}"
     for q in scored["questions"]:   # the grader's line rides along with each free-text question
@@ -474,9 +517,15 @@ def _score(attempt_dir: Path, grades: dict, pr_exam) -> tuple[dict | None, str]:
 def _result(doc, scored: dict) -> dict:
     """The attempt as the page shows it: explanations only where points were lost."""
     return {"attempt": doc["attempt"], "passed": scored["passed"], "score": scored["score"],
-            "max": scored["max"], "questions": [
-                {k: v for k, v in q.items() if k in ("id", "concept", "points")
-                 or (q["points"] < 1 and k in ("explanation", "hunk", "feedback"))} for q in scored["questions"]]}
+            "max": scored["max"], "questions": [_shown(q) for q in scored["questions"]]}
+
+
+def _shown(q: dict) -> dict:
+    """One scored question as the page shows it: the explanation only where points were lost."""
+    keep = ("id", "concept", "points", "help")
+    if q.get("help") or q["points"] < 1:
+        keep += ("explanation", "hunk", "feedback")
+    return {k: v for k, v in q.items() if k in keep}
 
 
 def _graded_fields(doc, scored: dict, exam: dict) -> dict:
@@ -535,7 +584,7 @@ def _generated(job: dict, outcome: str, diff: str, attempt_dir: Path):
         if cur["delta"]:   # a delta exam starts over on the new head
             cur["results"] = []
         cur.update(state=ExamState.OPEN, head_sha=job["head_sha"], attempt=job["attempt"] + 1,
-                   delta=False, followup=None)
+                   delta=False, followup=None, bypassed=None)
     return change
 
 

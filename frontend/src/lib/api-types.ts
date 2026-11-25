@@ -123,6 +123,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/exam/{owner}/{name}/{pr}/bypass": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Bypass */
+        post: operations["bypass_api_exam__owner___name___pr__bypass_post"];
+        /** Unbypass */
+        delete: operations["unbypass_api_exam__owner___name___pr__bypass_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/exams": {
         parameters: {
             query?: never;
@@ -880,6 +898,15 @@ export interface components {
             /** Issue */
             issue: number;
         };
+        /** Bypass */
+        Bypass: {
+            /** Attempt */
+            attempt: number;
+            /** Head Sha */
+            head_sha: string;
+            /** Question */
+            question: string;
+        };
         /** CapacityView */
         CapacityView: {
             /** Active */
@@ -1023,12 +1050,14 @@ export interface components {
             explanation?: string | null;
             /** Feedback */
             feedback?: string | null;
+            /** Help */
+            help?: "bypassed" | null;
             /** Hunk */
             hunk?: string | null;
             /** Id */
             id: string;
             /** Points */
-            points: number;
+            points?: number | null;
         };
         /**
          * ExamQuestions
@@ -1075,6 +1104,8 @@ export interface components {
             attempt: number;
             /** Attempts */
             attempts: components["schemas"]["ExamAttempt"][];
+            /** Bypassed */
+            bypassed: string | null;
             /** Debt */
             debt: boolean;
             /** Detail */
@@ -2173,6 +2204,80 @@ export interface operations {
         responses: {
             /** @description Successful Response */
             202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExamView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    bypass_api_exam__owner___name___pr__bypass_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                name: string;
+                pr: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Bypass"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExamView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unbypass_api_exam__owner___name___pr__bypass_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                name: string;
+                pr: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Bypass"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };

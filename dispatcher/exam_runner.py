@@ -110,8 +110,9 @@ class PrExam:
             raise ValueError(proc.stderr.strip() or "config failed")
         return json.loads(proc.stdout)
 
-    def score(self, exam: Path, answers: Path, grades: Path) -> dict:
-        proc = self._call("score", "--exam", exam, "--answers", answers, "--grades", grades)
+    def score(self, exam: Path, answers: Path, grades: Path, flags: Path | None = None) -> dict:
+        extra = ("--flags", flags) if flags else ()
+        proc = self._call("score", "--exam", exam, "--answers", answers, "--grades", grades, *extra)
         if proc.returncode:
             raise ValueError(proc.stderr.strip() or "score failed")
         return json.loads(proc.stdout)
