@@ -54,7 +54,7 @@ def _check_calendar(job: str, value, sched: dict) -> None:
 _CHECKS = {"every": _check_every, "daily": _check_daily, "calendar": _check_calendar}
 
 
-def _check_schedule(job: str, sched) -> None:
+def check_schedule(job: str, sched) -> None:
     if not isinstance(sched, dict):
         raise ValueError(f"{job}: schedule must be a map")
     kinds = _KINDS & sched.keys()
@@ -81,7 +81,7 @@ def _check_entry(job: str, entry) -> None:
         raise ValueError(f"{job}: missing")
     if not isinstance(entry.get("paused"), bool):
         raise ValueError(f"{job}: paused must be true or false")
-    _check_schedule(job, entry.get("schedule"))
+    check_schedule(job, entry.get("schedule"))
 
 
 def load(path: str) -> dict:

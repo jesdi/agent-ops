@@ -11,5 +11,6 @@ export function useServiceActions() {
   const pause = useMutation({ mutationFn: api.pauseService, onSettled })
   const resume = useMutation({ mutationFn: api.resumeService, onSettled })
   const retry = useMutation({ mutationFn: api.retryService, onSettled })
-  return { run, stop, pause, resume, retry }
+  const schedule = useMutation({ mutationFn: api.setServiceSchedule, onSettled })
+  return { schedule, run, stop, pause, resume, retry }
 }

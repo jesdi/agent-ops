@@ -5,10 +5,10 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Callable
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel
 
-from dispatcher import services_changes
+from dispatcher import services_changes, services_config
 from web.auth import Operator, current_operator
 
 USER_JOB_PREFIX = "agent-ops-"
@@ -53,9 +53,10 @@ class ServicesView(BaseModel):
     read_only: list[Job]
 
 
-def _daily(hours: str, minute: str) -> str:
+def _daily(hours: str, minute: str, zone: str | None) -> str:
     times = [f"{int(h):02d}:{minute}" for h in hours.split(",")]
-    return f"daily at {times[0]} UTC" if len(times) == 1 else f"{', '.join(times)} UTC"
+    zone = zone or "UTC"
+    return f"daily at {times[0]} {zone}" if len(times) == 1 else f"{', '.join(times)} {zone}"
 
 
 def describe_schedule(calendar: str | None) -> str:
@@ -63,8 +64,8 @@ def describe_schedule(calendar: str | None) -> str:
     calendar = calendar or ""
     if m := re.fullmatch(r"\*:0/(\d+)", calendar):
         return f"every {m[1]} min"
-    if m := re.fullmatch(r"\*-\*-\* ([\d,]+):(\d\d)(?::00)?", calendar):
-        return _daily(m[1], m[2])
+    if m := re.fullmatch(r"\*-\*-\* ([\d,]+):(\d\d)(?::00)?(?: ([A-Za-z0-9_+\-/]+))?", calendar):
+        return _daily(m[1], m[2], m[3])
     return calendar
 
 
@@ -136,6 +137,12 @@ def services_view(timers: list[dict], runs: dict[str, list[dict]], now: datetime
         read_only=[_job(t, runs, read_only=True) for t in timers if _read_only(t)])
 
 
+def _deploy_sync_paused(timers: list[dict], changes: dict) -> bool:
+    sync = next((t for t in timers if t["unit"] == f"{USER_JOB_PREFIX}update.timer" and _managed(t)), None)
+    return (sync is not None and sync["active_state"] != "active") or bool(
+        (changes.get("update") or {}).get("paused"))
+
+
 def router(sources, now: Callable[[], datetime], state_dir: Callable[[], str]) -> APIRouter:
     routes = APIRouter()
 
@@ -157,6 +164,25 @@ def router(sources, now: Callable[[], datetime], state_dir: Callable[[], str]) -
                                         lambda: change(f"{job}.timer"))
         except Exception as e:
             raise HTTPException(502, f"systemctl failed: {e}") from e
+        sources.kick_recorder()
+        return {}
+
+    @routes.put("/api/services/{job}/schedule")
+    def set_schedule(job: str, schedule: dict = Body(...), op: Operator = Depends(current_operator)):
+        check_managed(job)
+        name = job.removeprefix(USER_JOB_PREFIX)
+        if name not in services_config.JOBS:
+            raise HTTPException(404, "not a managed job")
+        try:
+            services_config.check_schedule(name, schedule)
+        except ValueError as e:
+            raise HTTPException(422, str(e)) from e
+        if _deploy_sync_paused(sources.service_timers(), services_changes.read(state_dir())):
+            raise HTTPException(409, "The deploy sync is paused: a schedule change cannot be applied.")
+        try:
+            services_changes.set_schedule(state_dir(), name, schedule)
+        except services_changes.Applying:
+            raise HTTPException(409, "A schedule change is already applying.") from None
         sources.kick_recorder()
         return {}
 

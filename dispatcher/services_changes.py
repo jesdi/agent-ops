@@ -48,7 +48,25 @@ def set_paused(state_dir: str, job: str, paused: bool, apply) -> None:
 
         def edit(entry: dict) -> dict:
             rec = {k: v for k, v in (entry.get("record") or {}).items() if k != "failed"}
+            keep = {k: v for k, v in entry.items() if k == "schedule"}
             if same and not rec:
-                return {}
-            return {"paused": paused, **({"record": rec} if rec else {})}
+                return keep
+            return {**keep, "paused": paused, **({"record": rec} if rec else {})}
         _update(root, job, edit)
+
+
+class Applying(Exception):
+    """A schedule change is already waiting to be applied."""
+
+
+def set_schedule(state_dir: str, job: str, schedule: dict) -> None:
+    """Record `schedule` for `job`, under the changes lock. Raises `Applying` while an earlier
+    change is not yet installed (a second save is refused, never merged); a failed one is replaced."""
+    with state_lock(state_dir, "services-changes.lock", None):
+        def edit(entry: dict) -> dict:
+            rec = {k: v for k, v in (entry.get("record") or {}).items() if k != "failed"}
+            if entry and not (entry.get("record") or {}).get("failed"):
+                raise Applying()
+            return {**{k: v for k, v in entry.items() if k != "record"}, "schedule": schedule,
+                    **({"record": rec} if rec else {})}
+        _update(Path(state_dir), job, edit)

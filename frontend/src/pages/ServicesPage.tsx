@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useServices } from '../hooks/useResources'
 import { useServiceActions } from '../hooks/useServiceActions'
 import type { ServiceJob } from '../lib/api'
+import { ScheduleEditor } from '../components/ScheduleEditor'
 
 const hhmm = (iso: string) => new Date(iso).toISOString().slice(11, 16)
 
@@ -107,6 +108,14 @@ function Detail({ job, now }: { job: ServiceJob; now: string }) {
           </div>
         ))}
       </dl>
+      {job.change?.state === 'applying' && (
+        <p>
+          <span>applying change</span>
+          {job.change.pr != null && <> · <span>PR </span>{job.change.url
+            ? <a href={job.change.url} className="underline">#{job.change.pr}</a> : `#${job.change.pr}`}</>}
+        </p>
+      )}
+      {!job.read_only && <ScheduleEditor job={job} />}
       <Actions job={job} />
       <Runs job={job} />
     </section>
