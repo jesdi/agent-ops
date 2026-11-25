@@ -5,19 +5,18 @@ import { Route, Routes } from 'react-router'
 import { describe, expect, it } from 'vitest'
 import { renderWithProviders } from '../../test/render'
 import { server } from '../../test/msw-server'
+import { examView, keptAttempt, keptQuestion, openExam, question, SHA } from '../../test/exam'
 import { ExamPage } from '../ExamPage'
 
 // The general chat, selection quotes, the threads of submitted attempts, the assisted mark on a result, and a running
 // turn found by a reload (pr-exam-host-assist requirements 2, 4, 10, 11 and 12).
-const SHA = 'a'.repeat(40)
 const URL_PATH = '/api/exam/jesdi/general-skills/240'
 
-const q1 = { id: 'q1', type: 'choice', prompt: 'Which SHA does the lease compare?', options: ['the head SHA', 'the base SHA'], tips: 0, assisted: false, thread: [] }
-const q5 = { id: 'q5', type: 'text', prompt: 'Why does the token only grow?', tips: 0, assisted: false, thread: [] }
-const open = {
-  repo: 'jesdi/general-skills', pr: 240, state: 'open', head_sha: SHA, debt: false, detail: 'attempt 1, 2 questions',
-  attempt: 1, bypassed: null, exam: { version: 1, repo: 'jesdi/general-skills', pr: 240, head_sha: SHA, questions: [q1, q5] }, attempts: [],
-}
+const q1 = question({ id: 'q1', type: 'choice', prompt: 'Which SHA does the lease compare?', options: ['the head SHA', 'the base SHA'] })
+const q5 = question({ id: 'q5', type: 'text', prompt: 'Why does the token only grow?' })
+const open = examView([q1, q5])
+const k1 = keptQuestion(q1)
+const k5 = keptQuestion(q5)
 const general = { id: 'g1', kind: 'general', message: 'what is the riskiest change?', text: 'The lease expiry.', status: 'done', error: null }
 
 function renderExam() {
@@ -60,7 +59,7 @@ function select(node: Node) {
 
 describe('exam page general chat', () => {
   it('opens a drawer that shows the stored general chat and sends a general turn', async () => {
-    serve({ ...open, exam: { ...open.exam, general: [general] } })
+    serve({ ...open, exam: openExam([q1, q5], { general: [general] }) })
     const bodies: unknown[] = []
     startTurns(bodies)
     const events = sse()
@@ -83,8 +82,11 @@ describe('exam page general chat', () => {
     serve(open)
     renderExam()
     await screen.findByText(q5.prompt)
+    const page = screen.getByRole('main').parentElement!
+    expect(page).not.toHaveClass('md:pr-96')
     await userEvent.click(screen.getByRole('button', { name: /^chat$/i }))
     expect(drawer()).toHaveClass('fixed', 'inset-x-0', 'bottom-0', 'md:inset-y-0', 'md:left-auto', 'md:w-96')
+    expect(page).toHaveClass('md:pr-96')   // on a wide screen the page gives the open drawer its width
   })
 
   it('keeps a message that was refused, to send again', async () => {
@@ -113,7 +115,7 @@ describe('exam page selection quotes', () => {
   })
 
   it('quotes nothing for a selection inside the general chat, or an empty one', async () => {
-    serve({ ...open, exam: { ...open.exam, general: [general] } })
+    serve({ ...open, exam: openExam([q1, q5], { general: [general] }) })
     renderExam()
     await screen.findByText(q5.prompt)
     await userEvent.click(screen.getByRole('button', { name: /^chat$/i }))
@@ -126,10 +128,10 @@ describe('exam page selection quotes', () => {
     const explanation = 'The token only ever grows.'
     serve({
       ...open, state: 'passed', exam: null,
-      attempts: [{ attempt: 1, questions: [q1, q5], result: { passed: true, score: 1.5, max: 2, questions: [
+      attempts: [keptAttempt(1, [k1, k5], { passed: true, score: 1.5, max: 2, questions: [
         { id: 'q1', concept: 'lease', points: 1 },
         { id: 'q5', concept: 'token', points: 0.5, explanation, hunk: '@@ -1 +1 @@\n+y', feedback: 'misses that it grows' },
-      ] } }],
+      ] })],
     })
     renderExam()
     select((await screen.findByText(explanation)).firstChild!)
@@ -139,13 +141,12 @@ describe('exam page selection quotes', () => {
 
 describe('exam page threads of submitted attempts', () => {
   it('asks why in the failed attempt 1 thread while attempt 2 is open, and sends attempt 1', async () => {
-    const answeredWrong = { ...q5, thread: [] }
     serve({
-      ...open, attempt: 2, exam: { ...open.exam, questions: [{ ...q5, prompt: 'Who may grow the token?' }] },
-      attempts: [{ attempt: 1, questions: [q1, answeredWrong], result: { passed: false, score: 1, max: 2, questions: [
+      ...open, attempt: 2, exam: openExam([{ ...q5, prompt: 'Who may grow the token?' }]),
+      attempts: [keptAttempt(1, [k1, k5], { passed: false, score: 1, max: 2, questions: [
         { id: 'q1', concept: 'lease', points: 1 },
         { id: 'q5', concept: 'token', points: 0, explanation: 'It only grows.', hunk: '@@', feedback: 'misses that the token only grows' },
-      ] } }],
+      ] })],
     })
     const bodies: unknown[] = []
     startTurns(bodies, 't1')
@@ -161,11 +162,11 @@ describe('exam page threads of submitted attempts', () => {
   })
 
   it('keeps the question threads of a passed attempt, with Ask', async () => {
-    const asked = { ...q5, thread: [{ id: 't1', kind: 'question', message: 'why?', text: 'Because it grows.', status: 'done', error: null }] }
+    const asked = { ...k5, thread: [{ id: 't1', kind: 'question', message: 'why?', text: 'Because it grows.', status: 'done', error: null }] }
     serve({
       ...open, state: 'passed', exam: null,
-      attempts: [{ attempt: 1, questions: [q1, asked], result: { passed: true, score: 2, max: 2, questions: [
-        { id: 'q1', concept: 'lease', points: 1 }, { id: 'q5', concept: 'token', points: 1 }] } }],
+      attempts: [keptAttempt(1, [k1, asked], { passed: true, score: 2, max: 2, questions: [
+        { id: 'q1', concept: 'lease', points: 1 }, { id: 'q5', concept: 'token', points: 1 }] })],
     })
     renderExam()
     await screen.findByText(q5.prompt)
@@ -176,8 +177,8 @@ describe('exam page threads of submitted attempts', () => {
   it.each([true, false])('marks an assisted question on a graded result (passed: %s), full points included', async (passed) => {
     serve({
       ...open, state: passed ? 'passed' : 'generating', exam: null,
-      attempts: [{ attempt: 1, questions: [q1, q5], result: { passed, score: 1, max: 2, questions: [
-        { id: 'q1', concept: 'lease', points: 1, help: 'assisted' }, { id: 'q5', concept: 'token', points: 0, explanation: 'x', hunk: '@@' }] } }],
+      attempts: [keptAttempt(1, [k1, k5], { passed, score: 1, max: 2, questions: [
+        { id: 'q1', concept: 'lease', points: 1, help: 'assisted' }, { id: 'q5', concept: 'token', points: 0, explanation: 'x', hunk: '@@' }] })],
     })
     renderExam()
     await screen.findByText(q1.prompt)
@@ -185,22 +186,47 @@ describe('exam page threads of submitted attempts', () => {
     expect(within(questionOf(q5.prompt)).queryByText(/assisted/)).not.toBeInTheDocument()
   })
 
-  it('marks an assisted question on a result kept without its questions', async () => {
+  it('shows an attempt whose questions were not kept by its result, with no chat', async () => {
+    const lost = keptQuestion({ id: 'q1', type: 'text', prompt: 'lease-ownership: this question was not kept.' })
     serve({
       ...open, state: 'passed', exam: null,
-      attempts: [{ attempt: 1, questions: [], result: { passed: true, score: 1, max: 1, questions: [
-        { id: 'q1', concept: 'lease-ownership', points: 1, help: 'assisted' }] } }],
+      attempts: [keptAttempt(1, [lost], { passed: true, score: 1, max: 1, questions: [
+        { id: 'q1', concept: 'lease-ownership', points: 1, help: 'assisted' }] }, { chat: false })],
     })
     renderExam()
-    expect(await screen.findByText('lease-ownership')).toBeInTheDocument()
-    expect(screen.getByText('assisted')).toBeInTheDocument()
+    await screen.findByText(lost.prompt)
+    const q = within(questionOf(lost.prompt))
+    expect(q.getByText('assisted')).toBeInTheDocument()
+    expect(q.getByText('1 / 1')).toBeInTheDocument()
+    expect(q.queryByRole('button')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /^chat$/i })).not.toBeInTheDocument()
+  })
+
+  it('keeps the general chat of a failed attempt open to messages after its follow-up opens', async () => {
+    const earlier = { ...general, id: 'g0', text: 'The lease, in attempt 1.' }
+    serve({
+      ...open, attempt: 2, exam: openExam([{ ...q5, prompt: 'Who may grow the token?' }]),
+      attempts: [keptAttempt(1, [k1, k5], { passed: false, score: 1, max: 2, questions: [
+        { id: 'q1', concept: 'lease', points: 1 }, { id: 'q5', concept: 'token', points: 0, explanation: 'x', hunk: '@@' }] },
+      { general: [earlier] })],
+    })
+    const bodies: unknown[] = []
+    startTurns(bodies, 't1')
+    renderExam()
+    await screen.findByText('Who may grow the token?')
+    await userEvent.click(screen.getByRole('button', { name: /^chat$/i }))
+    expect(within(drawer()).getByText('The lease, in attempt 1.')).toBeInTheDocument()
+    await userEvent.type(within(drawer()).getByRole('textbox', { name: /attempt 1/i }), 'why did I fail?')
+    await userEvent.click(within(drawer()).getAllByRole('button', { name: /^send$/i })[0]!)
+    await waitFor(() => expect(bodies).toEqual([{ attempt: 1, head_sha: SHA, kind: 'general', question: null, message: 'why did I fail?' }]))
+    expect(within(drawer()).getByRole('textbox', { name: /attempt 2/i })).toHaveValue('')
   })
 })
 
 describe('exam page running turn found by a reload', () => {
   it('watches the stream of a running turn, then reads the stored reply', async () => {
     const running = { id: 't9', kind: 'tip', message: 'hint', text: '', status: 'running', error: null }
-    let current: object = { ...open, exam: { ...open.exam, questions: [q1, { ...q5, tips: 1, thread: [running] }] } }
+    let current: object = examView([q1, { ...q5, tips: 0, tips_left: 2, thread: [running] }])
     server.use(http.get(URL_PATH, () => HttpResponse.json(current)))
     const events = sse()
     server.use(http.get(`${URL_PATH}/turns/t9/stream`, () => events.response()))
@@ -208,8 +234,8 @@ describe('exam page running turn found by a reload', () => {
     await screen.findByText(q5.prompt)
     events.send({ delta: 'Part one. ' })
     expect(await within(questionOf(q5.prompt)).findByText(/Part one\./)).toBeInTheDocument()
-    expect(within(questionOf(q5.prompt)).getByRole('button', { name: /^tip 1 \/ 3$/i })).toBeDisabled()
-    current = { ...open, exam: { ...open.exam, questions: [q1, { ...q5, tips: 1, assisted: true, thread: [{ ...running, status: 'done', text: 'Part one. Part two.' }] }] } }
+    expect(within(questionOf(q5.prompt)).getByRole('button', { name: /^tip 0 \/ 3$/i })).toBeDisabled()   // a running tip is not had yet
+    current = examView([q1, { ...q5, tips: 1, tips_left: 2, assisted: true, thread: [{ ...running, status: 'done', text: 'Part one. Part two.' }] }])
     events.send({ status: 'done' })
     events.end()
     expect(await within(questionOf(q5.prompt)).findByText('Part one. Part two.')).toBeInTheDocument()

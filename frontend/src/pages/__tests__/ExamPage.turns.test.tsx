@@ -5,10 +5,12 @@ import { Route, Routes } from 'react-router'
 import { describe, expect, it } from 'vitest'
 import { renderWithProviders } from '../../test/render'
 import { server } from '../../test/msw-server'
+import { examView, question, SHA } from '../../test/exam'
 import { ExamPage } from '../ExamPage'
 
 // Interface under test (defined here, built by the ticket):
-//   each question of the open attempt has a "Tip n / 3" button (n = the question's `tips`) and an "Ask" button;
+//   each question of the open attempt has a "Tip n / 3" button (n = the question's finished `tips`, 3 the view's
+//   `tip_cap`) and an "Ask" button;
 //   "Ask" opens the question's thread with a textbox named /message/ and a "Send" button.
 //   Tip sends POST /api/exam/jesdi/general-skills/240/turns {attempt, head_sha, kind: 'tip', question, message}
 //   where message is the question's answer draft ('' for a choice question); Send sends kind 'question'.
@@ -18,16 +20,12 @@ import { ExamPage } from '../ExamPage'
 //   A 429 or 422 `detail` shows in the question's li as it is. The view's questions carry `tips`, `assisted` and
 //   `thread` [{id, kind, message, text, status, error}], shown inline in the question's li; a failed turn there
 //   shows its `error` and a "Retry" that sends the same kind, question and message again.
-const SHA = 'a'.repeat(40)
 const URL_PATH = '/api/exam/jesdi/general-skills/240'
 const REPLY = 'Part one. Part two.'
 
-const q1 = { id: 'q1', type: 'choice', prompt: 'Which SHA does the lease compare?', options: ['the head SHA', 'the base SHA'], tips: 0, assisted: false, thread: [] }
-const q2 = { id: 'q2', type: 'text', prompt: 'Why is the base SHA rechecked before merging?', tips: 0, assisted: false, thread: [] }
-const view = (second: object = q2) => ({
-  repo: 'jesdi/general-skills', pr: 240, state: 'open', head_sha: SHA, debt: false, detail: 'attempt 1, 2 questions',
-  attempt: 1, bypassed: null, exam: { version: 1, repo: 'jesdi/general-skills', pr: 240, head_sha: SHA, questions: [q1, second] }, attempts: [],
-})
+const q1 = question({ id: 'q1', type: 'choice', prompt: 'Which SHA does the lease compare?', options: ['the head SHA', 'the base SHA'] })
+const q2 = question({ id: 'q2', type: 'text', prompt: 'Why is the base SHA rechecked before merging?' })
+const view = (second: object = q2) => examView([q1, second])
 const done = { id: 't1', kind: 'tip', message: 'the token only grows', text: REPLY, status: 'done', error: null }
 
 function renderExam() {
@@ -71,7 +69,7 @@ describe('exam page turns', () => {
     expect(await within(questionOf(q2.prompt)).findByText(/Part one\./)).toBeInTheDocument()
     expect(within(questionOf(q2.prompt)).queryByText(/Part two/)).not.toBeInTheDocument()
     events.send({ delta: 'Part two.' })
-    current = view({ ...q2, tips: 1, assisted: true, thread: [done] })
+    current = view({ ...q2, tips: 1, tips_left: 2, assisted: true, thread: [done] })
     events.send({ status: 'done' })
     events.end()
     expect(await within(questionOf(q2.prompt)).findByText(REPLY)).toBeInTheDocument()
@@ -102,7 +100,7 @@ describe('exam page turns', () => {
   })
 
   it('shows the thread of a reloaded exam inline under its own question', async () => {
-    serve(view({ ...q2, tips: 1, assisted: true, thread: [done] }))
+    serve(view({ ...q2, tips: 1, tips_left: 2, assisted: true, thread: [done] }))
     renderExam()
     await screen.findByText(q2.prompt)
     expect(await within(questionOf(q2.prompt)).findByText(REPLY)).toBeInTheDocument()
@@ -166,5 +164,16 @@ describe('exam page turns', () => {
     expect(within(questionOf(q2.prompt)).getByRole('button', { name: /^tip 0 \/ 3$/i })).toBeInTheDocument()
     await userEvent.click(within(questionOf(q2.prompt)).getByRole('button', { name: /^retry$/i }))
     await waitFor(() => expect(bodies).toEqual([{ attempt: 1, head_sha: SHA, kind: 'tip', question: 'q2', message: 'the token only grows' }]))
+  })
+
+  it('shows the code of a reply, fenced or a bare diff, in the monospace font, and its prose in the body font', async () => {
+    const reply = 'Look here:\n```diff\n@@ -1 +1 @@\n+recheck_base(sha)\n```\nThen compare.\n\n+assert owner == me'
+    serve(view({ ...q2, tips: 1, tips_left: 2, assisted: true, thread: [{ ...done, text: reply }] }))
+    renderExam()
+    const q = within(await screen.findByText(q2.prompt).then(() => questionOf(q2.prompt)))
+    expect(q.getByText(/recheck_base\(sha\)/)).toHaveClass('font-mono', 'whitespace-pre-wrap')
+    expect(q.getByText('+assert owner == me')).toHaveClass('font-mono')
+    expect(q.getByText('Look here:')).not.toHaveClass('font-mono')
+    expect(q.getByText(/Then compare\./)).not.toHaveClass('font-mono')
   })
 })

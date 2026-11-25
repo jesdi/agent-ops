@@ -5,6 +5,7 @@ import { Route, Routes } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { renderWithProviders } from '../../test/render'
 import { server } from '../../test/msw-server'
+import { examView, keptAttempt, keptQuestion, question, SHA } from '../../test/exam'
 import { ExamPage } from '../ExamPage'
 
 // Interface under test (defined here, built by the ticket):
@@ -13,16 +14,13 @@ import { ExamPage } from '../ExamPage'
 //   POST|DELETE /api/exam/jesdi/general-skills/240/bypass {attempt, head_sha, question}, answered with the exam view;
 //   the view's `bypassed` is the bypassed question id or null;
 //   a bypassed question needs no answer to submit; a result question with help "bypassed" shows
-//   "bypassed", its explanation and its hunk, and counts in neither score nor max.
-const SHA = 'a'.repeat(40)
+//   "bypassed" by its prompt, its explanation and its hunk, counts in neither score nor max, and is named in the
+//   attempt's score line.
 const URL_PATH = '/api/exam/jesdi/general-skills/240'
 
-const q1 = { id: 'q1', type: 'choice', prompt: 'Which SHA does the lease compare?', options: ['the head SHA', 'the base SHA'] }
-const q2 = { id: 'q2', type: 'text', prompt: 'Why is the base SHA rechecked before merging?' }
-const open = {
-  repo: 'jesdi/general-skills', pr: 240, state: 'open', head_sha: SHA, debt: false, detail: 'attempt 1, 2 questions',
-  attempt: 1, bypassed: null, exam: { version: 1, repo: 'jesdi/general-skills', pr: 240, head_sha: SHA, questions: [q1, q2] }, attempts: [],
-}
+const q1 = question({ id: 'q1', type: 'choice', prompt: 'Which SHA does the lease compare?', options: ['the head SHA', 'the base SHA'] })
+const q2 = question({ id: 'q2', type: 'text', prompt: 'Why is the base SHA rechecked before merging?' })
+const open = examView([q1, q2])
 
 function renderExam() {
   return renderWithProviders(<Routes>
@@ -97,20 +95,18 @@ describe('exam page bypass', () => {
   it('shows a bypassed question in the result with its explanation and hunk, outside the points', async () => {
     const hunk = '@@ -40,2 +40,3 @@ base\n+recheck_base(sha)'
     const graded = [1, 2, 3, 4, 5].map((n) => ({ id: `p${n}`, concept: `concept-${n}`, points: 1 }))
-    serve({
-      ...open, state: 'passed', exam: null,
-      attempts: [{
-        attempt: 1, questions: [], result: {
-          passed: true, score: 5, max: 5,
-          questions: [...graded, { id: 'q6', concept: 'base-sha-recheck', help: 'bypassed', explanation: 'Main can move between grading and merge.', hunk }],
-        },
-      }],
-    })
+    const result = {
+      passed: true, score: 5, max: 5,
+      questions: [...graded, { id: 'q6', concept: 'base-sha-recheck', help: 'bypassed', explanation: 'Main can move between grading and merge.', hunk }],
+    }
+    const kept = result.questions.map((r) => keptQuestion({ id: r.id, type: 'text', prompt: `About ${r.concept}?` }))
+    serve({ ...open, state: 'passed', exam: null, attempts: [keptAttempt(1, kept, result)] })
     renderExam()
-    expect(await screen.findByText(/\b5\b.*\/.*\b5\b/)).toBeInTheDocument()
-    expect(screen.getByText(/passed/i)).toBeInTheDocument()
-    expect(screen.getByText(/bypassed/i)).toBeInTheDocument()
-    expect(screen.getByText('Main can move between grading and merge.')).toBeInTheDocument()
-    expect(screen.getByText(/recheck_base\(sha\)/)).toBeInTheDocument()
+    expect(await screen.findByText('Attempt 1 · Passed · Score 5 / 5 · bypassed: base-sha-recheck')).toBeInTheDocument()
+    const q6 = within(questionOf('About base-sha-recheck?'))
+    expect(q6.getByText('bypassed')).toBeInTheDocument()
+    expect(q6.queryByText(/\/ 1/)).not.toBeInTheDocument()
+    expect(q6.getByText('Main can move between grading and merge.')).toBeInTheDocument()
+    expect(q6.getByText(/recheck_base\(sha\)/)).toHaveClass('font-mono')
   })
 })
