@@ -9,6 +9,9 @@ Extends `specs/pr-exam-host`. The rules come from the skills spec `specs/pr-exam
 1. **Turns.** The console has a route that takes one turn on an exam: a tip, a message in a
    question's thread, or a message in the general chat. It streams the reply to the page as it
    is written.
+   - A Codex reply arrives whole: `codex exec --json` emits the agent message only when it is
+     complete, with no text deltas (checked on codex-cli 0.171). It still streams to the page,
+     as one chunk. Claude streams as it writes.
    - It is guarded like every console route: Tailscale only.
    - It builds nothing itself. The prompt is what `pr_exam.py context` prints for the turn.
    - A turn's reply may contain the answer key, as the chat rules allow. This narrows
