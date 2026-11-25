@@ -333,7 +333,7 @@ def delivery(task: TaskState, pending: Iterable[intents.Intent],
     if queued:
         return queued
     latest = max(_delivered(task) + _dropped(task, events), default=None,
-                 key=lambda o: o[:2])
+                 key=lambda o: (o.at, o.delivered))
     return latest.delivery if latest else None
 
 
