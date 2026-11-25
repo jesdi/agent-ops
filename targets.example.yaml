@@ -1,6 +1,5 @@
 capacity: 2   # box-wide: shared by every repository, in-flight work first, then claims fewest-active-first
 state_dir: /home/agent/agent-ops-state
-# pass_interval_minutes: 5   # must match OnUnitActiveSec in the systemd timer
 # Optional: repo where provisioning/pass-crash failure issues are filed.
 # Unset -> those failures degrade to a Telegram ping + stderr log only.
 infra_repo: example/agent-ops

@@ -15,7 +15,7 @@ from types import SimpleNamespace
 from typing import Callable, NamedTuple, TextIO
 from urllib.parse import quote
 
-from dispatcher import config, herdr, sessions, state, triage
+from dispatcher import config, herdr, services_config, sessions, state, triage
 from dispatcher.status import HumanReason, Kind, ended, occupies
 from dispatcher.usage import unavailable
 from dispatcher.usage_providers import cache_path, usage_from_json
@@ -40,10 +40,122 @@ class Probes:
     units: Callable[[], dict[str, Unit]]
     tabs: Callable[[], set[str]]
     journal: Callable[[], list] = lambda: []
+    timers: Callable[[], list[dict]] = lambda: []
 
 
 def system_probes() -> Probes:
-    return Probes(units=_systemd_units, tabs=_herdr_tabs, journal=_journal)
+    return Probes(units=_systemd_units, tabs=_herdr_tabs, journal=_journal,
+                  timers=systemd_timers)
+
+
+def _systemctl(scope: str) -> list[str]:
+    return ["systemctl", "--user"] if scope == "user" else ["systemctl"]
+
+
+def _systemctl_out(scope: str, *args: str) -> str:
+    proc = subprocess.run([*_systemctl(scope), *args], capture_output=True, text=True, timeout=10)
+    if proc.returncode:
+        raise RuntimeError(f"systemctl failed: {proc.stderr.strip()}")
+    return proc.stdout
+
+
+def _installed_timers(scope: str) -> list[str]:
+    """Installed timer names, loaded or not: `show '*.timer'` misses an
+    inactive (e.g. disabled after reboot) timer, which must still list as paused."""
+    out = _systemctl_out(scope, "list-unit-files", "*.timer", "--no-legend", "--no-pager")
+    names = [l.split()[0] for l in out.splitlines() if l.strip()]
+    return [n for n in names if "@." not in n]  # a template is no job; show fails on it
+
+
+def _props(block: str) -> dict[str, str]:
+    """A property systemctl prints once per entry (TimersMonotonic, TimersCalendar) keeps them all."""
+    props: dict[str, str] = {}
+    for key, _, value in (l.partition("=") for l in block.splitlines() if "=" in l):
+        props[key] = f"{props[key]} {value}" if props.get(key) else value
+    return props
+
+
+def _show(scope: str, names: list[str], props: str) -> list[dict[str, str]]:
+    if not names:
+        return []
+    out = _systemctl_out(scope, "show", "--timestamp=unix", *names, "-p", props)
+    return [_props(block) for block in out.split("\n\n") if block.strip()]
+
+
+def _iso(stamp: str | None) -> str | None:
+    stamp = (stamp or "").lstrip("@")
+    return (datetime.fromtimestamp(int(stamp), timezone.utc).isoformat()
+            if stamp.isdigit() else None)
+
+
+_DURATION_UNITS = {"d": 86400, "h": 3600, "min": 60, "m": 60, "s": 1}
+
+
+def _seconds(words: str) -> int:
+    return sum(int(n) * _DURATION_UNITS.get(u, 0) for n, u in re.findall(r"(\d+)\s*([a-z]+)", words))
+
+
+def _monotonic_schedule(timers_monotonic: str) -> tuple[str | None, int | None]:
+    """(schedule, interval seconds) of an `OnUnitActiveUSec=5min` timer; the
+    schedule is an OnCalendar-style `*:0/N` for whole minutes, else raw words."""
+    m = re.search(r"OnUnitActiveUSec=([^;}]*?)\s*(?:;|\})", timers_monotonic)
+    if not m:
+        return None, None
+    seconds = _seconds(m[1])
+    if seconds and seconds % 60 == 0 and seconds < 3600:
+        return f"*:0/{seconds // 60}", seconds
+    return f"every {m[1]}", seconds or None
+
+
+def _last_run(svc: dict[str, str]) -> dict | None:
+    start, end = _iso(svc.get("ExecMainStartTimestamp")), _iso(svc.get("ExecMainExitTimestamp"))
+    if not (start and end and end >= start):
+        return None
+    return {"at": start, "duration_seconds": int(
+        (datetime.fromisoformat(end) - datetime.fromisoformat(start)).total_seconds())}
+
+
+def _next_run(t: dict[str, str], interval: int | None) -> str | None:
+    """A monotonic timer has no realtime elapse: next = last trigger + interval."""
+    if realtime := _iso(t.get("NextElapseUSecRealtime")):
+        return realtime
+    trigger = _iso(t.get("LastTriggerUSec"))
+    if trigger and interval and t["ActiveState"] == "active":
+        return (datetime.fromisoformat(trigger) + timedelta(seconds=interval)).isoformat()
+    return None
+
+
+_CALENDAR = re.compile(r"OnCalendar=([^;}]*?)\s*(?:;|\})")
+
+
+def _timer(scope: str, t: dict[str, str], services: dict[str, dict]) -> dict:
+    calendar = _CALENDAR.search(t.get("TimersCalendar", ""))
+    monotonic, interval = _monotonic_schedule(t.get("TimersMonotonic", ""))
+    return {
+        "scope": scope, "unit": t["Id"], "fragment_path": t.get("FragmentPath", ""),
+        "description": t.get("Description", ""), "active_state": t["ActiveState"],
+        "on_calendar": calendar[1] if calendar else monotonic,
+        "interval_seconds": None if calendar else interval,
+        "last_run": _last_run(services.get(t["Id"].removesuffix(".timer") + ".service", {})),
+        "next_run": _next_run(t, interval),
+        "triggers": {"calendar": _CALENDAR.findall(t.get("TimersCalendar", "")),
+                     "every_seconds": interval},
+        "upcoming": services_config.calendar_runs(calendar[1]) if calendar and t["ActiveState"] == "active" else []}
+
+
+def systemd_timers() -> list[dict]:
+    """Every installed timer, user and system, with its service's last run.
+    Services are told apart by the caller; a timer here is a `.timer` unit."""
+    out = []
+    for scope in ("user", "system"):
+        names = _installed_timers(scope)
+        services = {p["Id"]: p for p in _show(
+            scope, [n.removesuffix(".timer") + ".service" for n in names],
+            "Id,ExecMainStartTimestamp,ExecMainExitTimestamp")}
+        out += [_timer(scope, t, services) for t in _show(
+            scope, names, "Id,Description,ActiveState,FragmentPath,TimersCalendar,"
+            "TimersMonotonic,NextElapseUSecRealtime,LastTriggerUSec")]
+    return out
 
 
 def _systemd_units() -> dict[str, Unit]:
@@ -69,10 +181,12 @@ def parse_units(show: str) -> dict[str, Unit]:
     return units
 
 
-def _journal() -> list:
+def _journal(since: str | None = "6 hours ago", unit: str = "agent-ops-*", lines: int | None = None) -> list:
+    """`unit`'s lines since `since`; with no `since`, the last `lines` lines systemd itself
+    logged about `unit` (its lifecycle, none of the job's own output)."""
+    window = ["-u", unit, "--since", since] if since else [f"USER_UNIT={unit}", "-n", str(lines)]
     proc = subprocess.run(
-        ["journalctl", "--user", "-u", "agent-ops-*", "--since", "6 hours ago",
-         "-o", "json", "--no-pager"],
+        ["journalctl", "--user", *window, "-o", "json", "--no-pager"],
         capture_output=True, text=True, timeout=20)
     if proc.returncode:
         raise RuntimeError(proc.stderr.strip() or f"exit {proc.returncode}")
@@ -80,7 +194,8 @@ def _journal() -> list:
 
 
 def parse_journal(output: str) -> list:
-    """`journalctl -o json` lines; a malformed line is skipped."""
+    """`journalctl -o json` lines; a malformed line is skipped. A line systemd logs about a
+    unit names it in USER_UNIT (its own unit is init.scope), so USER_UNIT wins."""
     entries = []
     for line in output.splitlines():
         try:
@@ -88,12 +203,79 @@ def parse_journal(output: str) -> list:
             msg = j.get("MESSAGE")
             entries.append(SimpleNamespace(
                 time=datetime.fromtimestamp(int(j["__REALTIME_TIMESTAMP"]) / 1e6, timezone.utc),
-                unit=j.get("_SYSTEMD_USER_UNIT") or j.get("USER_UNIT") or "",
+                unit=j.get("USER_UNIT") or j.get("_SYSTEMD_USER_UNIT") or "",
                 priority=int(j.get("PRIORITY", 6)),
                 message=msg if isinstance(msg, str) else ""))
         except (ValueError, KeyError, TypeError):
             continue
     return entries
+
+
+_RUN_ENDS = (("Deactivated successfully", "success"), ("Finished ", "success"),
+             ("Failed with result", "failed"),
+             ("Stopped ", "stopped"))
+
+
+def _pending(mine: list[dict]) -> dict | None:
+    """The last run when it has no end line yet."""
+    return mine[-1] if mine and mine[-1]["result"] is None else None
+
+
+def _open_run(mine: list[dict], e) -> None:
+    if _pending(mine) and e.message.startswith("Started "):
+        return  # Type=notify logs Starting then Started: one run
+    mine.append({"at": e.time.isoformat(), "duration_seconds": None, "result": None})
+
+
+def _close_run(mine: list[dict], e, stopping: bool) -> None:
+    result = next((r for word, r in _RUN_ENDS if word in e.message), None)
+    run = _pending(mine)
+    if result and run:
+        started = datetime.fromisoformat(run["at"])
+        run.update(result="stopped" if stopping else result,
+                   duration_seconds=int((e.time - started).total_seconds()))
+
+
+def journal_runs(entries: list) -> dict[str, list[dict]]:
+    """Runs per job id (service name without `.service`), oldest first, from
+    systemd's own lines: `Starting` (oneshot) or `Started` opens a run, the next end line closes it
+    (a run with no end line yet is still going: no duration, no result).
+    An operator stop logs `Stopping` first: the run stays open until its end
+    line, then ends as stopped whatever that line says."""
+    runs: dict[str, list[dict]] = {}
+    stopping: set[str] = set()
+    for e in entries:
+        if not e.unit.endswith(".service"):
+            continue
+        job = e.unit.removesuffix(".service")
+        mine = runs.setdefault(job, [])
+        if e.message.startswith(("Starting ", "Started ")):
+            _open_run(mine, e)
+            stopping.discard(job)
+        elif e.message.startswith("Stopping "):
+            stopping.add(job)
+        else:
+            _close_run(mine, e, job in stopping)
+            if not _pending(mine):
+                stopping.discard(job)
+    return runs
+
+
+RECENT_RUNS = 5
+
+
+def service_runs(journal: Callable[..., list] = _journal) -> dict[str, list[dict]]:
+    """Journal probe for the Services page: a week of runs, then, for a managed job with
+    fewer than five in it (a weekly or long-paused job), systemd's latest lines about it, which
+    are a few per run whatever the job itself logs."""
+    runs = journal_runs(journal("7 days ago"))
+    for name in services_config.JOBS:
+        job = f"agent-ops-{name}"
+        if len(runs.get(job, [])) < RECENT_RUNS:
+            older = journal_runs(journal(None, f"{job}.service", 200)).get(job)
+            if older:
+                runs[job] = older
+    return runs
 
 
 def _herdr_tabs() -> set[str]:
@@ -201,7 +383,7 @@ def _last_pass(root: Path, hb: dict | None, now: datetime) -> str:
     if finished is None:
         return "unknown (pass.json finished_at missing or naive)"
     return (f"last pass {_minutes(finished, now)}m ago, "
-            f"interval {hb.get('interval_minutes')}m")
+            + ("custom schedule" if hb.get("custom") else f"interval {hb.get('interval_minutes')}m"))
 
 
 def _evidence(name, gate, usages, marker, request, projects, tasks, cfg, now, triage_tab):

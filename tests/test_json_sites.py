@@ -124,7 +124,7 @@ def queue_write(sd):
 
 def heartbeat(sd):
     cfg = Config(state_dir=str(sd), capacity=1, session_memory="2g", session_cpus="2",
-                 repositories=[], pass_interval_minutes=5)
+                 repositories=[])
     upkeep._write_heartbeat(cfg, STAMP)
     p = sd / "pass.json"
     finished = json.loads(p.read_bytes())["finished_at"]

@@ -7,6 +7,7 @@ const links = [
   { to: '/failures', label: 'Failures' },
   { to: '/exam-debt', label: 'Exam debt' },
   { to: '/history', label: 'History' },
+  { to: '/services', label: 'Services' },
   { to: '/settings', label: 'Settings' },
   { to: '/onboarding', label: 'Onboarding' },
 ]

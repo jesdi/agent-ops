@@ -396,6 +396,125 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/services": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Services */
+        get: operations["services_api_services_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/services/{job}/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Pause */
+        post: operations["pause_api_services__job__pause_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/services/{job}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resume */
+        post: operations["resume_api_services__job__resume_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/services/{job}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry */
+        post: operations["retry_api_services__job__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/services/{job}/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Run Now */
+        post: operations["run_now_api_services__job__run_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/services/{job}/schedule": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Set Schedule */
+        put: operations["set_schedule_api_services__job__schedule_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/services/{job}/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Stop Run */
+        post: operations["stop_run_api_services__job__stop_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/settings/models": {
         parameters: {
             query?: never;
@@ -777,6 +896,18 @@ export interface components {
             /** Slots Used */
             slots_used: number;
         };
+        /**
+         * Change
+         * @description A console change not yet installed: "applying", or "failed" to record.
+         */
+        Change: {
+            /** Pr */
+            pr?: number | null;
+            /** State */
+            state: string;
+            /** Url */
+            url?: string | null;
+        };
         /** Column */
         Column: {
             /** Cards */
@@ -1051,6 +1182,40 @@ export interface components {
             title: string;
             /** Url */
             url: string;
+        };
+        /** Job */
+        Job: {
+            change?: components["schemas"]["Change"] | null;
+            current_schedule?: components["schemas"]["Schedule"] | null;
+            /** Description */
+            description: string;
+            /** Id */
+            id: string;
+            last_run: components["schemas"]["Run"] | null;
+            /** Name */
+            name: string;
+            /** Next Run */
+            next_run: string | null;
+            /** Read Only */
+            read_only: boolean;
+            /**
+             * Recent Runs
+             * @default []
+             */
+            recent_runs: components["schemas"]["RecentRun"][];
+            /** Running */
+            running: boolean;
+            /** Schedule */
+            schedule: string;
+            /** State */
+            state: string;
+            /**
+             * Upcoming
+             * @default []
+             */
+            upcoming: string[];
+            /** Warning */
+            warning?: string | null;
         };
         /** MessageView */
         MessageView: {
@@ -1511,6 +1676,15 @@ export interface components {
             /** Issue */
             issue: number;
         };
+        /** RecentRun */
+        RecentRun: {
+            /** At */
+            at: string;
+            /** Duration Seconds */
+            duration_seconds?: number | null;
+            /** Result */
+            result: string;
+        };
         /** ReplyReq */
         ReplyReq: {
             /** Text */
@@ -1569,6 +1743,13 @@ export interface components {
              */
             text: string;
         };
+        /** Run */
+        Run: {
+            /** At */
+            at: string;
+            /** Duration Seconds */
+            duration_seconds?: number | null;
+        };
         /** RunReq */
         RunReq: {
             /**
@@ -1581,6 +1762,31 @@ export interface components {
              * @default
              */
             model: string;
+        };
+        /**
+         * Schedule
+         * @description A schedule in the services config's shape: `every`, `daily` with `tz`, or `calendar`.
+         */
+        Schedule: {
+            /** Calendar */
+            calendar?: string | null;
+            /** Daily */
+            daily?: string | null;
+            /** Every */
+            every?: number | null;
+            /** Tz */
+            tz?: string | null;
+        };
+        /** ServicesView */
+        ServicesView: {
+            /** Config Installed */
+            config_installed: boolean;
+            /** Managed */
+            managed: components["schemas"]["Job"][];
+            /** Now */
+            now: string;
+            /** Read Only */
+            read_only: components["schemas"]["Job"][];
         };
         /**
          * StepState
@@ -2422,6 +2628,218 @@ export interface operations {
                 "application/json": components["schemas"]["ReadyReq"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    services_api_services_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServicesView"];
+                };
+            };
+        };
+    };
+    pause_api_services__job__pause_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resume_api_services__job__resume_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_api_services__job__retry_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_now_api_services__job__run_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_schedule_api_services__job__schedule_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stop_run_api_services__job__stop_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {
