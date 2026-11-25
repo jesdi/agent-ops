@@ -174,9 +174,11 @@ def parse_units(show: str) -> dict[str, Unit]:
 
 
 def _journal(since: str | None = "6 hours ago", unit: str = "agent-ops-*", lines: int | None = None) -> list:
-    window = ["--since", since] if since else ["-n", str(lines)]
+    """`unit`'s lines since `since`; with no `since`, the last `lines` lines systemd itself
+    logged about `unit` (its lifecycle, none of the job's own output)."""
+    window = ["-u", unit, "--since", since] if since else [f"USER_UNIT={unit}", "-n", str(lines)]
     proc = subprocess.run(
-        ["journalctl", "--user", "-u", unit, *window, "-o", "json", "--no-pager"],
+        ["journalctl", "--user", *window, "-o", "json", "--no-pager"],
         capture_output=True, text=True, timeout=20)
     if proc.returncode:
         raise RuntimeError(proc.stderr.strip() or f"exit {proc.returncode}")
@@ -184,7 +186,8 @@ def _journal(since: str | None = "6 hours ago", unit: str = "agent-ops-*", lines
 
 
 def parse_journal(output: str) -> list:
-    """`journalctl -o json` lines; a malformed line is skipped."""
+    """`journalctl -o json` lines; a malformed line is skipped. A line systemd logs about a
+    unit names it in USER_UNIT (its own unit is init.scope), so USER_UNIT wins."""
     entries = []
     for line in output.splitlines():
         try:
@@ -192,7 +195,7 @@ def parse_journal(output: str) -> list:
             msg = j.get("MESSAGE")
             entries.append(SimpleNamespace(
                 time=datetime.fromtimestamp(int(j["__REALTIME_TIMESTAMP"]) / 1e6, timezone.utc),
-                unit=j.get("_SYSTEMD_USER_UNIT") or j.get("USER_UNIT") or "",
+                unit=j.get("USER_UNIT") or j.get("_SYSTEMD_USER_UNIT") or "",
                 priority=int(j.get("PRIORITY", 6)),
                 message=msg if isinstance(msg, str) else ""))
         except (ValueError, KeyError, TypeError):
@@ -255,14 +258,13 @@ RECENT_RUNS = 5
 
 def service_runs(journal: Callable[..., list] = _journal) -> dict[str, list[dict]]:
     """Journal probe for the Services page: a week of runs, then, for a managed job with
-    fewer than five in it (a weekly or long-paused job), the latest lines of its own journal."""
+    fewer than five in it (a weekly or long-paused job), systemd's latest lines about it, which
+    are a few per run whatever the job itself logs."""
     runs = journal_runs(journal("7 days ago"))
     for name in services_config.JOBS:
         job = f"agent-ops-{name}"
         if len(runs.get(job, [])) < RECENT_RUNS:
-            # ponytail: a run logging more than this many lines leaves fewer than five; filter
-            # journalctl to the manager's own lines if a sparse job turns chatty.
-            older = journal_runs(journal(None, f"{job}.service", 2000)).get(job)
+            older = journal_runs(journal(None, f"{job}.service", 200)).get(job)
             if older:
                 runs[job] = older
     return runs

@@ -51,6 +51,23 @@ def test_parse_journal_reads_json_lines_and_skips_malformed_ones():
         "agent-ops-web.service", 3, "boom")
 
 
+def test_a_line_systemd_logs_about_a_unit_belongs_to_that_unit_not_init_scope():
+    line = ('{"__REALTIME_TIMESTAMP":"1762700000000000","_SYSTEMD_USER_UNIT":"init.scope",'
+            '"USER_UNIT":"agent-ops-digest.service","MESSAGE":"Starting agent-ops-digest.service..."}')
+
+    assert parse_journal(line)[0].unit == "agent-ops-digest.service"
+
+
+def test_a_line_window_reads_only_what_systemd_logged_about_the_unit(monkeypatch):
+    argv = []
+    monkeypatch.setattr(box_status.subprocess, "run", lambda a, **k:
+                        argv.append(a) or subprocess.CompletedProcess(a, 0, "", ""))
+
+    box_status._journal(None, "agent-ops-digest.service", 200)
+
+    assert "USER_UNIT=agent-ops-digest.service" in argv[0] and "-u" not in argv[0]
+
+
 def test_a_real_journalctl_failure_prints_its_stderr_once(tmp_path, monkeypatch):
     monkeypatch.setattr(box_status.subprocess, "run", lambda *a, **k:
                         subprocess.CompletedProcess(a, 1, "", "Permission denied\n"))
