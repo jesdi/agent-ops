@@ -25,9 +25,11 @@ def _events_path(state_dir: str | Path) -> Path:
 def append_event(state_dir: str | Path, event: str, *, repository: str = "",
                  issue: int = 0, stage: str = "", model: str = "",
                  actor: str = "dispatcher", detail: str = "",
-                 transition: dict | None = None) -> None:
+                 transition: dict | None = None,
+                 submission: dict | None = None) -> None:
     """`transition`: a `transition` event's {from, event, to, stage}, or a
-    `transition-rejected` event's {from, event, stage}."""
+    `transition-rejected` event's {from, event, stage}. `submission`: the
+    {submit, revision, created_at} of a dropped answers submission."""
     try:
         p = _events_path(state_dir)
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -39,6 +41,8 @@ def append_event(state_dir: str | Path, event: str, *, repository: str = "",
                   "actor": actor, "detail": detail}
         if transition is not None:
             record["transition"] = transition
+        if submission is not None:
+            record["submission"] = submission
         line = json.dumps(record)
         with p.open("a") as fh:
             fh.write(line + "\n")

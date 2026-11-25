@@ -603,6 +603,14 @@ class OperatorRequest(BaseModel):
     answers: Answers
 
 
+class Delivery(BaseModel):
+    """The delivery of the task's latest answers submission."""
+    state: Literal["queued", "delivered", "dropped"]
+    reason: str
+    submit: str
+    revision: str | None    # None: a session wrote the answers file
+
+
 class PaneHistory(BaseModel):
     text: str
 

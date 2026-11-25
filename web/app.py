@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import re
+import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -541,6 +542,54 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
         return read_model.OperatorRequest(
             kind=req.kind, content=_request_content(req, Path(t.worktree).resolve()),
             revision=req.fingerprint, answers=_saved_answers(t))
+
+    @app.get("/api/task/{repository}/{issue}/delivery",
+             response_model=read_model.Delivery | None)
+    def task_delivery(repository: str, issue: int,
+                      op: Operator = Depends(current_operator)):
+        """A pending submission is queued; otherwise the newer, by submission
+        time, of the answers files' submission and the latest drop of one
+        decides. Read whether or not a request is open."""
+        t = _find_task(repository, issue)
+        queued = [i for i in sources.pending_intents()
+                  if (i["action"], i["repository"], i["issue"]) == ("answers", repository, issue)
+                  and isinstance(i["payload"], dict)
+                  and i["payload"].get("submit") in answers_file.SUBMITS
+                  and isinstance(i["payload"].get("revision"), str)]
+        if queued:
+            p = max(queued, key=lambda i: str(i["created_at"]))["payload"]
+            return read_model.Delivery(state="queued", reason="", submit=p["submit"],
+                                       revision=p.get("revision"))
+        latest = max(_delivered(t) + _dropped(repository, issue), default=None,
+                     key=lambda d: d[:2])
+        return latest and latest[-1]
+
+    def _delivered(t) -> list[tuple[str, int, read_model.Delivery]]:
+        """The submission of each answers file of the task (both kinds can exist)."""
+        out = []
+        for kind in answers_file.ANSWERS_FILES:
+            doc = answers_file.read(t.worktree, kind) or {}
+            submit, revision = doc.get("submitted"), doc.get("revision")
+            if submit in answers_file.SUBMITS and isinstance(revision, (str, type(None))):
+                out.append((str(doc.get("submitted_at") or ""), 1, read_model.Delivery(
+                    state="delivered", reason="", submit=submit, revision=revision)))
+        return out
+
+    def _dropped(repository: str, issue: int) -> list[tuple[str, int, read_model.Delivery]]:
+        """The latest drop of an answers submission of the task. The answers
+        file wins a tie (rank 1 over 0)."""
+        for e in reversed(sources.events_tail(limit=sys.maxsize)):
+            sub = e.get("submission")
+            if (e.get("event"), e.get("repository"), e.get("issue")) != (
+                    "intent-dropped", repository, issue) or not isinstance(sub, dict):
+                continue
+            try:
+                return [(str(sub.get("created_at") or ""), 0, read_model.Delivery(
+                    state="dropped", reason=str(e.get("detail", "")),
+                    submit=sub.get("submit"), revision=sub.get("revision")))]
+            except ValidationError:   # a hand-edited line
+                return []
+        return []
 
     def _request_content(req, wt: Path
                          ) -> read_model.ReadableContent | read_model.UnavailableContent:

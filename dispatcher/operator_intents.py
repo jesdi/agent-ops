@@ -226,6 +226,16 @@ def _held(cfg: Config, intent: intents.Intent) -> bool:
         return False
 
 
+def _submission(intent: intents.Intent) -> dict | None:
+    """What the drop event of an answers submission records; None for a
+    draft or another action."""
+    submit = intent.payload.get("submit")
+    if intent.action != "answers" or submit not in answers.SUBMITS:
+        return None
+    return {"submit": submit, "revision": intent.payload.get("revision"),
+            "created_at": intent.created_at}
+
+
 def _apply_intents(cfg: Config, deps: Deps) -> None:
     """Drain operator intents (web console writes) at the top of the pass.
     Applied-then-deleted = at-most-once; a failed intent is deleted too,
@@ -249,7 +259,8 @@ def _apply_intents(cfg: Config, deps: Deps) -> None:
             eventlog.append_event(cfg.state_dir, "intent-dropped",
                                   repository=_intent_repository(cfg, intent),
                                   issue=intent.issue, model=dropped.model,
-                                  actor=intent.actor, detail=str(dropped))
+                                  actor=intent.actor, detail=str(dropped),
+                                  submission=_submission(intent))
         except Exception as exc:
             print(f"[warn] intent {intent.path.name} failed: {exc}",
                   file=sys.stderr)
