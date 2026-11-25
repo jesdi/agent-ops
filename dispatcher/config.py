@@ -80,10 +80,6 @@ class Config:
     # read it); "" = no socket.
     usage_socket: str = ""
     usage_socket_group: str = ""
-    # Minutes between dispatcher passes. Paired with OnUnitActiveSec in
-    # agent-ops-infra/provision/agent-ops-dispatcher.timer — change both together; the web
-    # console's next-pass countdown is computed from this value.
-    pass_interval_minutes: int = 5
     loop_caps: LoopCaps = LoopCaps()
     # The usage gate: session threshold and weekly pace
     # (see docs/specs/2026-09-13-usage-pace-gate-design.md).
@@ -347,7 +343,6 @@ def parse_config(raw: dict) -> Config:
         done_retention_days=int(raw.get("done_retention_days", 7)),
         usage_socket=_text(raw, "usage_socket"),
         usage_socket_group=_text(raw, "usage_socket_group"),
-        pass_interval_minutes=int(raw.get("pass_interval_minutes", 5)),
         loop_caps=_loop_caps(raw.get("loop_caps")),
         pace=_pace(raw),
     )

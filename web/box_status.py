@@ -358,7 +358,7 @@ def _last_pass(root: Path, hb: dict | None, now: datetime) -> str:
     if finished is None:
         return "unknown (pass.json finished_at missing or naive)"
     return (f"last pass {_minutes(finished, now)}m ago, "
-            f"interval {hb.get('interval_minutes')}m")
+            + ("custom schedule" if hb.get("custom") else f"interval {hb.get('interval_minutes')}m"))
 
 
 def _evidence(name, gate, usages, marker, request, projects, tasks, cfg, now, triage_tab):

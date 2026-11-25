@@ -415,7 +415,7 @@ def test_pass_writes_heartbeat(tmp_path, monkeypatch):
     d = deps()
     main.run_pass(c, d)
     hb = json.loads((Path(c.state_dir) / "pass.json").read_text())
-    assert hb["interval_minutes"] == c.pass_interval_minutes
+    assert hb["interval_minutes"] == 5
     assert hb["started_at"] <= hb["finished_at"]
 
 

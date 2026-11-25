@@ -930,9 +930,12 @@ def local_blocker(heartbeat: dict | None, *, now: datetime,
 def _pass_eta(heartbeat: dict | None, now: datetime) -> str | None:
     """When the next dispatcher pass is due (ISO), or None when that is
     unknowable: no heartbeat, a malformed one, or one older than two
-    intervals — the dispatcher may not be running."""
+    intervals — the dispatcher may not be running. A custom schedule has no
+    countdown: "" while a pass is on record."""
     hb = heartbeat or {}
     finished = _parse_ts(hb.get("finished_at", ""))
+    if hb.get("custom") is True:
+        return "" if finished is not None else None
     try:
         interval = int(hb.get("interval_minutes") or 0)
         # A naive finished_at against an aware now raises TypeError: the zone

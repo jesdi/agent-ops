@@ -92,6 +92,16 @@ def load(path: str) -> dict:
     return cfg
 
 
+def pass_interval(state_dir: str) -> int | None:
+    """Minutes between dispatcher passes in the installed config: 5 when none is
+    installed (or it is unusable), None when the schedule is not an `every`."""
+    try:
+        sched = load(str(Path(state_dir) / "services.yaml"))["dispatcher"]["schedule"]
+    except (OSError, ValueError, yaml.YAMLError):
+        return 5
+    return sched.get("every")
+
+
 def _when(sched: dict) -> str:
     if "every" in sched:
         return f"OnBootSec=1min\nOnUnitActiveSec={sched['every']}min"
