@@ -72,8 +72,8 @@ const replyTo = (body) => (body.message?.includes('long diff') ? LONG_DIFF : REP
 const seedExam = () => ({
   state: 'open', bypassed: null, general: [], attempts: [], turns: 0, hold: false, held: [], waiting: [],
   questions: [
-    { id: 'q1', type: 'choice', prompt: 'Which SHA does the lease compare? Say whether it is the head SHA or the base SHA.', options: ['the head SHA', 'the base SHA'], tips: 0, assisted: false, thread: [] },
-    { id: 'q2', type: 'text', prompt: 'Why is the base SHA rechecked before merging?', tips: 0, assisted: false, thread: [] },
+    { id: 'q1', type: 'choice', prompt: 'Which SHA does the lease compare? Say whether it is the head SHA or the base SHA.', options: ['the head SHA', 'the base SHA'], tips: 0, tips_left: 3, assisted: false, thread: [] },
+    { id: 'q2', type: 'text', prompt: 'Why is the base SHA rechecked before merging?', tips: 0, tips_left: 3, assisted: false, thread: [] },
   ],
 })
 
@@ -81,9 +81,17 @@ function examView() {
   const e = state.exam
   return {
     repo: 'jesdi/general-skills', pr: 240, state: e.state, head_sha: SHA, debt: false, detail: '',
-    attempt: 1, bypassed: e.bypassed, attempts: e.attempts,
-    exam: e.state === 'open' ? { version: 1, repo: 'jesdi/general-skills', pr: 240, head_sha: SHA, questions: e.questions, general: e.general } : null,
+    attempt: 1, bypassed: e.bypassed, attempts: e.attempts, tip_cap: 3,
+    exam: e.state === 'open'
+      ? { version: 1, repo: 'jesdi/general-skills', pr: 240, head_sha: SHA, questions: e.questions, general: e.general, chat: true, bypass: true }
+      : null,
   }
+}
+
+// q2's explanation and hunk, which the result shows once it lost points or was bypassed.
+const BASE_KEY = {
+  explanation: 'Main can move between grading and merge, so the merge rechecks the base SHA.',
+  hunk: '@@ -40,2 +40,3 @@ def merge(pr):\n     lease = take_lease(pr)\n+    recheck_base(pr.base_sha)\n     push(pr)',
 }
 
 // Submitted: grading first, then a failed result that gives q2 half the points (a bypassed q2 is left out of them).
@@ -93,10 +101,11 @@ function submitExam() {
   const questions = [
     { id: 'q1', concept: 'the lease SHA', points: 1, help: e.questions[0].assisted ? 'assisted' : null },
     bypassed
-      ? { id: 'q2', concept: 'the base recheck', points: null, help: 'bypassed' }
-      : { id: 'q2', concept: 'the base recheck', points: 0.5, help: e.questions[1].assisted ? 'assisted' : null, feedback: 'misses that main may have moved' },
+      ? { id: 'q2', concept: 'the base recheck', points: null, help: 'bypassed', ...BASE_KEY }
+      : { id: 'q2', concept: 'the base recheck', points: 0.5, help: e.questions[1].assisted ? 'assisted' : null, feedback: 'misses that main may have moved', ...BASE_KEY },
   ]
-  e.attempts = [{ attempt: 1, general: e.general, questions: e.questions, result: null }]
+  // the submitted attempt takes no more tips, and stays open to chat
+  e.attempts = [{ attempt: 1, general: e.general, questions: e.questions.map((q) => ({ ...q, tips_left: null })), chat: true, result: null }]
   e.state = 'grading'
   setTimeout(() => {
     e.attempts[0].result = { passed: bypassed, score: bypassed ? 1 : 1.5, max: bypassed ? 1 : 2, questions }
@@ -115,7 +124,7 @@ function examTurn(body) {
   else if (q) {
     q.thread.push(turn)
     // A tip or a thread reply marks the question assisted (spec requirement 6).
-    if (body.kind === 'tip') q.tips += 1
+    if (body.kind === 'tip') { q.tips += 1; q.tips_left -= 1 }
     q.assisted = true
   }
   return turn

@@ -5,12 +5,12 @@ import { expect, test } from '@playwright/test'
 const SHA = 'a'.repeat(40)
 const HUNK = '+' + 'leaseCompareHeadShaAgainstBaseShaBeforeMerging'.repeat(8)
 const reply = (id: string, kind: string, text: string) => ({ id, kind, message: 'show the long diff', text, status: 'done', error: null })
-const question = (id: string, prompt: string) => ({ id, type: 'text', prompt, tips: 0, assisted: true, thread: [reply(`${id}t`, 'question', HUNK)] })
+const question = (id: string, prompt: string) => ({ id, type: 'text', prompt, tips: 0, tips_left: 3, assisted: true, thread: [reply(`${id}t`, 'question', HUNK)] })
 const view = {
   repo: 'jesdi/general-skills', pr: 240, state: 'open', head_sha: SHA, debt: false, detail: 'attempt 1, 2 questions',
-  attempt: 1, bypassed: null, attempts: [],
+  attempt: 1, bypassed: null, attempts: [], tip_cap: 3,
   exam: {
-    version: 1, repo: 'jesdi/general-skills', pr: 240, head_sha: SHA,
+    version: 1, repo: 'jesdi/general-skills', pr: 240, head_sha: SHA, chat: true, bypass: true,
     questions: [question('q1', 'Why does the lease compare the head SHA?'), question('q2', 'Why is the base SHA rechecked before merging?')],
     general: [{ id: 'g1', kind: 'general', message: 'what is the riskiest change?', text: 'The lease expiry.', status: 'done', error: null }, reply('g2', 'general', HUNK)],
   },
@@ -34,7 +34,7 @@ test('the general chat is a bottom sheet at 390 px with no horizontal scroll', a
   expect(await sheet.evaluate((el) => el.scrollWidth - el.clientWidth)).toBe(0)
 })
 
-test('the general chat is a drawer on the right on a desktop', async ({ page, isMobile }) => {
+test('the general chat is a drawer on the right on a desktop, and the questions stay clear of it', async ({ page, isMobile }) => {
   test.skip(isMobile, 'the desktop project covers the drawer')
   await page.route('**/api/exam/jesdi/general-skills/240', (route) => route.fulfill({ json: view }))
   await page.goto('/exam/jesdi/general-skills/240')
@@ -43,4 +43,9 @@ test('the general chat is a drawer on the right on a desktop', async ({ page, is
   const viewport = page.viewportSize()!
   expect(drawer.x + drawer.width).toBe(viewport.width)
   expect(drawer.height).toBe(viewport.height)
+  for (const box of [page.getByRole('main'), page.getByRole('textbox', { name: 'Why is the base SHA rechecked before merging?' })]) {
+    const at = (await box.boundingBox())!
+    expect(at.x + at.width).toBeLessThanOrEqual(drawer.x)
+  }
+  expect(await page.evaluate<number>('document.documentElement.scrollWidth')).toBeLessThanOrEqual(viewport.width)
 })
