@@ -17,4 +17,5 @@ export const queryKeys = {
   description: (repository: string, issue: number) => ['task', repository, issue, 'description'] as const,
   artifacts: (repository: string, issue: number) => ['task', repository, issue, 'artifacts'] as const,
   request: (repository: string, issue: number) => ['task', repository, issue, 'request'] as const,
+  delivery: (repository: string, issue: number) => ['task', repository, issue, 'delivery'] as const,
 }

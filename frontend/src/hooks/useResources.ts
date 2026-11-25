@@ -99,6 +99,18 @@ export function useTaskRequest(repository: string, issue: number, pollMs?: numbe
   })
 }
 
+/** The delivery of the task's latest answers submission; read whether or
+ *  not a request is open. Polls like the request: no live event carries it. */
+export function useTaskDelivery(repository: string, issue: number, pollMs?: number) {
+  const refetchInterval = useFallbackInterval() || pollMs || false
+  return useQuery({
+    queryKey: queryKeys.delivery(repository, issue),
+    queryFn: () => api.taskDelivery(repository, issue),
+    retry: false,
+    refetchInterval,
+  })
+}
+
 /** Pending intents always poll: they clear only when a dispatcher pass runs. */
 export function usePendingIntents() {
   return useQuery({

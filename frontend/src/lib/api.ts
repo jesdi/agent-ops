@@ -35,6 +35,7 @@ export type TimelineEntry = components['schemas']['TimelineEntry']
 export type IssueDescription = components['schemas']['IssueDescription']
 export type MessageView = components['schemas']['MessageView']
 export type OperatorRequest = components['schemas']['OperatorRequest']
+export type Delivery = components['schemas']['Delivery']
 export type ReadableContent = components['schemas']['ReadableContent']
 export type UnavailableContent = components['schemas']['UnavailableContent']
 export type ModelSettingsView = components['schemas']['ModelSettingsView']
@@ -195,4 +196,6 @@ export const api = {
     request<ArtifactsView>(`/task/${repository}/${issue}/artifacts`),
   taskRequest: (repository: string, issue: number) =>
     request<OperatorRequest | null>(`/task/${repository}/${issue}/request`),
+  taskDelivery: (repository: string, issue: number) =>
+    request<Delivery | null>(`/task/${repository}/${issue}/delivery`),
 }
