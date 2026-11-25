@@ -245,24 +245,29 @@ def _apply_intents(cfg: Config, deps: Deps) -> None:
     unheld = [i for i in intents.list_intents(cfg.state_dir) if not _held(cfg, i)]
     pending = answers.without_superseded(unheld, lambda i: _task_for_intent(cfg, i))
     for intent in pending:
-        try:
-            _apply_one_intent(cfg, deps, by_name, intent)
-            eventlog.append_event(cfg.state_dir, "intent-applied",
-                                  repository=_intent_repository(cfg, intent),
-                                  issue=intent.issue, actor=intent.actor,
-                                  detail=intent.action)
-        except IntentRefused:
-            pass   # its transition-rejected event is the record
-        except IntentDropped as dropped:
-            print(f"[warn] intent {intent.path.name}: {dropped}",
-                  file=sys.stderr)
-            eventlog.append_event(cfg.state_dir, "intent-dropped",
-                                  repository=_intent_repository(cfg, intent),
-                                  issue=intent.issue, model=dropped.model,
-                                  actor=intent.actor, detail=str(dropped),
-                                  submission=_submission(intent))
-        except Exception as exc:
-            print(f"[warn] intent {intent.path.name} failed: {exc}",
-                  file=sys.stderr)
-        finally:
-            intents.delete_intent(intent)
+        _drain_one(cfg, deps, by_name, intent)
+
+
+def _drain_one(cfg: Config, deps: Deps, by_name: dict, intent: intents.Intent) -> None:
+    """Apply one intent, record the outcome, and delete it whatever happens."""
+    try:
+        _apply_one_intent(cfg, deps, by_name, intent)
+        eventlog.append_event(cfg.state_dir, "intent-applied",
+                              repository=_intent_repository(cfg, intent),
+                              issue=intent.issue, actor=intent.actor,
+                              detail=intent.action)
+    except IntentRefused:
+        pass   # its transition-rejected event is the record
+    except IntentDropped as dropped:
+        print(f"[warn] intent {intent.path.name}: {dropped}",
+              file=sys.stderr)
+        eventlog.append_event(cfg.state_dir, "intent-dropped",
+                              repository=_intent_repository(cfg, intent),
+                              issue=intent.issue, model=dropped.model,
+                              actor=intent.actor, detail=str(dropped),
+                              submission=_submission(intent))
+    except Exception as exc:
+        print(f"[warn] intent {intent.path.name} failed: {exc}",
+              file=sys.stderr)
+    finally:
+        intents.delete_intent(intent)
