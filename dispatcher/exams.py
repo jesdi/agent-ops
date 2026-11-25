@@ -50,8 +50,9 @@ def _attempt_dir(state_dir, repo: str, pr: int, n: int) -> Path:
 # The flat-layout migration (pr-exam-host-assist ticket 01): before attempts/<n>/, each of
 # these files sat at the exam level and held the last attempt that reached the step writing
 # it. Delete it once the deploy has run and every exam on the box has been read, as ADR 0004
-# does for task files: FLAT_STEPS, _flat_owner, _backfill, _migrate, their call in `_load`,
-# and the flat-layout tests in tests/test_exam_attempt_directories.py. `read` takes the exams
+# does for task files: FLAT_STEPS, _flat_owner, _backfill, _summary, _feedback_lines,
+# _migrate, their call in `_load`, and the flat-layout tests in
+# tests/test_exam_attempt_directories.py. `read` takes the exams
 # lock only for this migration, so it can drop it then.
 FLAT_STEPS = {"exam.json": "opened", "public.json": "opened", "answers.json": "submitted",
               "grades.json": "graded", "result.json": "graded"}
@@ -70,14 +71,24 @@ def _flat_owner(doc: dict, name: str) -> int:
 def _backfill(doc: dict, n: int, result: Path) -> bool:
     """Give attempt `n`'s result summary the feedback its result.json holds, as `_grades`
     would have let it through; False when `n` has no summary."""
-    summary = next((r for r in doc["results"] if r["attempt"] == n), None)
+    summary = _summary(doc, n)
     if summary is None:
         return False
-    lines = {q["id"]: _line(q.get("feedback")) for q in json.loads(result.read_text())["questions"]}
+    lines = _feedback_lines(result)
     for q in summary["questions"]:
         if q["points"] < 1 and lines.get(q["id"]):
             q["feedback"] = lines[q["id"]]
     return True
+
+
+def _summary(doc: dict, n: int) -> dict | None:
+    """Attempt `n`'s result summary in state.json; None when it has none on this head."""
+    return next((r for r in doc["results"] if r["attempt"] == n), None)
+
+
+def _feedback_lines(result: Path) -> dict:
+    """{question id: its validated feedback line} of a result.json."""
+    return {q["id"]: _line(q.get("feedback")) for q in json.loads(result.read_text())["questions"]}
 
 
 def _migrate(state_dir, doc: dict) -> None:
@@ -411,14 +422,19 @@ def _grades(out: Path, texts: list) -> tuple[dict | None, str]:
     if out.is_symlink() or not out.is_file():
         return None, "the grading session wrote no regular grades file"
     try:
-        raw = json.loads(out.read_text())
-        grades = {q["id"]: {"grade": raw[q["id"]]["grade"], "feedback": _line(raw[q["id"]].get("feedback"))}
-                  for q in texts}
+        grades = _normalized(json.loads(out.read_text()), texts)
         if all(g["grade"] in ("pass", "partial", "fail") for g in grades.values()):
             return grades, ""
     except (ValueError, KeyError, TypeError):
         pass
     return None, "the grading session's grades are malformed"
+
+
+def _normalized(raw, texts: list) -> dict:
+    """{id: {"grade", "feedback"}} of `texts` from the session's grades; raises KeyError or
+    TypeError when a grade is missing or not an object."""
+    return {q["id"]: {"grade": raw[q["id"]]["grade"], "feedback": _line(raw[q["id"]].get("feedback"))}
+            for q in texts}
 
 
 def _line(feedback) -> str:

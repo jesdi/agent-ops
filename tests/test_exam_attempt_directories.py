@@ -300,3 +300,11 @@ def test_the_view_reads_every_attempt_file_under_the_exams_lock(tmp_path, monkey
 def test_a_flat_file_of_an_errored_first_grading_stays_with_attempt_one():
     errored = {"attempt": 1, "results": [], "grading": {"attempt": 1}}
     assert {name: exams._flat_owner(errored, name) for name in FILES} == dict.fromkeys(FILES, 1)
+
+
+def test_a_flat_result_of_an_attempt_with_no_summary_backfills_nothing(tmp_path):
+    result = tmp_path / "result.json"
+    result.write_text(json.dumps({"questions": [{"id": "t1", "points": 0, "feedback": "FB"}]}))
+    doc = {"results": [{"attempt": 2, "questions": [{"id": "t1", "points": 0}]}]}
+    assert exams._backfill(doc, 1, result) is False
+    assert "feedback" not in doc["results"][0]["questions"][0]
