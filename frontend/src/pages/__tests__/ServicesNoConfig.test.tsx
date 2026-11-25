@@ -9,7 +9,7 @@ import { ServicesPage } from '../ServicesPage'
 const job = (state: string) => ({
   id: 'agent-ops-digest', name: 'Daily digest', description: 'Daily digest does its work', state,
   schedule: 'daily at 08:00 UTC', last_run: null, next_run: null, read_only: false,
-  recent_runs: [], upcoming: [], change: null, warning: null,
+  recent_runs: [], upcoming: [], change: null, warning: null, running: state === 'running',
 })
 
 function serve(state: string) {

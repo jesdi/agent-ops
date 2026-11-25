@@ -13,7 +13,7 @@ type Change = { state: string; pr: number | null; url: string | null } | null
 const job = (id: string, name: string, extra: Record<string, unknown> = {}) => ({
   id, name, description: `${name} does its work`, state: 'active',
   schedule: 'every 5 min', last_run: null, next_run: null, read_only: false,
-  recent_runs: [], upcoming: [], change: null as Change, ...extra,
+  recent_runs: [], upcoming: [], change: null as Change, running: false, ...extra,
 })
 
 // `puts` records every schedule saved as "<job>: <json body>". A save the server accepts makes
@@ -38,7 +38,8 @@ function serve(initial: ReturnType<typeof job>, refuse?: { status: number; detai
       posts.push(`${params.job}/${params.verb}`)
       if (params.verb === 'pause') paused = true
       if (params.verb === 'resume') paused = false
-      current = { ...current, state: params.verb === 'run' ? 'running' : paused ? 'paused' : 'active' }
+      const running = params.verb === 'run'
+      current = { ...current, running, state: running ? 'running' : paused ? 'paused' : 'active' }
       return HttpResponse.json({})
     }),
     http.get('/api/exams', () => HttpResponse.json({ exams: [] })),

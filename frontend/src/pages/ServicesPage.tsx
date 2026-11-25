@@ -111,7 +111,7 @@ function Actions({ job, locked }: { job: ServiceJob; locked: boolean }) {
         {job.state === 'paused'
           ? <button type="button" className={BUTTON} disabled={locked} onClick={() => resume.mutate(job.id)}>Resume</button>
           : <button type="button" className={BUTTON} disabled={locked} onClick={askThenPause}>Pause</button>}
-        {job.state === 'running' && (
+        {job.running && (
           <button type="button" className={`${BUTTON} text-failed-fg`} onClick={() => stop.mutate(job.id)}>Stop run</button>
         )}
       </div>
@@ -124,7 +124,8 @@ function Actions({ job, locked }: { job: ServiceJob; locked: boolean }) {
 // `locked`: no services config is installed, so Pause, Resume and a schedule cannot be recorded.
 function Detail({ job, now, locked }: { job: ServiceJob; now: string; locked: boolean }) {
   const rows: [string, string][] = [
-    ['State', job.state], ['Schedule', job.schedule],
+    // A paused job run by hand stays paused: its run shows next to the state.
+    ['State', job.state === 'paused' && job.running ? 'paused · running now' : job.state], ['Schedule', job.schedule],
     ['Last run', lastRun(job, now)], ['Next run', nextRun(job, now)],
   ]
   // On a phone the detail sits under the list: bring it into view when a job is picked.

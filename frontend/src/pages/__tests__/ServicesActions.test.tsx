@@ -1,4 +1,4 @@
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it, vi } from 'vitest'
@@ -9,7 +9,7 @@ import { ServicesPage } from '../ServicesPage'
 const job = (id: string, name: string, extra: Record<string, unknown> = {}) => ({
   id, name, description: `${name} does its work`, state: 'active',
   schedule: 'every 5 min', last_run: null, next_run: null, read_only: false,
-  recent_runs: [], upcoming: [], ...extra,
+  recent_runs: [], upcoming: [], running: false, ...extra,
 })
 
 // `posts` records every action the page sends; `current` is what the next GET returns.
@@ -51,7 +51,7 @@ describe('services page actions: run now and stop run', () => {
 
   it('shows the job as running once Run now has started it', async () => {
     let state = 'active'
-    serve(() => job('agent-ops-worktree-sweep', 'Stale worktree sweep', { state }))
+    serve(() => job('agent-ops-worktree-sweep', 'Stale worktree sweep', { state, running: state === 'running' }))
     server.use(http.post('/api/services/:job/run', () => { state = 'running'; return HttpResponse.json({}) }))
     renderWithProviders(<ServicesPage />)
     await userEvent.click(await screen.findByText('Stale worktree sweep'))
@@ -63,7 +63,7 @@ describe('services page actions: run now and stop run', () => {
 
   it('Stop run on a running job posts to its stop endpoint with no confirmation', async () => {
     const confirm = vi.spyOn(window, 'confirm')
-    const posts = serve(() => job('agent-ops-dispatcher', 'Dispatcher pass', { state: 'running' }))
+    const posts = serve(() => job('agent-ops-dispatcher', 'Dispatcher pass', { state: 'running', running: true }))
     renderWithProviders(<ServicesPage />)
     await userEvent.click(await screen.findByText('Dispatcher pass'))
 
@@ -79,7 +79,7 @@ describe('services page actions: run now and stop run', () => {
     let stopped = false
     serve(() => job('agent-ops-dispatcher', 'Dispatcher pass', stopped
       ? { recent_runs: [{ at: '2026-11-24T10:10:00+00:00', duration_seconds: 0, result: 'stopped' }] }
-      : { state: 'running', recent_runs: [{ at: '2026-11-24T10:10:00+00:00', duration_seconds: null, result: null }] }))
+      : { state: 'running', running: true, recent_runs: [{ at: '2026-11-24T10:10:00+00:00', duration_seconds: null, result: null }] }))
     server.use(http.post('/api/services/:job/stop', () => { stopped = true; return HttpResponse.json({}) }))
     renderWithProviders(<ServicesPage />)
     await userEvent.click(await screen.findByText('Dispatcher pass'))
@@ -88,6 +88,19 @@ describe('services page actions: run now and stop run', () => {
 
     expect(await screen.findByText(/stopped/i)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /stop run/i })).toBeNull()
+  })
+
+  it('a paused job run by hand stays paused with Resume, shows the run and offers Stop run', async () => {
+    const posts = serve(() => job('agent-ops-triage', 'Backlog triage', { state: 'paused', running: true }))
+    renderWithProviders(<ServicesPage />)
+    await userEvent.click(await screen.findByText('Backlog triage'))
+
+    const detail = await screen.findByRole('region', { name: 'Job detail' })
+    expect(within(detail).getByText('paused · running now')).toBeInTheDocument()
+    expect(within(detail).getByRole('button', { name: /^resume$/i })).toBeInTheDocument()
+    expect(within(detail).queryByRole('button', { name: /^pause$/i })).toBeNull()
+    await userEvent.click(within(detail).getByRole('button', { name: /stop run/i }))
+    await waitFor(() => expect(posts).toEqual(['agent-ops-triage/stop']))
   })
 
   it('offers Run now and no Stop run on an active job that is not running', async () => {

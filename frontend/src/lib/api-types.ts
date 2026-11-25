@@ -1202,6 +1202,8 @@ export interface components {
              * @default []
              */
             recent_runs: components["schemas"]["RecentRun"][];
+            /** Running */
+            running: boolean;
             /** Schedule */
             schedule: string;
             /** State */

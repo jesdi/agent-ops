@@ -56,6 +56,27 @@ def test_run_now_on_a_paused_job_runs_it_once_and_it_stays_paused(tmp_path):
     assert after["last_run"]["at"] == "2026-11-24T10:12:00+00:00"
 
 
+def test_a_paused_job_run_by_hand_stays_paused_while_it_runs_and_can_be_stopped(tmp_path):
+    triage = user_timer("agent-ops-triage", active_state="inactive")
+    fake, client = box(tmp_path, [triage])
+
+    assert post(client, "agent-ops-triage", "run").status_code == 200
+
+    during = job(client, "agent-ops-triage")
+    assert (during["state"], during["running"]) == ("paused", True)
+    assert post(client, "agent-ops-triage", "stop").status_code == 200
+    after = job(client, "agent-ops-triage")
+    assert (after["state"], after["running"]) == ("paused", False)
+
+
+def test_an_active_job_running_is_running(tmp_path):
+    going = {"at": "2026-11-24T10:10:00+00:00", "duration_seconds": None, "result": None}
+    _, client = box(tmp_path, [user_timer("agent-ops-dispatcher")], {"agent-ops-dispatcher": [going]})
+
+    during = job(client, "agent-ops-dispatcher")
+    assert (during["state"], during["running"]) == ("running", True)
+
+
 def test_stop_run_ends_the_run_as_stopped_and_the_job_stays_active(tmp_path):
     dispatcher = user_timer("agent-ops-dispatcher", next_run="2026-11-24T10:13:00+00:00")
     earlier = {"at": "2026-11-24T10:05:00+00:00", "duration_seconds": 20, "result": "success"}

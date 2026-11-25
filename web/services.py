@@ -40,7 +40,8 @@ class Job(BaseModel):
     id: str
     name: str
     description: str
-    state: str          # "active" | "paused" | "running"
+    state: str          # "active" | "paused" | "running" (an active job's run in progress)
+    running: bool       # a run is in progress, also on a paused job run by hand
     schedule: str
     last_run: Run | None
     next_run: str | None
@@ -163,7 +164,7 @@ def _job(unit: dict, runs: dict[str, list[dict]], *, read_only: bool,
          changes: dict | None = None, installed: dict | None = None) -> Job:
     job_id = unit["unit"].removesuffix(".timer")
     job = Job(
-        recent_runs=[], upcoming=_upcoming(unit), change=None, warning=None,
+        recent_runs=[], upcoming=_upcoming(unit), change=None, warning=None, running=False,
         id=job_id, name=unit["description"],
         description=unit["description"],
         state="active" if unit["active_state"] == "active" else "paused",
@@ -179,7 +180,7 @@ def _live(job: Job, unit: dict, mine: list[dict], changes: dict, installed: dict
     return job.model_copy(update={
         "recent_runs": _recent(mine), "change": _change(changes.get(key)),
         "warning": _warning(unit, key, changes, installed),
-        "state": "running" if running else job.state})
+        "running": running, "state": "running" if running and job.state == "active" else job.state})
 
 
 def _managed(t: dict) -> bool:
@@ -192,7 +193,7 @@ def _read_only(t: dict) -> bool:
 
 
 def _rank(j: Job) -> int:
-    if j.state == "running" or j.change or j.warning:
+    if j.running or j.change or j.warning:
         return 0
     return 1 if j.state == "paused" else 2
 
