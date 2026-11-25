@@ -105,9 +105,11 @@ def _recent(runs: list[dict]) -> list[RecentRun]:
 
 
 def _change(entry: dict | None) -> Change | None:
-    if not entry:
+    """A failed recording of any change, or a schedule change applying. A pause or resume
+    still being recorded is none: it holds on the box already (requirements 12, 17)."""
+    rec = (entry or {}).get("record") or {}
+    if not (rec.get("failed") or "schedule" in (entry or {})):
         return None
-    rec = entry.get("record") or {}
     link = rec["failed"] if isinstance(rec.get("failed"), dict) else rec
     return Change(state="failed" if rec.get("failed") else "applying",
                   pr=link.get("pr"), url=link.get("url"))

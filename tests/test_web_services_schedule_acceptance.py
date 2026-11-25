@@ -358,3 +358,18 @@ def test_saves_racing_each_other_for_one_job_are_refused_not_merged(world):
     assert len(world.infra.created) == 1
     pushed = yaml.safe_load(world.infra.snapshots[world.infra.prs[world.infra.created[0]]["head"]][SERVICES])
     assert pushed["dispatcher"]["schedule"] == won[0]
+
+
+def test_a_pause_still_being_recorded_is_not_an_applying_change_and_leaves_the_editor_unlocked(world):
+    """Requirement 17 locks the editor for a schedule change only; the paused job shows "paused"."""
+    assert world.post(DIGEST, "pause").status_code == 200
+    world.record()
+    assert world.changes()["digest"]["record"]["pr"]
+
+    job = world.job(DIGEST)
+    assert job["state"] == "paused" and job["change"] is None
+
+    assert world.put(DIGEST, {"every": 10}).status_code == 200
+    entry = world.changes()["digest"]
+    assert entry["schedule"] == {"every": 10} and entry["paused"] is True
+    assert world.job(DIGEST)["change"]["state"] == "applying"

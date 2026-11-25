@@ -73,10 +73,11 @@ class Applying(Exception):
 
 def set_schedule(state_dir: str, job: str, schedule: dict) -> None:
     """Record `schedule` for `job`, under the changes lock. Raises `Applying` while an earlier
-    change is not yet installed (a second save is refused, never merged); a failed one is replaced."""
+    schedule change is not yet installed (a second save is refused, never merged); a failed one
+    is replaced. A pause or resume still being recorded travels on in the same entry."""
     with state_lock(state_dir, "services-changes.lock", None):
         def edit(entry: dict) -> dict:
-            if entry and not failed(entry):
+            if "schedule" in entry and not failed(entry):
                 raise Applying()
             return _with_record({**{k: v for k, v in entry.items() if k != "record"}, "schedule": schedule},
                                 _kept_record(entry))

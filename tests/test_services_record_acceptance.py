@@ -308,7 +308,7 @@ def test_overlapping_recorder_passes_open_one_pull_request(world):
 
     assert nested == [1]
     assert len(world.infra.created) == 1 and len(world.infra.pushes) == 1
-    assert world.job()["change"]["state"] == "applying"
+    assert world.job()["change"] is None  # a pause being recorded is not a schedule applying
 
 
 def test_without_an_infra_token_the_job_shows_change_failed_and_stays_paused(world, monkeypatch):

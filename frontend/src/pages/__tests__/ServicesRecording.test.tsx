@@ -26,7 +26,7 @@ function serve(initial: ReturnType<typeof job>) {
     })),
     http.post('/api/services/:job/:verb', ({ params }) => {
       posts.push(`${params.job}/${params.verb}`)
-      if (params.verb === 'retry') current = { ...current, change: { state: 'applying', pr: null, url: null } }
+      if (params.verb === 'retry') current = { ...current, change: null }
       return HttpResponse.json({})
     }),
     http.get('/api/exams', () => HttpResponse.json({ exams: [] })),
