@@ -203,6 +203,8 @@ test('scenario 19: at 390x844 the bar with a drop and Resend fits, Send answers 
   await expect.poll(() => posts.length, { timeout: 500 }).toBe(1)
   delivery = { state: 'dropped', reason: 'no open request', submit: 'changes', revision: 'r1' }
   await expect(page.getByTestId('review-delivery')).toHaveText(/dropped: no open request/, { timeout: 20_000 })
+  // Scenario 14: a drop keeps the answers on the page.
+  await expect(frame(page).locator('input[name=format][value=b]')).toBeChecked()
   for (const name of ['Send answers', 'Resend']) {
     const b = (await page.getByRole('button', { name }).boundingBox())!
     expect(b.x).toBeGreaterThanOrEqual(0)
