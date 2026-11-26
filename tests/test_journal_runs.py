@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+from web import box_status
 from web.box_status import journal_runs, service_runs
 
 
@@ -73,3 +74,29 @@ def test_a_job_with_fewer_than_five_runs_in_a_week_reads_its_older_journal():
     assert len(runs["agent-ops-digest"]) == 4
     assert "agent-ops-sweep" not in runs  # a job with no runs at all stays absent
     assert ("7 days ago", "agent-ops-*") in calls
+
+
+# Real lines from the box's user journal (`--output-fields=MESSAGE,USER_UNIT,_SYSTEMD_USER_UNIT,PRIORITY`).
+BOX_WEEK = """\
+{"USER_UNIT":"launchpadlib-cache-clean.service","_SYSTEMD_USER_UNIT":"init.scope","PRIORITY":"6","MESSAGE":"launchpadlib-cache-clean.service - Clean up old files in the Launchpadlib cache skipped, unmet condition check ConditionPathExists=/home/agent/.launchpadlib/api.launchpad.net/cache","__REALTIME_TIMESTAMP":"1795100190245366"}
+{"USER_UNIT":"agent-ops-digest.service","__REALTIME_TIMESTAMP":"1795161602546450","PRIORITY":"6","MESSAGE":"Starting agent-ops-digest.service - agent-ops daily digest...","_SYSTEMD_USER_UNIT":"init.scope"}
+{"_SYSTEMD_USER_UNIT":"init.scope","MESSAGE":"Finished agent-ops-digest.service - agent-ops daily digest.","PRIORITY":"6","__REALTIME_TIMESTAMP":"1795161603849261","USER_UNIT":"agent-ops-digest.service"}
+"""
+
+
+def test_the_week_of_runs_reads_only_systemds_own_lines_about_agent_ops_units(monkeypatch):
+    """`-u 'agent-ops-*'` over a week is every line every job printed: 676 MB on the box, which
+    ran past journalctl's 20 s timeout and made /api/services a 500. Runs come from systemd's
+    own lines, so the week asks the user manager for those alone."""
+    calls = []
+
+    def run(cmd, **_):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=0, stdout=BOX_WEEK if "--since" in cmd else "", stderr="")
+    monkeypatch.setattr(box_status.subprocess, "run", run)
+
+    runs = service_runs()
+
+    assert "_COMM=systemd" in calls[0] and "-u" not in calls[0]
+    assert runs == {"agent-ops-digest": [
+        {"at": "2026-11-20T08:00:02.546450+00:00", "duration_seconds": 1, "result": "success"}]}
