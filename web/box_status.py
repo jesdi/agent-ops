@@ -10,6 +10,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from fnmatch import fnmatch
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable, NamedTuple, TextIO
@@ -181,12 +182,26 @@ def parse_units(show: str) -> dict[str, Unit]:
     return units
 
 
-def _journal(since: str | None = "6 hours ago", unit: str = "agent-ops-*", lines: int | None = None) -> list:
-    """`unit`'s lines since `since`; with no `since`, the last `lines` lines systemd itself
-    logged about `unit` (its lifecycle, none of the job's own output)."""
-    window = ["-u", unit, "--since", since] if since else [f"USER_UNIT={unit}", "-n", str(lines)]
+def _journal(since: str = "6 hours ago") -> list:
+    """Every `agent-ops-*` line since `since`, the jobs' own output included."""
+    return _journalctl("-u", "agent-ops-*", "--since", since)
+
+
+def _lifecycle(since: str | None, unit: str = "agent-ops-*", lines: int | None = None) -> list:
+    """The lines systemd itself logged about `unit` (its lifecycle, none of the job's own
+    output): since `since`, or with no `since` the last `lines` of them. A window asks the user
+    manager (`_COMM=systemd`) rather than `-u`, which reads every line the jobs printed: a week
+    of that is hundreds of MB on the box, past the timeout."""
+    if since is None:
+        return _journalctl(f"USER_UNIT={unit}", "-n", str(lines))
+    return [e for e in _journalctl("_COMM=systemd", "--since", since,
+                                   "--output-fields=MESSAGE,USER_UNIT,_SYSTEMD_USER_UNIT,PRIORITY")
+            if fnmatch(e.unit, unit)]
+
+
+def _journalctl(*args: str) -> list:
     proc = subprocess.run(
-        ["journalctl", "--user", *window, "-o", "json", "--no-pager"],
+        ["journalctl", "--user", *args, "-o", "json", "--no-pager"],
         capture_output=True, text=True, timeout=20)
     if proc.returncode:
         raise RuntimeError(proc.stderr.strip() or f"exit {proc.returncode}")
@@ -264,7 +279,7 @@ def journal_runs(entries: list) -> dict[str, list[dict]]:
 RECENT_RUNS = 5
 
 
-def service_runs(journal: Callable[..., list] = _journal) -> dict[str, list[dict]]:
+def service_runs(journal: Callable[..., list] = _lifecycle) -> dict[str, list[dict]]:
     """Journal probe for the Services page: a week of runs, then, for a managed job with
     fewer than five in it (a weekly or long-paused job), systemd's latest lines about it, which
     are a few per run whatever the job itself logs."""

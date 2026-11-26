@@ -63,7 +63,7 @@ def test_a_line_window_reads_only_what_systemd_logged_about_the_unit(monkeypatch
     monkeypatch.setattr(box_status.subprocess, "run", lambda a, **k:
                         argv.append(a) or subprocess.CompletedProcess(a, 0, "", ""))
 
-    box_status._journal(None, "agent-ops-digest.service", 200)
+    box_status._lifecycle(None, "agent-ops-digest.service", 200)
 
     assert "USER_UNIT=agent-ops-digest.service" in argv[0] and "-u" not in argv[0]
 
