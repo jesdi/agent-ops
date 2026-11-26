@@ -3,15 +3,19 @@ retries or fails the stage instead of propagating garbage downstream."""
 from __future__ import annotations
 
 import hashlib
+import html
 import os
 import re
 import stat
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
+from urllib.parse import quote
 
 from dispatcher.answers import QUESTION_ID
 from dispatcher.state import read_regular
+from dispatcher.workspace import write_worktree_file
 
 MIN_BYTES = 1500
 MIN_TICKET_BYTES = 200   # a small ticket is legitimately short
@@ -101,6 +105,38 @@ def page_revision(page: str | Path) -> tuple[str, str]:
     or "" with the problem when it fails the shape check."""
     problem, raw = _page_problem(page)
     return ("", problem) if problem else (hashlib.sha256(raw).hexdigest(), "")
+
+
+_CONSOLE_META = re.compile(rb'<meta\s+name="agent-ops-console"\s+content="[^"]*"\s*/?>')
+
+
+def stamp_console_link(worktree: str | Path, artifact: str, console_url: str,
+                       repository: str, issue: int) -> None:
+    """Write the console's review link into the review page as one
+    `agent-ops-console` meta right after the template marker, replacing any
+    earlier one. Writes nothing without a console URL, for a page outside
+    the worktree or failing the shape check (a symlink included), or when
+    the page already holds that meta: the bytes, and so the revision, stay."""
+    if not console_url:
+        return
+    root = Path(worktree)
+    rel = _page_path(root, artifact)
+    if rel is None:
+        return
+    page = root / rel
+    problem, raw = _page_problem(page)
+    if problem:
+        return
+    url = f"{console_url}/task/{quote(repository, safe='')}/{issue}/review"
+    meta = f'<meta name="agent-ops-console" content="{html.escape(url)}">'.encode()
+    marker = REVIEW_PAGE_MARKER.encode()
+    stamped = _CONSOLE_META.sub(b"", raw).replace(marker, marker + meta, 1)
+    if stamped == raw or len(stamped) > REVIEW_PAGE_MAX_BYTES:
+        return
+    # Never through a symlink, the page's mode kept. A failed write leaves the
+    # page as it is: the request is armed on the unstamped bytes.
+    with suppress(OSError):
+        write_worktree_file(root, Path(rel).parent.as_posix(), Path(rel).name, stamped, mode=None)
 
 
 def count_open_questions(page: str | Path) -> int | None:

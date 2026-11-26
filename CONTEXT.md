@@ -260,6 +260,28 @@ file), `answers` (by question id; `<id>.note` for a note; `track`). Arming a
 new request removes the file unless it is a draft of that request's revision
 (`dispatcher/answers.py` owns the file and the drain's rules). Never committed.
 
+**Held submission**:
+An answers submission (`submit` is `changes` or `approve`) that reached the
+dispatcher while its task's session is live (WAKING, RUNNING, HELD_LOGIN).
+The drain keeps its intent pending, with no event, until the task waits for
+the operator again. Drafts are never held.
+_Avoid_: session busy (the drop reason it replaces for submissions)
+
+**Delivery**:
+What became of a task's latest submission, as the console reads it from
+`GET /api/task/<repo>/<n>/delivery`: `queued` (pending or held),
+`delivered` (the answers file holds it) or `dropped` (an `intent-dropped`
+event with a submission record), with the reason, submit and revision.
+Derived on every read, never stored. The Send bar shows it for
+the revision its tab sent on; Resend follows a drop.
+_Avoid_: sent (the 202 says only that the API accepted the intent)
+
+**Console link meta**:
+`<meta name="agent-ops-console" content="<console_url>/task/<repo>/<n>/review">`,
+stamped by the dispatcher into a review page that passes the shape check,
+before the request's revision is computed. It lets a page opened
+outside the console point the operator to the review route.
+
 **Open question**:
 What the plan session reports at its end: a red-team finding the design
 leaves unresolved, a choice between two behaviours that differ for the user

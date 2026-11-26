@@ -12,7 +12,8 @@ from typing import Callable
 
 from dispatcher import execution_overrides, github_app, messages, relogin
 from dispatcher.artifacts import (REVIEW_PAGE, TICKETS_DIR, check_spec, check_tickets,
-                                  count_open_questions, page_revision, plan_revision)
+                                  count_open_questions, page_revision, plan_revision,
+                                  stamp_console_link)
 from dispatcher.claims import box_free
 from dispatcher.classify import (BackgroundView, Observation, Reads, artifact_path,
                                  classify, config_note)
@@ -315,14 +316,24 @@ def _observation(turn: _Turn, task: TaskState, policy: ModelPolicy) -> Observati
         grace_elapsed=_grace_elapsed(cfg, task), caps=cfg.loop_caps,
         tracks=frozenset(policy.tracks),
         gate_free=frozenset(n for n, t in policy.tracks.items() if not t.plan_review),
-        reads=_reads(task, turn.signal), look=_look(turn, task))
+        reads=_stamp_and_read(turn, task), look=_look(turn, task))
 
 
-def _reads(task: TaskState, signal: StageSignal | None) -> Reads:
+def _stamp_and_read(turn: _Turn, task: TaskState) -> Reads:
     """What the worktree says about the report: a ready plan's tickets,
-    revision and page; an approval's tickets; a spec; an answers page."""
-    reader = _READS.get(signal.status) if signal is not None else None
-    return reader(task, signal) if reader else Reads()
+    revision and page; an approval's tickets; a spec; an answers page. A
+    report that arms a request gets the console link stamped into its page
+    first, so its revision covers the bytes on disk."""
+    signal = turn.signal
+    entry = _READS.get(signal.status) if signal is not None else None
+    if entry is None:
+        return Reads()
+    reader, arms = entry
+    # An answers park without a page arms no request: nothing to stamp.
+    if arms and signal.artifact and not turn.dry_run:
+        stamp_console_link(task.worktree, signal.artifact, turn.cfg.console_url,
+                           task.repository, task.issue)
+    return reader(task, signal)
 
 
 def _ready_reads(task: TaskState, signal: StageSignal) -> Reads:
@@ -362,5 +373,6 @@ def _answers_reads(task: TaskState, signal: StageSignal) -> Reads:
     return Reads(answers=_answers_page(task, signal.artifact))
 
 
-_READS = {"awaiting-review": _ready_reads, "done": _done_reads,
-          "awaiting-answers": _answers_reads}
+# Each report's reader, and whether the report arms an operator request.
+_READS = {"awaiting-review": (_ready_reads, True), "done": (_done_reads, False),
+          "awaiting-answers": (_answers_reads, True)}

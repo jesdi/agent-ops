@@ -671,6 +671,27 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/task/{repository}/{issue}/delivery": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Task Delivery
+         * @description The delivery of the task's latest submission, read whether or not
+         *     a request is open.
+         */
+        get: operations["task_delivery_api_task__repository___issue__delivery_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/task/{repository}/{issue}/description": {
         parameters: {
             query?: never;
@@ -987,6 +1008,26 @@ export interface components {
              * @enum {string}
              */
             zone: "needs-you" | "pipeline";
+        };
+        /**
+         * Delivery
+         * @description The delivery of the task's latest answers submission (answers.delivery).
+         */
+        Delivery: {
+            /** Reason */
+            reason: ("no open request" | "stale revision" | "already submitted" | "session busy") | "";
+            /** Revision */
+            revision: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "queued" | "delivered" | "dropped";
+            /**
+             * Submit
+             * @enum {string}
+             */
+            submit: "changes" | "approve";
         };
         /** EntrySetting */
         EntrySetting: {
@@ -3395,6 +3436,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    task_delivery_api_task__repository___issue__delivery_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                repository: string;
+                issue: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Delivery"] | null;
                 };
             };
             /** @description Validation Error */

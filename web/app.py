@@ -8,6 +8,7 @@ import asyncio
 import contextlib
 import json as _json
 import re
+import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -107,7 +108,7 @@ _ANSWERS = TypeAdapter(read_model.Answers)
 
 class AnswersReq(BaseModel):
     answers: read_model.Answers
-    submit: Literal[answers_file.SUBMITS] | None = None
+    submit: answers_file.Submit | None = None
     revision: str = Field(min_length=1)
 
     @field_validator("answers")
@@ -553,6 +554,16 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
             kind=req.kind, content=_request_content(req, Path(t.worktree).resolve()),
             revision=req.fingerprint, answers=_saved_answers(t))
 
+    @app.get("/api/task/{repository}/{issue}/delivery",
+             response_model=read_model.Delivery | None)
+    def task_delivery(repository: str, issue: int,
+                      op: Operator = Depends(current_operator)):
+        """The delivery of the task's latest submission, read whether or not
+        a request is open."""
+        t = _find_task(repository, issue)
+        return answers_file.delivery(t, _task_intents(t),
+                                     sources.events_tail(limit=sys.maxsize))
+
     def _request_content(req, wt: Path
                          ) -> read_model.ReadableContent | read_model.UnavailableContent:
         """The request's page, unless it is armed for no revision (a session
@@ -578,17 +589,16 @@ def create_app(boot: Config, sources, sse_interval: float = 1.0,
 
     def _pending_answers(t) -> list[intents.Intent]:
         """t's pending answers intents that carry an answers set."""
+        return [i for i in _task_intents(t) if i.action == "answers"
+                and isinstance(i.payload, dict) and isinstance(i.payload.get("answers"), dict)]
+
+    def _task_intents(t) -> list[intents.Intent]:
+        """t's pending intents."""
         return [intents.Intent(i["action"], i["repository"], i["issue"],
                                i["payload"], i["actor"], i["created_at"],
                                Path(i["id"]))
                 for i in sources.pending_intents()
-                if _is_answers_intent(i, t)]
-
-    def _is_answers_intent(i: dict, t) -> bool:
-        return ((i["action"], i["repository"], i["issue"])
-                == ("answers", t.repository, t.issue)
-                and isinstance(i["payload"], dict)
-                and isinstance(i["payload"].get("answers"), dict))
+                if (i["repository"], i["issue"]) == (t.repository, t.issue)]
 
     HISTORY_MAX_LINES = 10000
 

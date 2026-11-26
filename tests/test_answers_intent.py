@@ -69,7 +69,7 @@ def test_an_intent_for_an_unknown_task_is_dropped(tmp_path, monkeypatch):
     assert "no open request" in e["detail"]
 
 
-def test_a_submission_while_the_wake_is_queued_is_session_busy(tmp_path, monkeypatch):
+def test_a_submission_while_the_wake_is_queued_is_held(tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
     wt = _gate(c)
     _intent(c, {"format": "a"}, submit="changes", ms=1)
@@ -79,8 +79,9 @@ def test_a_submission_while_the_wake_is_queued_is_session_busy(tmp_path, monkeyp
     _drain(c)
 
     assert _file(wt)["submitted"] == "changes"
-    (e,) = _events(c, "intent-dropped")
-    assert "session busy" in e["detail"]
+    assert not _events(c, "intent-dropped")
+    (i,) = intents.list_intents(c.state_dir)
+    assert i.payload["submit"] == "approve"
 
 
 def test_a_stale_approval_does_not_cost_a_current_draft(tmp_path, monkeypatch):
@@ -329,3 +330,15 @@ def test_a_questionnaire_without_the_marker_arms_no_revision(tmp_path, monkeypat
     req = operator_request(_task(c))
     assert req.path == ".agent/questionnaire.html" and req.fingerprint == ""
     assert "review page lacks the template marker" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("raw", [None, [], {}, {"submit": 1, "revision": "r1", "created_at": "t"},
+                                 {"submit": "changes", "revision": 2, "created_at": "t"},
+                                 {"submit": "changes", "revision": "r1", "created_at": None}])
+def test_a_drop_record_out_of_shape_is_no_submission(raw):
+    assert answers.Submission.from_event(raw) is None
+
+
+def test_a_drop_record_reads_back_as_written():
+    s = answers.Submission("approve", None, "2026-11-24T10:00:00Z")
+    assert answers.Submission.from_event(s.to_event()) == s

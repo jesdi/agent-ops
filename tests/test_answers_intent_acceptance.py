@@ -14,14 +14,19 @@ import json
 import os
 import shutil
 from dataclasses import replace as dc_replace
+from pathlib import Path
+
+import pytest
 
 import dispatcher.main as main
 from dispatcher import intents, messages, operator_intents
-from dispatcher.state import (NO_SLOT, PlanApprovalRequest, Stage, load, save)
+from dispatcher.state import (NO_SLOT, AnswersRequest, PlanApprovalRequest, Stage, load,
+                              save)
 
 from tests.dispatchfakes import (FakeSessions, cfg, deps, make_task, patch_usage,
                                  patch_workspace, _events)
-from tests.statuses import RUNNING, held, review
+from tests.statuses import (CANCELED, DONE, RUNNING, answers as answers_status, failed, held,
+                            human, login, review, waking)
 from dispatcher.status import Kind
 from dispatcher.state import operator_request
 
@@ -191,7 +196,8 @@ def test_a_stale_revision_writes_nothing(tmp_path, monkeypatch):
     _dropped(c, "stale revision")
 
 
-def test_an_intent_while_the_session_works_on_the_feedback_is_dropped(tmp_path, monkeypatch):
+def test_an_intent_while_the_session_works_on_the_feedback_is_held_until_it_ends(
+        tmp_path, monkeypatch):
     c = _setup(tmp_path, monkeypatch)
     wt = _gate(c)
     _intent(c, {"format": "a"}, submit="changes", ms=1)
@@ -208,8 +214,18 @@ def test_an_intent_while_the_session_works_on_the_feedback_is_dropped(tmp_path, 
     main.run_pass(c, deps(sess=sess))
 
     assert _file(wt) is None
+    assert not _events(c, "intent-dropped")   # the live session holds the submission
+    (i,) = intents.list_intents(c.state_dir)
+    assert i.payload["submit"] == "approve"
+    assert len(_events(c, "intent-applied")) == before
+    _set_status(c, DONE)
+
+    _drain(c)
+
+    assert _file(wt) is None
+    assert intents.list_intents(c.state_dir) == []
     (e,) = _events(c, "intent-dropped")
-    assert "no open request" in e["detail"]   # the rework cleared the request
+    assert "no open request" in e["detail"]   # the task ended without a request
     assert len(_events(c, "intent-applied")) == before
 
 
@@ -271,3 +287,116 @@ def test_an_answers_request_revision_is_the_sha256_of_the_page(tmp_path, monkeyp
         revisions.append(req.fingerprint)
         save(c.state_dir, dc_replace(_task(c), status=RUNNING, slot=0))
     assert revisions[0] != revisions[1]
+
+
+# Ticket 02 of specs/2026-11-24-review-send-delivery: a submission made while
+# the session is live is held until the task waits for the operator again
+# (requirement 7, scenarios 15, 16 and 17).
+
+PAGE_R1 = b'<meta name="agent-ops-review" content="1"><p>round one</p>'
+PAGE_R2 = b'<meta name="agent-ops-review" content="1"><p>round two</p>'
+R1 = hashlib.sha256(PAGE_R1).hexdigest()
+R2 = hashlib.sha256(PAGE_R2).hexdigest()
+PAGE = ".agent/questionnaire.html"
+
+BUSY = {
+    "running": lambda: RUNNING,
+    "waking": lambda: waking(answers_status(AnswersRequest(PAGE, fingerprint=R1))),
+    "held-login": lambda: login(),
+}
+
+
+def _busy_spec_task(c, busy):
+    """Issue 412 at the spec stage, its page on r1 and its session live."""
+    wt = make_task(c, issue=ISSUE, stage=Stage.SPEC, slot=0, status=BUSY[busy]())
+    (wt / PAGE).write_bytes(PAGE_R1)
+    return wt
+
+
+def _set_status(c, status, page=None):
+    t = _task(c)
+    if page is not None:
+        (Path(t.worktree) / PAGE).write_bytes(page)
+    save(c.state_dir, dc_replace(t, status=status, slot=NO_SLOT))
+
+
+def _park_at(c, revision, page):
+    _set_status(c, answers_status(AnswersRequest(PAGE, fingerprint=revision)), page)
+
+
+def _held(c):
+    assert not _events(c, "intent-dropped")
+    (i,) = intents.list_intents(c.state_dir)
+    assert (i.payload["submit"], i.payload["revision"]) == ("changes", R1)
+    assert not _events(c, "intent-applied")
+
+
+@pytest.mark.parametrize("busy", list(BUSY))
+def test_a_submission_while_the_session_is_live_is_held_then_applied(tmp_path, monkeypatch, busy):
+    c = _setup(tmp_path, monkeypatch)
+    wt = _busy_spec_task(c, busy)
+    at = _intent(c, {"format": "a"}, submit="changes", revision=R1)
+
+    _drain(c)
+
+    _held(c)
+    assert _file(wt, SPEC_FILE) is None
+    _park_at(c, R1, PAGE_R1)
+
+    _drain(c)
+
+    f = _file(wt, SPEC_FILE)
+    assert (f["submitted"], f["submitted_at"], f["answers"]) == ("changes", at, {"format": "a"})
+    assert intents.list_intents(c.state_dir) == []
+    assert not _events(c, "intent-dropped")
+    assert _texts(c)
+    assert _task(c).status.kind is Kind.WAKING
+
+
+def test_a_held_submission_is_dropped_when_the_page_changed(tmp_path, monkeypatch):
+    c = _setup(tmp_path, monkeypatch)
+    wt = _busy_spec_task(c, "running")
+    _intent(c, {"format": "a"}, submit="changes", revision=R1)
+    _drain(c)
+    _held(c)
+    _park_at(c, R2, PAGE_R2)
+
+    _drain(c)
+
+    assert _file(wt, SPEC_FILE) is None
+    assert _texts(c) == []
+    assert intents.list_intents(c.state_dir) == []
+    _dropped(c, "stale revision")
+
+
+@pytest.mark.parametrize("end", ["done", "failed", "canceled", "parked-human"])
+def test_a_held_submission_is_dropped_when_the_task_ends_without_a_request(
+        tmp_path, monkeypatch, end):
+    c = _setup(tmp_path, monkeypatch)
+    wt = _busy_spec_task(c, "running")
+    _intent(c, {"format": "a"}, submit="changes", revision=R1)
+    _drain(c)
+    _held(c)
+    _set_status(c, {"done": DONE, "failed": failed(), "canceled": CANCELED,
+                    "parked-human": human()}[end])
+
+    _drain(c)
+
+    assert _file(wt, SPEC_FILE) is None
+    assert _texts(c) == []
+    assert intents.list_intents(c.state_dir) == []
+    _dropped(c, "no open request")
+
+
+def test_a_draft_while_running_is_dropped_and_the_submission_held(tmp_path, monkeypatch):
+    c = _setup(tmp_path, monkeypatch)
+    wt = _busy_spec_task(c, "running")
+    _intent(c, {"format": "a"}, submit="changes", revision=R1, ms=1)
+    _intent(c, {"format": "b"}, revision=R1, ms=3)
+
+    _drain(c)
+
+    assert [i.payload["submit"] for i in intents.list_intents(c.state_dir)] == ["changes"]
+    (e,) = _events(c, "intent-dropped")
+    assert e["issue"] == ISSUE
+    assert _file(wt, SPEC_FILE) is None

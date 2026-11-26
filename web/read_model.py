@@ -11,6 +11,7 @@ from typing import Annotated, Collection, Literal, Mapping, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr
 
+from dispatcher import answers
 from dispatcher import messages as msgq
 from dispatcher import priority
 from dispatcher.claims import (claim_room, pick_project, project_counts,
@@ -601,6 +602,14 @@ class OperatorRequest(BaseModel):
     content: Annotated[ReadableContent | UnavailableContent, Field(discriminator="kind")]
     revision: str
     answers: Answers
+
+
+class Delivery(BaseModel):
+    """The delivery of the task's latest answers submission (answers.delivery)."""
+    state: Literal["queued", "delivered", "dropped"]
+    reason: answers.DropReason | Literal[""]
+    submit: answers.Submit
+    revision: str | None    # None: a session wrote the answers file
 
 
 class PaneHistory(BaseModel):

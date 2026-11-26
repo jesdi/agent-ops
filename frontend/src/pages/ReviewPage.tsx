@@ -1,20 +1,22 @@
-import { useEffect, useRef, useState, type RefObject } from 'react'
+import { useEffect, useMemo, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from 'react'
 import { useParams } from 'react-router'
-import { useTaskRequest } from '../hooks/useResources'
-import { api, type OperatorRequest } from '../lib/api'
-import { createBridge } from '../lib/reviewBridge'
+import { useTaskDelivery, useTaskRequest } from '../hooks/useResources'
+import { api, type Delivery, type OperatorRequest } from '../lib/api'
+import { createBridge, type Answers, type AnswersBody } from '../lib/reviewBridge'
 
 const NEWER = 'this review page needs a newer console'
 const CHANGED = 'the plan changed; your selections were reset to the saved ones'
 const UNSAVED = 'could not save your selection; try again'
-const SENT = {
-  changes: 'sent as changes; the plan session will revise',
-  approve: 'approved; implement starts with these answers',
-  answers: 'sent; the session continues with your answers',
-}
+const APPROVED = 'approved; implement starts with these answers'
+const PAGE_CHANGED = 'page changed, check and resend'
 const BUTTON = 'min-h-11 flex-1 rounded-md border px-3 text-sm font-medium'
 
 type Shown = { revision: string; text: string }
+type Submit = Delivery['submit']
+type Submitted = AnswersBody & { submit: Submit }
+/** The tab's last submission, and when its POST was accepted. */
+type Sent = { body: Submitted; at: number }
+type Status = { text: string; resend: Submit | null }
 
 /** The review page of the open request, full screen: the sandboxed iframe, the
  *  console's own submit bar and, when there is one, a notice. No shell, no panels. */
@@ -26,55 +28,128 @@ export function ReviewPage() {
   const frameRef = useRef<HTMLIFrameElement>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const shown = useShownPage(req.data, () => setNotice(CHANGED))
-  const bridge = useBridge(frameRef, shown, req.data, repository, Number(issue), setNotice)
-  // The changed and unsaved notices cover the page's top: they go after a
-  // while or on tap (the page keeps its selections). The newer-console notice
-  // is an error and stays.
-  const dismiss = () => setNotice((n) => (n === NEWER ? n : null))
-  useEffect(() => {
-    if (!notice || notice === NEWER) return
-    const timer = setTimeout(() => setNotice(null), 6000)
-    return () => clearTimeout(timer)
-  }, [notice])
+  const { status, dropped, wasDropped, onSent } = useDeliveryStatus(repository, Number(issue), shown)
+  // The approved notice waits for the POST to be accepted, never the press alone.
+  const onAccepted = (body: Submitted) => {
+    onSent(body)
+    if (body.submit === 'approve') setNotice(APPROVED)
+  }
+  const bridge = useBridge(frameRef, shown, dropped ?? req.data?.answers ?? {}, repository, Number(issue), setNotice, onAccepted)
+  useDeliveryNotices(bridge, dropped, wasDropped, setNotice)
+  useNoticeTimer(notice, setNotice)
+  const onSubmit = (submit: Submit) => bridge.current?.submit(submit)
 
   return (
     <>
-      {!shown && <Empty data={req.data} />}
-      {shown && (
+      {shown ? (
         <div className="fixed inset-0 flex flex-col">
           {/* A new window per revision: a late message of the old page then
               fails the bridge's source check instead of posting on the new one. */}
           <iframe key={shown.revision} ref={frameRef} data-testid="review-frame" title="review" sandbox="allow-scripts"
             srcDoc={shown.text} className="min-h-0 w-full flex-1 border-0" />
-          <SubmitBar key={`bar-${shown.revision}`} plan={req.data?.kind === 'plan-approval'}
-            onSubmit={(submit, sent) => { bridge.current?.submit(submit); setNotice(sent) }} />
+          <SubmitBar key={`bar-${shown.revision}`} plan={req.data?.kind === 'plan-approval'} status={status}
+            onSubmit={onSubmit} />
         </div>
-      )}
-      {notice && (
-        <p data-testid="review-notice" role="status" onClick={dismiss}
-          className="fixed inset-x-2 top-2 rounded border border-border bg-surface-raised px-3 py-2 text-center text-sm text-ink shadow">
-          {notice}
-        </p>
-      )}
+      ) : <Empty data={req.data} status={status} />}
+      <Notice notice={notice} setNotice={setNotice} />
     </>
+  )
+}
+
+/** The delivery of the tab's last submission, as the Send bar shows it. */
+function useDeliveryStatus(repository: string, issue: number, shown: Shown | null) {
+  const delivery = useTaskDelivery(repository, issue, 5000)
+  const [sent, setSent] = useState<Sent | null>(null)
+  const state = deliveryOf(sent, delivery.data, delivery.dataUpdatedAt)
+  // The tab's submission was dropped because the page changed: the new page
+  // gets the dropped answers it still has questions for, not the saved ones.
+  const changed = pageChanged(state, sent, shown)
+  const dropped = useMemo(() => (changed ? fit(sent!.body.answers, shown!.text) : null), [changed, sent, shown])
+  const onSent = (body: Submitted) => {
+    setSent({ body, at: Date.now() })
+    void delivery.refetch()
+  }
+  return { status: statusOf(state, changed), dropped, wasDropped: state?.state === 'dropped', onSent }
+}
+
+function pageChanged(state: Delivery | null, sent: Sent | null, shown: Shown | null): boolean {
+  return state?.state === 'dropped' && state.reason === 'stale revision'
+    && !!shown && shown.revision !== sent?.body.revision
+}
+
+function statusOf(state: Delivery | null, changed: boolean): Status | null {
+  if (!state) return null
+  return {
+    text: changed ? PAGE_CHANGED : state.state === 'dropped' ? `dropped: ${state.reason}` : state.state,
+    resend: resendable(state, changed) ? state.submit : null,
+  }
+}
+
+/** Resend follows a drop; a stale-revision Resend before the changed page
+ *  shows would post on the old revision again. */
+function resendable(state: Delivery, changed: boolean): boolean {
+  return state.state === 'dropped' && (changed || state.reason !== 'stale revision')
+}
+
+function useDeliveryNotices(bridge: RefObject<ReturnType<typeof createBridge> | null>, dropped: Answers | null,
+  wasDropped: boolean, setNotice: Dispatch<SetStateAction<string | null>>) {
+  useEffect(() => {
+    if (!dropped) return
+    bridge.current?.restore(dropped)
+    setNotice((n) => (n === CHANGED ? null : n))
+  }, [dropped, bridge, setNotice])
+  // A drop takes back the approved notice: the approval never reached the session.
+  useEffect(() => {
+    if (wasDropped) setNotice((n) => (n === APPROVED ? null : n))
+  }, [wasDropped, setNotice])
+}
+
+// The changed and unsaved notices cover the page's top: they go after a
+// while or on tap (the page keeps its selections). The newer-console notice
+// is an error and stays.
+function useNoticeTimer(notice: string | null, setNotice: Dispatch<SetStateAction<string | null>>) {
+  useEffect(() => {
+    if (!notice || notice === NEWER) return
+    const timer = setTimeout(() => setNotice(null), 6000)
+    return () => clearTimeout(timer)
+  }, [notice, setNotice])
+}
+
+function Notice({ notice, setNotice }: { notice: string | null; setNotice: Dispatch<SetStateAction<string | null>> }) {
+  if (!notice) return null
+  return (
+    <p data-testid="review-notice" role="status" onClick={() => setNotice((n) => (n === NEWER ? n : null))}
+      className="fixed inset-x-2 top-2 rounded border border-border bg-surface-raised px-3 py-2 text-center text-sm text-ink shadow">
+      {notice}
+    </p>
   )
 }
 
 /** The buttons that submit. They are the console's, outside the iframe: the
  *  session writes the page, so a button in it could press itself. */
-function SubmitBar({ plan, onSubmit }: { plan: boolean; onSubmit: (submit: 'changes' | 'approve', sent: string) => void }) {
+function SubmitBar({ plan, status, onSubmit }: {
+  plan: boolean; status: Status | null; onSubmit: (submit: Submit) => void
+}) {
   const [armed, setArmed] = useState(false)
+  // Resend is the button of the dropped kind pressed again: approve still arms first.
+  const press = (submit: Submit) => {
+    if (submit === 'changes') { setArmed(false); onSubmit('changes') } else { setArmed(!armed); if (armed) onSubmit('approve') }
+  }
   return (
     <div data-testid="review-bar" className="bg-surface-raised px-4 pb-[calc(0.625rem+env(safe-area-inset-bottom,0px))]">
+      {status && <DeliveryLine status={status} className="mx-auto max-w-[680px] pt-2 pb-1" />}
       <div className="mx-auto flex max-w-[680px] gap-2">
-        <button type="button" className={`${BUTTON} border-border bg-surface-raised text-ink`}
-          onClick={() => { setArmed(false); onSubmit('changes', plan ? SENT.changes : SENT.answers) }}>
+        <button type="button" className={`${BUTTON} border-border bg-surface-raised text-ink`} onClick={() => press('changes')}>
           {plan ? 'Send changes' : 'Send answers'}
         </button>
         {plan && (
-          <button type="button" className={`${BUTTON} border-ink bg-ink text-surface-raised`}
-            onClick={() => { setArmed(!armed); if (armed) onSubmit('approve', SENT.approve) }}>
+          <button type="button" className={`${BUTTON} border-ink bg-ink text-surface-raised`} onClick={() => press('approve')}>
             {armed ? 'Tap again to approve' : 'Approve'}
+          </button>
+        )}
+        {status?.resend && (
+          <button type="button" className={`${BUTTON} border-border bg-surface-raised text-ink`} onClick={() => press(status.resend!)}>
+            Resend
           </button>
         )}
       </div>
@@ -82,8 +157,32 @@ function SubmitBar({ plan, onSubmit }: { plan: boolean; onSubmit: (submit: 'chan
   )
 }
 
-/** No page to show: say why, once the request route has answered. */
-function Empty({ data }: { data: OperatorRequest | null | undefined }) {
+function DeliveryLine({ status, className }: { status: Status; className: string }) {
+  return <p data-testid="review-delivery" role="status" className={`${className} text-sm text-ink-muted`}>{status.text}</p>
+}
+
+/** The delivery of the tab's last submission: none before it sends, and
+ *  queued until a read made after its POST, for its revision, says otherwise.
+ *  So a delivery of an earlier round, or of another tab, never shows. */
+function deliveryOf(sent: Sent | null, data: Delivery | null | undefined, updatedAt: number): Delivery | null {
+  if (!sent) return null
+  if (!data || updatedAt < sent.at || data.revision !== sent.body.revision) {
+    return { state: 'queued', reason: '', submit: sent.body.submit, revision: sent.body.revision }
+  }
+  return data
+}
+
+/** The answers whose question the page still has (`q` and its `q.note`). */
+function fit(answers: Answers, text: string): Answers {
+  const ids = new Set([...new DOMParser().parseFromString(text, 'text/html').querySelectorAll('[data-q]')]
+    .map((q) => q.getAttribute('data-q')))
+  return Object.fromEntries(Object.entries(answers).filter(([k]) => ids.has(k.replace(/\.note$/, ''))))
+}
+
+/** No page to show: say why, once the request route has answered. The
+ *  tab's submission closes the request once delivered: then say that. */
+function Empty({ data, status }: { data: OperatorRequest | null | undefined; status: Status | null }) {
+  if (status) return <DeliveryLine status={status} className="p-4 text-center" />
   if (data === undefined) return null
   const text = data?.content.kind === 'unavailable' ? data.content.reason : 'no open request'
   return <p className="p-4 text-center text-sm text-ink-muted">{text}</p>
@@ -104,11 +203,11 @@ function useShownPage(data: OperatorRequest | null | undefined, onChanged: () =>
 
 /** One bridge per page on screen, bound to the iframe's window and revision. */
 function useBridge(frameRef: RefObject<HTMLIFrameElement | null>, shown: Shown | null,
-  data: OperatorRequest | null | undefined, repository: string, issue: number,
-  onNotice: (notice: string) => void) {
-  // restore sends the latest saved answers, not the ones of the first load.
-  const latest = useRef({ data, onNotice })
-  latest.current = { data, onNotice }
+  restoring: Answers, repository: string, issue: number,
+  onNotice: (notice: string) => void, onSent: (body: Submitted) => void) {
+  // restore sends the latest answers to restore, not the ones of the first load.
+  const latest = useRef({ restoring, onNotice, onSent })
+  latest.current = { restoring, onNotice, onSent }
   const current = useRef<ReturnType<typeof createBridge> | null>(null)
 
   useEffect(() => {
@@ -117,9 +216,13 @@ function useBridge(frameRef: RefObject<HTMLIFrameElement | null>, shown: Shown |
     const bridge = createBridge({
       frameWindow,
       revision: shown.revision,
-      post: (body) => { api.answers(repository, issue, body).catch(() => latest.current.onNotice(UNSAVED)) },
+      post: (body) => {
+        api.answers(repository, issue, body).then(
+          () => { if (body.submit) latest.current.onSent({ ...body, submit: body.submit }) },
+          () => latest.current.onNotice(UNSAVED))
+      },
       onNotice: () => latest.current.onNotice(NEWER),
-      onReady: () => bridge.restore(latest.current.data?.answers ?? {}),
+      onReady: () => bridge.restore(latest.current.restoring),
     })
     current.current = bridge
     // A draft the page sent just before pagehide can arrive after it: while

@@ -12,8 +12,9 @@ import json
 import os
 import stat
 import sys
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable, Iterable, TypedDict
+from typing import Callable, Iterable, Literal, NamedTuple, TypedDict, get_args
 
 from dispatcher import intents
 from dispatcher.state import TaskState, operator_request, read_regular
@@ -24,12 +25,54 @@ from dispatcher.workspace import remove_worktree_file, write_worktree_file
 ANSWERS_FILES = {"plan-approval": ("review-answers.json", "plan"),
                  "answers": ("questionnaire-answers.json", "spec")}
 # A submission, and the message that wakes the session with it.
-SUBMITS = ("changes", "approve")
+Submit = Literal["changes", "approve"]
+SUBMITS: tuple[Submit, ...] = get_args(Submit)
 WAKE = {"changes": "Apply them as feedback.", "approve": "Approved."}
 # The id of a question block (`data-q`) and of its answer key.
 QUESTION_ID = r"[a-z0-9_-]{1,64}"
 # Twice the console's 64 KiB body cap, plus room for the envelope.
 ANSWERS_FILE_MAX_BYTES = 256 * 1024
+
+
+# Why an answers intent is dropped (request_reason, drop_reason), besides an
+# unknown submit, which no submission has.
+DropReason = Literal["no open request", "stale revision", "already submitted",
+                     "session busy"]
+
+
+@dataclass(frozen=True)
+class Submission:
+    """An answers intent that submits (not a draft): what its drop event
+    records, and what the console reads back as a delivery."""
+    submit: Submit
+    revision: str | None
+    created_at: str
+
+    @classmethod
+    def of(cls, intent: intents.Intent) -> Submission | None:
+        """The intent's submission; None for a draft or another action."""
+        p = intent.payload if isinstance(intent.payload, dict) else {}
+        if intent.action != "answers" or not _submits(p.get("submit"), p.get("revision")):
+            return None
+        return cls(p["submit"], p.get("revision"), str(intent.created_at))
+
+    def to_event(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_event(cls, raw: object) -> Submission | None:
+        """The submission of an event line; None when the line holds none
+        or a hand-edited one of the wrong shape."""
+        raw = raw if isinstance(raw, dict) else {}
+        at = raw.get("created_at")
+        if not (_submits(raw.get("submit"), raw.get("revision")) and isinstance(at, str)):
+            return None
+        return cls(raw["submit"], raw.get("revision"), at)
+
+
+def _submits(submit: object, revision: object) -> bool:
+    """A submit kind, on a revision or none (a session wrote the file)."""
+    return submit in SUBMITS and isinstance(revision, (str, type(None)))
 
 
 class AnswersDoc(TypedDict, total=False):
@@ -115,6 +158,19 @@ _WAITS_FOR_OPERATOR = frozenset({Kind.PARKED_HUMAN, Kind.PARKED_ANSWERS, Kind.PA
 def waits_for_operator(task: TaskState) -> bool:
     """Parked for input or review, or held at the gate before the grace park."""
     return task.status.kind in _WAITS_FOR_OPERATOR
+
+
+_LIVE = frozenset({Kind.RUNNING, Kind.WAKING, Kind.HELD_LOGIN})
+
+
+def held(intent: intents.Intent,
+         task_for: Callable[[intents.Intent], TaskState | None]) -> bool:
+    """A submission made while the session is live: it stays pending until
+    the task waits for the operator again, then drains as any other."""
+    if Submission.of(intent) is None:
+        return False
+    task = task_for(intent)
+    return task is not None and task.status.kind in _LIVE
 
 
 def disk_revision(task: TaskState | None) -> str:
@@ -249,3 +305,69 @@ def without_superseded(pending: list[intents.Intent],
         if i.path in losers:
             intents.delete_intent(i)
     return [i for i in pending if i.path not in losers]
+
+
+@dataclass(frozen=True)
+class Delivery:
+    """What became of the task's latest submission."""
+    state: Literal["queued", "delivered", "dropped"]
+    reason: DropReason | Literal[""]    # "" unless dropped
+    submit: Submit
+    revision: str | None                # None: a session wrote the answers file
+
+
+class _Outcome(NamedTuple):
+    """A submission's outcome, ordered by submission time; on a tie the
+    answers file (delivered) wins over a drop."""
+    at: str
+    delivered: bool
+    delivery: Delivery
+
+
+def delivery(task: TaskState, pending: Iterable[intents.Intent],
+             events: Iterable[dict]) -> Delivery | None:
+    """A pending submission of the task is queued; otherwise the newer of
+    the answers files' submission and the latest drop of one decides.
+    None when the task has no submission. Drafts never count."""
+    queued = _queued(task, pending)
+    if queued:
+        return queued
+    latest = max(_delivered(task) + _dropped(task, events), default=None,
+                 key=lambda o: (o.at, o.delivered))
+    return latest.delivery if latest else None
+
+
+def _queued(task: TaskState, pending: Iterable[intents.Intent]) -> Delivery | None:
+    """The task's latest pending submission made on a revision."""
+    queued = [s for i in pending if (i.repository, i.issue) == (task.repository, task.issue)
+              and (s := Submission.of(i)) is not None and s.revision is not None]
+    s = max(queued, default=None, key=lambda s: s.created_at)
+    return Delivery("queued", "", s.submit, s.revision) if s else None
+
+
+def _delivered(task: TaskState) -> list[_Outcome]:
+    """The submission of each answers file of the task (both kinds can exist)."""
+    out = []
+    for kind in ANSWERS_FILES:
+        doc = read(task.worktree, kind) or {}
+        submit, revision = doc.get("submitted"), doc.get("revision")
+        if _submits(submit, revision):
+            out.append(_Outcome(str(doc.get("submitted_at") or ""), True,
+                                Delivery("delivered", "", submit, revision)))
+    return out
+
+
+def _dropped(task: TaskState, events: Iterable[dict]) -> list[_Outcome]:
+    """The latest drop of a submission of the task; none when that event
+    line was hand-edited out of shape."""
+    e = next((e for e in reversed(list(events)) if _is_drop(task, e)), {})
+    s, reason = Submission.from_event(e.get("submission")), e.get("detail")
+    if s is None or reason not in get_args(DropReason):
+        return []
+    return [_Outcome(s.created_at, False, Delivery("dropped", reason, s.submit, s.revision))]
+
+
+def _is_drop(task: TaskState, e: dict) -> bool:
+    """e records the drop of a submission of the task."""
+    return (e.get("event"), e.get("repository"), e.get("issue")) == (
+        "intent-dropped", task.repository, task.issue) and "submission" in e

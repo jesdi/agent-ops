@@ -101,3 +101,40 @@ def test_ticket_duplicate_number_fails(tmp_path: Path):
     d = tickets_dir(tmp_path, ticket(1, "a"), ticket(1, "b"))
     r = check_tickets(d)
     assert not r.ok and "duplicate" in r.reason
+
+
+def test_stamping_the_console_link_keeps_the_page_mode(tmp_path):
+    from dispatcher.artifacts import stamp_console_link
+    page = tmp_path / ".agent" / "review.html"
+    page.parent.mkdir()
+    page.write_text((Path(__file__).parent / "fixtures" / "review-page.html").read_text())
+    page.chmod(0o640)
+
+    stamp_console_link(tmp_path, "", "https://ops.example", "widget", 42)
+
+    assert 'content="https://ops.example/task/widget/42/review"' in page.read_text()
+    assert page.stat().st_mode & 0o777 == 0o640
+    assert [p.name for p in page.parent.iterdir()] == ["review.html"]
+
+
+def test_a_failed_console_link_write_leaves_the_page_and_raises_nothing(tmp_path, monkeypatch):
+    """Disk full or a read-only folder: the request is still armed (spec req. 2)."""
+    from dispatcher import workspace
+    from dispatcher.artifacts import stamp_console_link
+    page = tmp_path / ".agent" / "review.html"
+    page.parent.mkdir()
+    raw = (Path(__file__).parent / "fixtures" / "review-page.html").read_bytes()
+    page.write_bytes(raw)
+
+    real_open = workspace.os.open
+
+    def full(path, flags, *a, **k):
+        if flags & workspace.os.O_CREAT:
+            raise OSError(28, "No space left on device")
+        return real_open(path, flags, *a, **k)
+    monkeypatch.setattr(workspace.os, "open", full)
+
+    stamp_console_link(tmp_path, "", "https://ops.example", "widget", 42)
+
+    assert page.read_bytes() == raw
+    assert [p.name for p in page.parent.iterdir()] == ["review.html"]

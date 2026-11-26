@@ -221,31 +221,52 @@ def _intent_repository(cfg: Config, intent: intents.Intent) -> str:
     return intent.repository or (resolved.repository if resolved is not None else "")
 
 
+def _held(cfg: Config, intent: intents.Intent) -> bool:
+    """An answers submission the pass leaves pending (answers.held). A task
+    file that does not load holds nothing: the drain fails the intent."""
+    try:
+        return answers.held(intent, lambda i: _task_for_intent(cfg, i))
+    except Exception:
+        return False
+
+
+def _drop_record(intent: intents.Intent) -> dict | None:
+    submission = answers.Submission.of(intent)
+    return submission.to_event() if submission else None
+
+
 def _apply_intents(cfg: Config, deps: Deps) -> None:
     """Drain operator intents (web console writes) at the top of the pass.
     Applied-then-deleted = at-most-once; a failed intent is deleted too,
-    noted to stderr, and never aborts the pass or the remaining intents."""
+    noted to stderr, and never aborts the pass or the remaining intents.
+    A held submission is not drained: it stays for a later pass."""
     by_name = {t.name: t for t in cfg.repositories}
-    pending = answers.without_superseded(intents.list_intents(cfg.state_dir),
-                                         lambda i: _task_for_intent(cfg, i))
+    unheld = [i for i in intents.list_intents(cfg.state_dir) if not _held(cfg, i)]
+    pending = answers.without_superseded(unheld, lambda i: _task_for_intent(cfg, i))
     for intent in pending:
-        try:
-            _apply_one_intent(cfg, deps, by_name, intent)
-            eventlog.append_event(cfg.state_dir, "intent-applied",
-                                  repository=_intent_repository(cfg, intent),
-                                  issue=intent.issue, actor=intent.actor,
-                                  detail=intent.action)
-        except IntentRefused:
-            pass   # its transition-rejected event is the record
-        except IntentDropped as dropped:
-            print(f"[warn] intent {intent.path.name}: {dropped}",
-                  file=sys.stderr)
-            eventlog.append_event(cfg.state_dir, "intent-dropped",
-                                  repository=_intent_repository(cfg, intent),
-                                  issue=intent.issue, model=dropped.model,
-                                  actor=intent.actor, detail=str(dropped))
-        except Exception as exc:
-            print(f"[warn] intent {intent.path.name} failed: {exc}",
-                  file=sys.stderr)
-        finally:
-            intents.delete_intent(intent)
+        _drain_one(cfg, deps, by_name, intent)
+
+
+def _drain_one(cfg: Config, deps: Deps, by_name: dict, intent: intents.Intent) -> None:
+    """Apply one intent, record the outcome, and delete it whatever happens."""
+    try:
+        _apply_one_intent(cfg, deps, by_name, intent)
+        eventlog.append_event(cfg.state_dir, "intent-applied",
+                              repository=_intent_repository(cfg, intent),
+                              issue=intent.issue, actor=intent.actor,
+                              detail=intent.action)
+    except IntentRefused:
+        pass   # its transition-rejected event is the record
+    except IntentDropped as dropped:
+        print(f"[warn] intent {intent.path.name}: {dropped}",
+              file=sys.stderr)
+        eventlog.append_event(cfg.state_dir, "intent-dropped",
+                              repository=_intent_repository(cfg, intent),
+                              issue=intent.issue, model=dropped.model,
+                              actor=intent.actor, detail=str(dropped),
+                              submission=_drop_record(intent))
+    except Exception as exc:
+        print(f"[warn] intent {intent.path.name} failed: {exc}",
+              file=sys.stderr)
+    finally:
+        intents.delete_intent(intent)
