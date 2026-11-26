@@ -602,6 +602,14 @@ the cached answer without another `gh` call. Descriptions use 300 seconds
 after a stale serve or 30 seconds after a cold failure; rank rows use 15
 seconds. The payload timestamp still names the earlier fetch.
 
+**Answered page**:
+The request page (plan review or questionnaire) with one submission's answers
+filled in, every control disabled, and any answer that lands on no input
+listed as text. The dispatcher captures it into the archive as
+`review-answers` or `questionnaire-answers` when it records the submission;
+only the next submission of the same kind replaces it.
+_Avoid_: answers file (the JSON the session reads), answers artifact as JSON
+
 ## Loop-policy ownership
 
 **Single owner**: `dispatcher/loops.py` owns all round accounting, cap arithmetic, and reset scopes.
@@ -752,6 +760,15 @@ because the task branch is deleted. Archived task details survive the normal
 finished-task flush (done, failed and won't do, `done_retention_days` after
 `terminal_at`; it also removes the worktree and local branch); archive entries
 do not consume capacity or return to the board.
+
+The **answers artifacts** (`review-answers`, `questionnaire-answers`) are the
+**answered page**: the request page with the submitted answers filled in and
+every control disabled (`dispatcher/answered_page.py`). The drain captures it
+into the archive when it records a submission, from the page on disk at that
+moment, so it outlives the worktree and the next round; drafts are not
+captured, and a failed capture never holds back the answers file or the wake.
+The item's `digest` is the SHA-256 of the answers file it was built from. The
+collector never registers the raw answers files.
 
 `TaskState.terminal_at` records the first transition into done, failed or
 canceled. State serialization preserves that timestamp across unrelated

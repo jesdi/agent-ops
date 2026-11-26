@@ -50,3 +50,14 @@ def test_the_cli_name_derives_the_binary_its_mount_and_the_resume_line():
     assert runtimes.CLAUDE.package == ""
     assert runtimes.CLAUDE.resume_cmd("recorded-session") == "claude --resume recorded-session"
     assert runtimes.CODEX.resume_cmd("recorded-session", "'hi'") == "codex resume recorded-session 'hi'"
+
+
+def test_codex_streams_each_agent_message_of_a_captured_exec_json_run_once():
+    """Captured from codex-cli 0.171 `exec --json`: it emits each agent message whole, on
+    item.completed, and no text deltas, so a Codex reply arrives a message at a time."""
+    import json
+    from pathlib import Path
+    lines = (Path(__file__).parent / "fixtures" / "codex-exec-json-0.171.jsonl").read_text().splitlines()
+    texts = [runtimes.runtime_for("openai/gpt-5").stream_text(json.loads(line)) for line in lines]
+    message = json.loads(lines[2])["item"]["text"]
+    assert [t for t in texts if t] == [message]

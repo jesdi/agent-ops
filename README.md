@@ -267,6 +267,8 @@ Global Claude Code config (rules, hooks, and plugins like engram, ponytail and c
 
 To add a new one, run `pnpm dlx @jesdi/skills-cli install <skill>` and add its `.claude/skills/<skill>` and `.agents/skills/<skill>` lines to `.gitignore`.
 
+Never pin `pr-exam` back past `@jesdi/skills` 0.0.103: its `pr_exam.py` is the first with `context` and `score --flags`, which the exam host calls.
+
 The session hook of skills-cli updates only global skills (`~/.my-skills`). Project skills stay at the versions pinned in `.my-skills.json`. To move them to the latest release, run `pnpm dlx @jesdi/skills-cli@latest update --all` and commit the new pins.
 
 ## Deployment
@@ -345,8 +347,15 @@ ships, and only until then, abandon an onboarding by hand: delete
 The unit's environment needs `GH_INFRA_TOKEN`, a fine-grained token with
 contents and pull-requests write on agent-ops-infra only: enough to push the
 `onboard/<project>` branch and open its PR, used for every agent-ops-infra
-call. The merge into infra main, the box's deploy source, stays yours. Resolve and clone use the box's repository token; the
+call. The merge into infra main, the box's deploy source, stays yours for projects. Resolve and clone use the box's repository token; the
 board check uses `GH_PROJECT_TOKEN`.
+
+The services recorder (`python -m dispatcher.services_record <targets.yaml>`, run by
+`agent-ops-services-record.service`, kicked by the console after every pause, resume or
+retry, and on a timer) uses the same `GH_INFRA_TOKEN`, which must also be able to merge
+pull requests. It opens `services/<job>` pull requests that change only
+`config/services.yaml`, and merges one itself once its `ci` run succeeded. Without the
+token, a console pause stays in place on the box and the job shows "change failed".
 
 ### GitHub permissions and PR polling
 

@@ -11,7 +11,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from dispatcher import host_auth, messages, task_artifacts
+from dispatcher import host_auth, messages, services_config, task_artifacts
 from dispatcher.config import Config
 from dispatcher.deps import Deps, _now
 from dispatcher.operator_chat import _in_flight
@@ -122,11 +122,19 @@ def _write_heartbeat(cfg: Config, started_at: str) -> None:
     pass (same contract as eventlog.append_event)."""
     try:
         p = Path(cfg.state_dir) / "pass.json"
+        interval = services_config.pass_interval(cfg.state_dir)
         write_json_atomic(p, {
             "started_at": started_at, "finished_at": _now(),
-            "interval_minutes": cfg.pass_interval_minutes})
+            **({"interval_minutes": interval} if interval else _calendar_beat(cfg.state_dir))})
     except OSError as exc:
         print(f"[warn] heartbeat write failed: {exc}", file=sys.stderr)
+
+
+def _calendar_beat(state_dir: str) -> dict:
+    """A calendar schedule's heartbeat: no interval, but when the next pass is due,
+    so the console can still tell a stopped dispatcher."""
+    due = services_config.next_pass(state_dir)
+    return {"custom": True, **({"next_at": due} if due else {})}
 
 
 def _prune_snapshots(cfg: Config) -> None:

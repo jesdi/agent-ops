@@ -9,6 +9,7 @@ export const defaultHandlers = [
   http.get('/api/board', () => HttpResponse.json(fx.board)),
   http.get('/api/projects', () => HttpResponse.json(fx.projects)),
   http.get('/api/usage', () => HttpResponse.json(fx.usage)),
+  http.get('/api/services', () => HttpResponse.json({ now: '2026-11-24T10:12:00+00:00', managed: [], read_only: [] })),
   http.get('/api/failures', () => HttpResponse.json(fx.failures)),
   http.get('/api/history', () => HttpResponse.json(fx.history)),
   http.get('/api/pending-intents', () => HttpResponse.json(fx.noPendingIntents)),

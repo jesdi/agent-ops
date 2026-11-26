@@ -43,7 +43,7 @@ def test_a_push_during_the_follow_up_session_replaces_the_failed_attempts(tmp_pa
     settle(box)
     body = box.read().json()
     assert (body["state"], body["head_sha"], body["attempt"]) == ("open", NEW, 1)
-    assert body["results"] == []
+    assert body["attempts"] == []
     assert len(body["exam"]["questions"]) == 5
     assert not any(s[3] == "success" for s in box.posted())
 

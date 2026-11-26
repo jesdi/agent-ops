@@ -32,19 +32,15 @@ from typing import Callable, Literal, NamedTuple
 
 import yaml
 
-from dispatcher import board, config, github_app, intents, labels, project_board, repository_inspection as inspection
+from dispatcher import board, config, github_app, infra_pr, intents, labels, project_board, repository_inspection as inspection
 from dispatcher.infra_config import add_project_text, project_block
-from dispatcher.pr_poll import ci_verdict
 from dispatcher.state import state_lock, write_json_atomic
 
 CHECKOUT = Path(__file__).resolve().parents[1]   # the executing agent-ops checkout
 
 RECORDS_DIR = "onboarding"
-INFRA_REPO = "jesdi/agent-ops-infra"
-INFRA_TARGETS = "config/targets.yaml"
-# git authenticates as gh does, so GH_TOKEN in the env picks the token.
-GIT_AS_GH = ["git", "-c", "credential.helper=", "-c",
-             "credential.helper=!gh auth git-credential"]
+INFRA_REPO = infra_pr.INFRA_REPO
+INFRA_TARGETS = infra_pr.INFRA_TARGETS
 
 Sh = Callable[..., str]
 Get = Callable[[str, dict], bytes]
@@ -939,29 +935,16 @@ NO_INFRA_TOKEN = blocked("GH_INFRA_TOKEN is unset: agent-ops-onboard loads it fr
                          "its op.env entry; run project add through that unit")
 
 
-def _infra_env() -> dict | None:
-    """The env of every agent-ops-infra call: GH_TOKEN is the infra token,
-    which only the onboarding unit loads. None without it."""
-    token = os.environ.get("GH_INFRA_TOKEN")
-    return {**os.environ, "GH_TOKEN": token} if token else None
-
-
 def _scratch(r: Run) -> Path:
     return Path(r.cfg.state_dir) / RECORDS_DIR / "infra"
 
 
 def _git(r: Run, env: dict, *args: str) -> str:
-    return r.sh([*GIT_AS_GH, "-C", str(_scratch(r)), *args], env=env)
+    return infra_pr.git(r.sh, _scratch(r), env, *args)
 
 
 def _infra_main(r: Run, env: dict) -> str:
-    """infra main's targets.yaml, fetched into the scratch clone."""
-    if not (_scratch(r) / ".git").exists():
-        shutil.rmtree(_scratch(r), ignore_errors=True)
-        r.sh([*GIT_AS_GH, "clone", f"https://github.com/{INFRA_REPO}.git",
-              str(_scratch(r))], env=env)
-    _git(r, env, "fetch", "origin", "--prune")
-    return _git(r, env, "show", f"origin/main:{INFRA_TARGETS}")
+    return infra_pr.fetch_main(r.sh, _scratch(r), env)
 
 
 def _main_entry(rec: Record, text: str) -> Outcome | None:
@@ -983,32 +966,19 @@ def _comparable(entry: dict) -> dict:
                                       for x in entry.get("repositories") or []]}
 
 
-class OpenPr(NamedTuple):
-    number: int
-    url: str
-    head: str
-
-
-def _open_pr(r: Run, project: str, env: dict) -> OpenPr | None:
-    rows = json.loads(r.sh(["gh", "pr", "list", "--repo", INFRA_REPO, "--head",
-                            f"onboard/{project}", "--state", "open",
-                            "--json", "number,url,headRefOid"], env=env))
-    return OpenPr(rows[0]["number"], rows[0]["url"], rows[0]["headRefOid"]) if rows else None
-
-
 def _config_pr(r: Run, rec: Record) -> Outcome:
-    if not (env := _infra_env()):
+    if not (env := infra_pr.infra_env()):
         return NO_INFRA_TOKEN
     main = _infra_main(r, env)
     if on_main := _main_entry(rec, main):
         return on_main
-    pr = _open_pr(r, rec.project, env)
+    pr = infra_pr.open_pr(r.sh, f"onboard/{rec.project}", env)
     if pr and _pr_current(r, rec, pr, env):
         return Outcome(StepState.VERIFIED, link=rec.pr_url)
     return _push_pr(r, rec, main, pr, env)
 
 
-def _pr_current(r: Run, rec: Record, pr: OpenPr, env: dict) -> bool:
+def _pr_current(r: Run, rec: Record, pr: infra_pr.OpenPr, env: dict) -> bool:
     """The open PR is the record's push of its revision onto today's main."""
     ip = rec.infra_pr
     return ip is not None and (pr.head, ip.revision, ip.base, ip.builder) == (
@@ -1016,7 +986,7 @@ def _pr_current(r: Run, rec: Record, pr: OpenPr, env: dict) -> bool:
         _builder(r))
 
 
-def _push_pr(r: Run, rec: Record, main: str, pr: OpenPr | None, env: dict) -> Outcome:
+def _push_pr(r: Run, rec: Record, main: str, pr: infra_pr.OpenPr | None, env: dict) -> Outcome:
     """Push the branch, then open its PR unless one is open."""
     pushed = _push(r, rec, main, env, pr.url if pr else rec.pr_url)
     if isinstance(pushed, Outcome):
@@ -1066,8 +1036,7 @@ def _push(r: Run, rec: Record, main: str, env: dict, link: str) -> Pushed | Outc
         return blocked(f"{branch} on {INFRA_REPO} is at {theirs}, which this onboarding "
                        f"didn't push (it pushed {ours or 'nothing yet'}): review it, then "
                        f"delete the branch, or {ABANDON}", link)
-    _git(r, env, "push", *([f"--force-with-lease={branch}:{ours}"] if ours else []),
-         "origin", f"HEAD:refs/heads/{branch}")
+    infra_pr.push_branch(r.sh, _scratch(r), env, branch, ours)
     return Pushed(head, base, builder, adopted=False)
 
 
@@ -1092,14 +1061,11 @@ def _commit(r: Run, rec: Record, main: str, env: dict) -> tuple[str, str, str] |
 
 
 def _create_pr(r: Run, rec: Record, env: dict) -> tuple[int, str]:
-    url = r.sh(["gh", "pr", "create", "--repo", INFRA_REPO, "--base", "main",
-                "--head", f"onboard/{rec.project}",
-                "--title", f"feat(config): onboard {rec.project}",
-                "--body", f"Adds project {rec.project}, paused, at proposal "
-                          f"revision {rec.revision[:12]}. Opened by agent-ops-onboard: merge it "
-                          "once its checks are green, and onboarding deploys it."],
-               env=env).strip()
-    return int(url.rsplit("/", 1)[1]), url
+    return infra_pr.create_pr(
+        r.sh, f"onboard/{rec.project}", f"feat(config): onboard {rec.project}",
+        f"Adds project {rec.project}, paused, at proposal revision {rec.revision[:12]}. "
+        "Opened by agent-ops-onboard: merge it once its checks are green, and "
+        "onboarding deploys it.", env)
 
 
 # -- config-merge -------------------------------------------------------------
@@ -1113,23 +1079,30 @@ def _config_merge(r: Run, rec: Record) -> Outcome:
     main, the box's deploy source, is too much authority. Until the merge
     the PR is rebuilt when main moves, and its checks are watched (#225:
     GitHub enforces nothing on agent-ops-infra); green blocks on the merge."""
-    if not (env := _infra_env()):
+    if not (env := infra_pr.infra_env()):
         return NO_INFRA_TOKEN
     ip = rec.infra_pr
     if ip is None:
         return _added_on_main(r, rec, env)
     pr = json.loads(r.sh(["gh", "pr", "view", str(ip.number), "--repo", INFRA_REPO,
                           "--json", "state,baseRefName,mergeCommit,mergedAt"], env=env))
-    if pr["state"] not in ("OPEN", "MERGED"):
-        return blocked(f"the infra PR was closed: reopen it, or {ABANDON}", ip.url)
-    merged = pr["state"] == "MERGED"
-    if (base := pr["baseRefName"]) != "main":
-        fix = f"nothing deploys a merge there; {ABANDON}" if merged else (
-            "set its base back to main")
-        return blocked(f"the infra PR's base is {base!r}, not main: {fix}", ip.url)
-    if merged:
+    if bad := _unusable_pr(pr, ip):
+        return bad
+    if pr["state"] == "MERGED":
         return _merged(rec, pr["mergeCommit"]["oid"], pr["mergedAt"])
     return _rebuild_or_check(r, rec, env)
+
+
+def _unusable_pr(pr: dict, ip: InfraPr) -> Outcome | None:
+    """A blocked outcome when the infra PR was closed or targets a base
+    other than main, else None."""
+    if pr["state"] not in ("OPEN", "MERGED"):
+        return blocked(f"the infra PR was closed: reopen it, or {ABANDON}", ip.url)
+    if (base := pr["baseRefName"]) != "main":
+        fix = f"nothing deploys a merge there; {ABANDON}" if pr["state"] == "MERGED" else (
+            "set its base back to main")
+        return blocked(f"the infra PR's base is {base!r}, not main: {fix}", ip.url)
+    return None
 
 
 def _merged(rec: Record, sha: str, at: str) -> Outcome:
@@ -1194,53 +1167,14 @@ def _checked(r: Run, rec: Record, env: dict) -> Outcome:
     return waiting(waiting_on, ip.url)
 
 
-class Check(NamedTuple):
-    name: str
-    conclusion: str    # "" until it finishes
-    link: str
-
-
 def _ci_waiting_on(r: Run, head: str, env: dict) -> str | Outcome:
-    """What `head` still waits for; "" once its ci run succeeded and every
-    other workflow run and commit status finished green. A red one blocks,
-    with its link."""
-    runs = _workflow_runs(r, head, env)
-    if not any(c.name == "ci" for c in runs):
-        return "no ci run on the head yet"
-    checks = [*runs, *_statuses(r, head, env)]
-    if red := next((c for c in checks if ci_verdict(c.conclusion) == "red"), None):
-        return blocked(f"infra check {red.name} is {red.conclusion}", red.link)
-    pending = [c.name for c in checks if ci_verdict(c.conclusion) != "green"]
-    return f"checks pending: {', '.join(pending)}" if pending else ""
-
-
-def _api(r: Run, env: dict, path: str) -> dict:
-    return json.loads(r.sh(["gh", "api", f"repos/{INFRA_REPO}/{path}"], env=env))
-
-
-def _workflow_runs(r: Run, head: str, env: dict) -> list[Check]:
-    """The latest run of each workflow on `head`. A fine-grained token cannot
-    read check runs, and every infra check is an Actions job, so a run's
-    conclusion stands for its jobs."""
-    latest: dict[str, dict] = {}
-    for x in sorted(_api(r, env, f"actions/runs?head_sha={head}&per_page=100")[
-            "workflow_runs"], key=lambda x: x["id"]):
-        latest[x["name"]] = x
-    return [_run_check(x) for x in latest.values()]
-
-
-def _run_check(x: dict) -> Check:
-    """A finished run's conclusion; skipped and neutral are green for any
-    workflow but ci, which must succeed."""
-    done = x["conclusion"] if x["status"] == "completed" else ""
-    strict = x["name"] == "ci" and done != "success" and ci_verdict(done) == "green"
-    return Check(x["name"], "" if strict else done, x["html_url"])
-
-
-def _statuses(r: Run, head: str, env: dict) -> list[Check]:
-    return [Check(s["context"], "" if s["state"] == "pending" else s["state"],
-                  s["target_url"] or "")
-            for s in _api(r, env, f"commits/{head}/status")["statuses"]]
+    """What `head` still waits for; "" once green. A red check blocks, with
+    its link."""
+    waiting_on = infra_pr.ci_waiting_on(r.sh, head, env)
+    if isinstance(waiting_on, infra_pr.Check):
+        return blocked(f"infra check {waiting_on.name} is {waiting_on.conclusion}",
+                       waiting_on.link)
+    return waiting_on
 
 
 # -- deploy -------------------------------------------------------------------

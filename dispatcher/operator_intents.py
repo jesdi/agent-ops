@@ -7,7 +7,7 @@ import logging
 import sys
 from dataclasses import replace
 
-from dispatcher import answers, eventlog, failures, intents
+from dispatcher import answers, eventlog, failures, intents, task_artifacts
 from dispatcher.config import Config, Repository, policy_for
 from dispatcher.deps import Deps, _now
 from dispatcher.executor import _OPERATOR_ENDS, _Turn, _apply, _cancel_issue
@@ -77,6 +77,10 @@ def _apply_answers_intent(cfg: Config, deps: Deps, by_name: dict, task: TaskStat
     assert task is not None
     wake = answers.record(task, intent)
     if wake:
+        try:
+            task_artifacts.capture_answers(cfg.state_dir, task)
+        except Exception as exc:   # the answers and the wake never wait on the archive
+            log.warning("Cannot capture the answered page of %s#%s: %s", task.repository, task.issue, exc)
         task = replace(task, plan_approval=answers.approval(task, intent))
         _queue_message(cfg, task.repository, task.issue, wake, intent.actor or "operator")
         _apply_operator_intent(cfg, deps, by_name, task, intent)

@@ -77,6 +77,73 @@ class FakeSources:
         self.undelivered = {}         # (repository, issue) -> int
         self.blocked_wakes = set()    # (repository, issue) with a wake-blocked marker
         self.execution_overrides = {}  # (repository, issue) -> model/bypass tuple
+        self.box_timers = []      # raw systemd timer/service records, see service_timers()
+        self.box_runs = {}        # job id -> journal runs, oldest first, see service_runs()
+        self.box_now = "2026-11-24T10:12:00+00:00"  # the box clock for runs it starts
+        self.systemctl_calls = []  # (verb, unit) of every start_unit / stop_unit / disable_timer / enable_timer
+        self.systemctl_failure = None  # an Exception raised by disable_timer / enable_timer
+        self.recorder_kicks = 0   # times the console asked the services recorder to run
+
+    def service_timers(self):
+        """The box's systemd units as the probe reports them: one dict per
+        unit with scope ("user"|"system"), unit, fragment_path, description,
+        active_state, on_calendar (None for a service), last_run
+        ({"at": iso, "duration_seconds": int} | None) and next_run (iso | None)."""
+        return list(self.box_timers)
+
+    def service_runs(self):
+        """The journal probe: job id (timer name without `.timer`) -> every
+        run it records, oldest first, as {"at": iso, "duration_seconds": int | None,
+        "result": "success" | "failed" | "stopped"}; a run still going has
+        duration_seconds None and no result of its own ("running")."""
+        return {k: list(v) for k, v in self.box_runs.items()}
+
+    def kick_recorder(self):
+        """The console starts a recorder pass after every change (pause, resume, retry)."""
+        self.recorder_kicks += 1
+
+    def start_unit(self, unit):
+        """`systemctl --user start <unit>`: a oneshot run that begins now and is
+        still going. The unit's timer is left as it is."""
+        self.systemctl_calls.append(("start", unit))
+        self.box_runs.setdefault(unit.removesuffix(".service"), []).append(
+            {"at": self.box_now, "duration_seconds": None, "result": None})
+
+    def stop_unit(self, unit):
+        """`systemctl --user stop <unit>`: the run in progress ends as stopped."""
+        self.systemctl_calls.append(("stop", unit))
+        for entry in self.box_runs.get(unit.removesuffix(".service"), []):
+            if entry["duration_seconds"] is None:
+                entry.update(duration_seconds=0, result="stopped")
+
+    def disable_timer(self, unit):
+        """`systemctl --user disable --now <unit>.timer`: the timer is disabled and
+        stopped, so the job reports as paused. Raises `systemctl_failure` when set."""
+        self._switch_timer("disable", unit, "inactive")
+
+    def enable_timer(self, unit):
+        """`systemctl --user enable --now <unit>.timer`: the timer is enabled and
+        started, so the job reports as active. Raises `systemctl_failure` when set."""
+        self._switch_timer("enable", unit, "active")
+
+    def _switch_timer(self, verb, unit, active_state):
+        self.systemctl_calls.append((verb, unit))
+        if self.systemctl_failure:
+            raise self.systemctl_failure
+        for timer in self.box_timers:
+            if timer["unit"] == unit:
+                timer["active_state"] = active_state
+
+    def finish_runs(self, seconds=5):
+        """The box lets every run in progress end on its own, successfully; the
+        job's timer then reports it as the last run."""
+        for job, entries in self.box_runs.items():
+            for entry in entries:
+                if entry["duration_seconds"] is None:
+                    entry.update(duration_seconds=seconds, result="success")
+                    for timer in self.box_timers:
+                        if timer["unit"] == f"{job}.timer":
+                            timer["last_run"] = {"at": entry["at"], "duration_seconds": seconds}
 
     def tasks(self):
         return list(self.tasks_list)

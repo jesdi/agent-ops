@@ -6,17 +6,17 @@ import { describe, expect, it } from 'vitest'
 import { renderWithProviders } from '../../test/render'
 import { server } from '../../test/msw-server'
 import { onPhone } from '../../test/viewport'
+import { examView, keptAttempt, keptQuestion, openExam, question, SHA } from '../../test/exam'
 import { ExamPage } from '../ExamPage'
 
-const SHA = 'a'.repeat(40)
 const URL_PATH = '/api/exam/jesdi/general-skills/240'
 
-const q1 = { id: 'q1', type: 'choice', prompt: 'Which SHA does the lease compare?', options: ['the head SHA', 'the base SHA', 'the merge SHA'] }
-const q2 = { id: 'q2', type: 'text', prompt: 'Why is the base SHA rechecked before merging?' }
-const open = {
-  repo: 'jesdi/general-skills', pr: 240, state: 'open', head_sha: SHA, debt: false, detail: 'attempt 1, 2 questions',
-  attempt: 1, exam: { version: 1, repo: 'jesdi/general-skills', pr: 240, head_sha: SHA, questions: [q1, q2] }, results: [],
-}
+const q1 = question({ id: 'q1', type: 'choice', prompt: 'Which SHA does the lease compare?', options: ['the head SHA', 'the base SHA', 'the merge SHA'] })
+const q2 = question({ id: 'q2', type: 'text', prompt: 'Why is the base SHA rechecked before merging?' })
+const open = examView([q1, q2])
+/** A kept question for each question of a result, its prompt named after its concept. */
+const keptFor = (result: { questions: { id: string; concept: string }[] }) =>
+  result.questions.map((r) => keptQuestion({ id: r.id, type: 'text', prompt: `About ${r.concept}?` }))
 
 function renderExam() {
   return renderWithProviders(<Routes>
@@ -85,7 +85,7 @@ describe('exam page', () => {
   it('after a pass shows the score and that exam is posted', async () => {
     serve({
       ...open, state: 'passed', exam: null,
-      results: [{ attempt: 1, passed: true, score: 9, max: 10, questions: [] }],
+      attempts: [keptAttempt(1, [], { passed: true, score: 9, max: 10, questions: [] })],
     })
     renderExam()
     expect(await screen.findByText(/\b9\b.*\b10\b/)).toBeInTheDocument()
@@ -96,7 +96,7 @@ describe('exam page', () => {
   it('after a pass of a debt exam does not say a status is posted', async () => {
     serve({
       ...open, debt: true, state: 'passed', exam: null,
-      results: [{ attempt: 1, passed: true, score: 9, max: 10, questions: [] }],
+      attempts: [keptAttempt(1, [], { passed: true, score: 9, max: 10, questions: [] })],
     })
     renderExam()
     expect(await screen.findByText(/\b9\b.*\b10\b/)).toBeInTheDocument()
@@ -125,19 +125,16 @@ describe('exam page', () => {
   it('after a fail shows each miss with its explanation and hunk, then the follow-up questions', async () => {
     const hunk1 = '@@ -10,3 +10,4 @@ lease\n+assert owner == me'
     const hunk2 = '@@ -40,2 +40,3 @@ base\n+recheck_base(sha)'
-    const followUp = { id: 'q3', type: 'choice', prompt: 'Who owns the lease after a restart?', options: ['the old runner', 'the new runner'] }
-    serve({
-      ...open, attempt: 2, detail: 'attempt 2, 1 question',
-      exam: { version: 1, repo: open.repo, pr: 240, head_sha: SHA, questions: [followUp] },
-      results: [{
-        attempt: 1, passed: false, score: 7, max: 10,
-        questions: [
-          { id: 'q0', concept: 'lease-expiry', points: 1 },
-          { id: 'q1', concept: 'lease-ownership', points: 0, explanation: 'The lease belongs to the runner that took it.', hunk: hunk1 },
-          { id: 'q2', concept: 'base-sha-recheck', points: 0.5, explanation: 'Main can move between grading and merge.', hunk: hunk2 },
-        ],
-      }],
-    })
+    const followUp = question({ id: 'q3', type: 'choice', prompt: 'Who owns the lease after a restart?', options: ['the old runner', 'the new runner'] })
+    const result = {
+      passed: false, score: 7, max: 10,
+      questions: [
+        { id: 'q0', concept: 'lease-expiry', points: 1 },
+        { id: 'q1', concept: 'lease-ownership', points: 0, explanation: 'The lease belongs to the runner that took it.', hunk: hunk1 },
+        { id: 'q2', concept: 'base-sha-recheck', points: 0.5, explanation: 'Main can move between grading and merge.', hunk: hunk2 },
+      ],
+    }
+    serve({ ...open, attempt: 2, detail: 'attempt 2, 1 question', exam: openExam([followUp]), attempts: [keptAttempt(1, keptFor(result), result)] })
     renderExam()
     expect(await screen.findByText('The lease belongs to the runner that took it.')).toBeInTheDocument()
     expect(screen.getByText('Main can move between grading and merge.')).toBeInTheDocument()
@@ -150,8 +147,40 @@ describe('exam page', () => {
     expect(miss.compareDocumentPosition(followUpNode) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
+  it('shows the grader feedback under a partial free-text question explanation, and none on a choice or passed one', async () => {
+    const result = {
+      passed: false, score: 2.5, max: 4,
+      questions: [
+        { id: 'q1', concept: 'lease-ownership', points: 0, explanation: 'The lease belongs to the runner that took it.', hunk: '@@ -1 +1 @@\n+x' },
+        { id: 'q5', concept: 'token-growth', points: 0.5, explanation: 'The token only ever grows.', hunk: '@@ -2 +2 @@\n+y', feedback: 'misses that the token only grows' },
+        { id: 'q6', concept: 'base-sha-recheck', points: 1 },
+      ],
+    }
+    serve({ ...open, state: 'open', exam: null, attempts: [keptAttempt(1, keptFor(result), result)] })
+    renderExam()
+    const feedback = await screen.findByText(/misses that the token only grows/)
+    const explanation = screen.getByText('The token only ever grows.')
+    expect(explanation.compareDocumentPosition(feedback) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.getAllByText(/misses that/)).toHaveLength(1)
+    expect(screen.getByText('The lease belongs to the runner that took it.')).toBeInTheDocument()
+  })
+
+  it('shows the grader feedback of a partial question on a passed attempt', async () => {
+    const result = {
+      passed: true, score: 4.5, max: 5,
+      questions: [
+        { id: 't1', concept: 'token-growth', points: 0.5, explanation: 'The token only ever grows.', hunk: '@@ -2 +2 @@\n+y', feedback: 'misses that the token only grows' },
+        { id: 'c1', concept: 'lease-ownership', points: 1 },
+      ],
+    }
+    serve({ ...open, state: 'passed', exam: null, attempts: [keptAttempt(1, keptFor(result), result)] })
+    renderExam()
+    expect(await screen.findByText(/misses that the token only grows/)).toBeInTheDocument()
+    expect(screen.getByText('The token only ever grows.')).toBeInTheDocument()
+  })
+
   it('on a 409 says the exam changed and reloads it', async () => {
-    const reloaded = { ...open, head_sha: 'b'.repeat(40), attempt: 1, exam: { ...open.exam, questions: [{ ...q2, id: 'q9', prompt: 'A brand new question?' }] } }
+    const reloaded = { ...open, head_sha: 'b'.repeat(40), attempt: 1, exam: openExam([{ ...q2, id: 'q9', prompt: 'A brand new question?' }]) }
     let gets = 0
     server.use(
       http.get(URL_PATH, () => HttpResponse.json(gets++ === 0 ? open : reloaded)),
@@ -217,8 +246,14 @@ describe('exam page', () => {
     await userEvent.tab()
     await userEvent.keyboard('{ArrowDown}')
     expect(screen.getByRole('radio', { name: 'the base SHA' })).toBeChecked()
+    await userEvent.tab()   // each question's Bypass, Tip and Ask buttons follow its answer
+    await userEvent.tab()
+    await userEvent.tab()
     await userEvent.tab()
     await userEvent.keyboard('Because main may have moved.')
+    await userEvent.tab()
+    await userEvent.tab()
+    await userEvent.tab()
     await userEvent.tab()
     expect(submit()).toHaveFocus()
     await userEvent.keyboard('{Enter}')

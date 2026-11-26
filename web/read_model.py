@@ -923,12 +923,25 @@ def local_blocker(heartbeat: dict | None, *, now: datetime,
     `agent-ops status`: the first blocker readable from local state, or None.
     Order: heartbeat, triage hold, usage (unavailable = auth-dark, any other
     denial = budget-blocked), every project paused, no claim room."""
-    if _pass_eta(heartbeat, now) is None:
+    return (_dispatch_blocker(heartbeat, now, gate, claims_paused)
+            or _room_blocker(tasks, capacity, triage_running, projects, max_open))
+
+
+def _dispatch_blocker(heartbeat: dict | None, now: datetime, gate: GateView,
+                      claims_paused: bool) -> Blocker | None:
+    """Heartbeat, triage hold, usage: whether the dispatcher claims at all."""
+    if not pass_clock(heartbeat, now).alive:
         return "dispatcher-down"
     if claims_paused:
         return "claims-paused"
     if not gate.admitted:
         return "auth-dark" if gate.reason == "unavailable" else "budget-blocked"
+    return None
+
+
+def _room_blocker(tasks: list[TaskState], capacity: int, triage_running: bool,
+                  projects: Mapping[str, Project], max_open: int) -> Blocker | None:
+    """Every project paused, or no claim room."""
     if projects and all(p.paused for p in projects.values()):
         return "projects-paused"
     if claim_room(capacity, max_open, tasks, triage_running) <= 0:
@@ -936,14 +949,44 @@ def local_blocker(heartbeat: dict | None, *, now: datetime,
     return None
 
 
-def _pass_eta(heartbeat: dict | None, now: datetime) -> str | None:
-    """When the next dispatcher pass is due (ISO), or None when that is
-    unknowable: no heartbeat, a malformed one, or one older than two
-    intervals — the dispatcher may not be running."""
+class PassClock(NamedTuple):
+    """Whether the dispatcher is passing (`alive`), and the next-pass countdown
+    (`eta`, ISO; "" when there is none to show)."""
+    alive: bool
+    eta: str
+
+
+def pass_clock(heartbeat: dict | None, now: datetime) -> PassClock:
+    """Dead: no heartbeat, a malformed one, or one older than two of its gaps
+    (the interval, or for a calendar schedule the gap to the `next_at` it
+    recorded). A calendar schedule shows no countdown."""
     hb = heartbeat or {}
     finished = _parse_ts(hb.get("finished_at", ""))
+    if hb.get("custom") is True:
+        return PassClock(_calendar_alive(finished, _parse_ts(hb.get("next_at") or ""), now), "")
+    eta = _interval_eta(finished, hb.get("interval_minutes"), now)
+    return PassClock(eta is not None, eta or "")
+
+
+UNKNOWN_CALENDAR_GAP = timedelta(days=1)
+
+
+def _calendar_alive(finished: datetime | None, due: datetime | None, now: datetime) -> bool:
+    """A pass on record and not two gaps past it. Without a `next_at` (systemd could
+    not walk the calendar, or an older heartbeat) the gap is taken as a day."""
+    # ponytail: a calendar sparser than daily whose next_at is missing reads as down after
+    # two days; have the console walk the calendar itself if that ever happens.
     try:
-        interval = int(hb.get("interval_minutes") or 0)
+        gap = (due - finished) if due else UNKNOWN_CALENDAR_GAP
+        return finished is not None and now <= finished + 2 * gap
+    except TypeError:  # a naive stamp: staleness cannot be judged
+        return False
+
+
+def _interval_eta(finished: datetime | None, interval_minutes, now: datetime) -> str | None:
+    """`finished` plus the interval, or None when either is missing or the pass is stale."""
+    try:
+        interval = int(interval_minutes or 0)
         # A naive finished_at against an aware now raises TypeError: the zone
         # is unknown, so staleness cannot be judged either.
         fresh = (finished is not None and interval > 0
@@ -1063,7 +1106,7 @@ def next_claim(heartbeat: dict | None, *, now: datetime,
                             gate=gate, claims_paused=claims_paused,
                             triage_running=triage_running, projects=projects,
                             max_open=max_open)
-    eta = _pass_eta(heartbeat, now) or ""
+    eta = pass_clock(heartbeat, now).eta
     early = _early_verdict(blocker, gate, eta)
     if early:
         return early

@@ -62,6 +62,74 @@ const seedGhosts = () => [
 
 const queued = () => state.board.columns.find((c) => c.key === 'queued')
 
+// The exam of jesdi/general-skills#240 (exam.spec.ts): an open attempt 1 with a choice and a text question.
+const EXAM = '/api/exam/jesdi/general-skills/240'
+const SHA = 'a'.repeat(40)
+const REPLIES = { tip: 'Look at what the lease stores.', question: 'Because main may have moved.', general: 'The lease expiry.' }
+// A message that asks for the long diff gets an unbroken diff hunk, which overflows a narrow screen unless wrapped.
+const LONG_DIFF = '+' + 'leaseCompareHeadShaAgainstBaseShaBeforeMerging'.repeat(8)
+const replyTo = (body) => (body.message?.includes('long diff') ? LONG_DIFF : REPLIES[body.kind])
+const seedExam = () => ({
+  state: 'open', bypassed: null, general: [], attempts: [], turns: 0, hold: false, held: [], waiting: [],
+  questions: [
+    { id: 'q1', type: 'choice', prompt: 'Which SHA does the lease compare? Say whether it is the head SHA or the base SHA.', options: ['the head SHA', 'the base SHA'], tips: 0, tips_left: 3, assisted: false, thread: [] },
+    { id: 'q2', type: 'text', prompt: 'Why is the base SHA rechecked before merging?', tips: 0, tips_left: 3, assisted: false, thread: [] },
+  ],
+})
+
+function examView() {
+  const e = state.exam
+  return {
+    repo: 'jesdi/general-skills', pr: 240, state: e.state, head_sha: SHA, debt: false, detail: '',
+    attempt: 1, bypassed: e.bypassed, attempts: e.attempts, tip_cap: 3,
+    exam: e.state === 'open'
+      ? { version: 1, repo: 'jesdi/general-skills', pr: 240, head_sha: SHA, questions: e.questions, general: e.general, chat: true }
+      : null,
+  }
+}
+
+// q2's explanation and hunk, which the result shows once it lost points or was bypassed.
+const BASE_KEY = {
+  explanation: 'Main can move between grading and merge, so the merge rechecks the base SHA.',
+  hunk: '@@ -40,2 +40,3 @@ def merge(pr):\n     lease = take_lease(pr)\n+    recheck_base(pr.base_sha)\n     push(pr)',
+}
+
+// Submitted: grading first, then a failed result that gives q2 half the points (a bypassed q2 is left out of them).
+function submitExam() {
+  const e = state.exam
+  const bypassed = e.bypassed === 'q2'
+  const questions = [
+    { id: 'q1', concept: 'the lease SHA', points: 1, help: e.questions[0].assisted ? 'assisted' : null },
+    bypassed
+      ? { id: 'q2', concept: 'the base recheck', points: null, help: 'bypassed', ...BASE_KEY }
+      : { id: 'q2', concept: 'the base recheck', points: 0.5, help: e.questions[1].assisted ? 'assisted' : null, feedback: 'misses that main may have moved', ...BASE_KEY },
+  ]
+  // the submitted attempt takes no more tips, and stays open to chat
+  e.attempts = [{ attempt: 1, general: e.general, questions: e.questions.map((q) => ({ ...q, tips_left: null })), chat: true, result: null }]
+  e.state = 'grading'
+  setTimeout(() => {
+    e.attempts[0].result = { passed: bypassed, score: bypassed ? 1 : 1.5, max: bypassed ? 1 : 2, questions }
+    e.state = bypassed ? 'passed' : 'generating'
+  }, 300)
+}
+
+function examTurn(body) {
+  const e = state.exam
+  // Held (POST /__control__/hold-turns): the turn is running with no stored reply until /__control__/release-turns.
+  const held = !!e.hold
+  const turn = { id: `t${++e.turns}`, kind: body.kind, message: body.message ?? '', text: held ? '' : replyTo(body), full: replyTo(body), status: held ? 'running' : 'done', error: null }
+  if (held) e.held.push(turn)
+  const q = e.questions.find((x) => x.id === body.question)
+  if (body.kind === 'general') e.general.push(turn)
+  else if (q) {
+    q.thread.push(turn)
+    // A tip or a thread reply marks the question assisted (spec requirement 6).
+    if (body.kind === 'tip') { q.tips += 1; q.tips_left -= 1 }
+    q.assisted = true
+  }
+  return turn
+}
+
 // Fresh objects on every call: startup and reset share it, so mutations
 // never leak into a later seed.
 const seedState = () => ({
@@ -118,6 +186,26 @@ const seedState = () => ({
   intents: [],
   // issue -> [{ id, text, actor, created_at, delivered_at }]
   messages: {},
+  services: {
+    now: '2026-11-24T10:12:00+00:00',
+    config_installed: true,
+    managed: [{
+      id: 'agent-ops-dispatcher', name: 'Dispatcher pass', description: 'Dispatcher pass',
+      state: 'active', running: false, schedule: 'every 5 min', read_only: false,
+      last_run: { at: '2026-11-24T10:08:00+00:00', duration_seconds: 27 },
+      next_run: '2026-11-24T10:13:00+00:00',
+      recent_runs: [{ at: '2026-11-24T10:08:00+00:00', duration_seconds: 27, result: 'success' }],
+      upcoming: ['2026-11-24T10:13:00+00:00', '2026-11-24T10:18:00+00:00', '2026-11-24T10:23:00+00:00'],
+    }],
+    read_only: [{
+      id: 'secret-cache-refresh', name: 'Secret cache refresh', description: 'Secret cache refresh',
+      state: 'active', running: false, schedule: '00:00, 12:00 UTC', read_only: true,
+      last_run: { at: '2026-11-24T00:00:00+00:00', duration_seconds: 3 },
+      next_run: '2026-11-24T12:00:00+00:00',
+      recent_runs: [], upcoming: ['2026-11-24T12:00:00+00:00'],
+    }],
+  },
+  exam: seedExam(),
 })
 
 const state = seedState()
@@ -216,6 +304,20 @@ const server = createServer(async (req, res) => {
   ] })
   if (url.pathname === '/api/queue') return json(200, state.queue)
   if (url.pathname === '/api/usage') return json(200, state.usage)
+  if (url.pathname === '/api/services') return json(200, state.services)
+  if (/^\/api\/services\/[^/]+\/(run|stop|retry)$/.test(url.pathname) && req.method === 'POST') return json(200, {})
+  const sched = url.pathname.match(/^\/api\/services\/([^/]+)\/schedule$/)
+  if (sched && req.method === 'PUT') {
+    const job = state.services.managed.find((j) => j.id === sched[1])
+    if (job) job.change = { state: 'applying', pr: 1, url: null }
+    return json(200, {})
+  }
+  const flip = url.pathname.match(/^\/api\/services\/([^/]+)\/(pause|resume)$/)
+  if (flip && req.method === 'POST') {
+    const job = state.services.managed.find((j) => j.id === flip[1])
+    if (job) job.state = flip[2] === 'pause' ? 'paused' : 'active'
+    return json(200, {})
+  }
   if (url.pathname === '/api/failures') return json(200, state.failures)
   if (url.pathname === '/api/history') return json(200, state.history)
   if (url.pathname === '/api/pending-intents') {
@@ -323,12 +425,54 @@ const server = createServer(async (req, res) => {
   if (url.pathname === '/api/queue/ready' && req.method === 'POST') {
     return json(200, { ok: true, reason: 'marked ready' })
   }
+  if (url.pathname.startsWith(EXAM)) {
+    const sub = url.pathname.slice(EXAM.length)
+    const streamMatch = sub.match(/^\/turns\/([^/]+)\/stream$/)
+    if (streamMatch && req.method === 'GET') {
+      const turn = [...state.exam.general, ...state.exam.questions.flatMap((q) => q.thread)].find((t) => t.id === streamMatch[1])
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' })
+      if (turn && state.exam.held.includes(turn)) {
+        const full = turn.full
+        res.write(`data: ${JSON.stringify({ delta: full.slice(0, 9) })}\n\n`)
+        state.exam.waiting.push(() => {
+          turn.text = full; turn.status = 'done'
+          res.end(`data: ${JSON.stringify({ delta: full.slice(9) })}\n\ndata: ${JSON.stringify({ status: 'done' })}\n\n`)
+        })
+        return
+      }
+      res.end(`data: ${JSON.stringify({ delta: turn?.text ?? '' })}\n\ndata: ${JSON.stringify({ status: 'done' })}\n\n`)
+      return
+    }
+    if (sub === '' && req.method === 'GET') return json(200, examView())
+    let body = ''
+    req.on('data', (c) => { body += c })
+    req.on('end', () => {
+      const b = JSON.parse(body || '{}')
+      if (sub === '/turns') return json(202, { id: examTurn(b).id })
+      if (sub === '/bypass') {
+        state.exam.bypassed = req.method === 'POST' ? b.question : null
+        return json(200, examView())
+      }
+      if (sub === '/answers') { submitExam(); return json(200, examView()) }
+      json(404, { detail: 'not found' })
+    })
+    return
+  }
   if (url.pathname.startsWith('/api/')) {
     return json(404, { detail: 'not found' })
   }
   if (url.pathname === '/__control__/reset' && req.method === 'POST') {
     Object.assign(state, seedState())
     push(['board', 'usage'])
+    return json(200, { ok: true })
+  }
+  if (url.pathname === '/__control__/hold-turns' && req.method === 'POST') {
+    state.exam.hold = true
+    return json(200, { ok: true })
+  }
+  if (url.pathname === '/__control__/release-turns' && req.method === 'POST') {
+    state.exam.hold = false
+    state.exam.waiting.splice(0).forEach((finish) => finish())
     return json(200, { ok: true })
   }
   if (url.pathname === '/__control__/seed-pinned' && req.method === 'POST') {

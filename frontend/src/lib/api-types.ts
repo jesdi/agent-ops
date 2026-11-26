@@ -123,6 +123,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/exam/{owner}/{name}/{pr}/bypass": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Bypass */
+        post: operations["bypass_api_exam__owner___name___pr__bypass_post"];
+        /** Unbypass */
+        delete: operations["unbypass_api_exam__owner___name___pr__bypass_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/exam/{owner}/{name}/{pr}/turns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start */
+        post: operations["start_api_exam__owner___name___pr__turns_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/exam/{owner}/{name}/{pr}/turns/{turn_id}/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Stream */
+        get: operations["stream_api_exam__owner___name___pr__turns__turn_id__stream_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/exams": {
         parameters: {
             query?: never;
@@ -390,6 +442,125 @@ export interface paths {
         put?: never;
         /** Queue Ready */
         post: operations["queue_ready_api_queue_ready_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/services": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Services */
+        get: operations["services_api_services_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/services/{job}/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Pause */
+        post: operations["pause_api_services__job__pause_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/services/{job}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resume */
+        post: operations["resume_api_services__job__resume_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/services/{job}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry */
+        post: operations["retry_api_services__job__retry_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/services/{job}/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Run Now */
+        post: operations["run_now_api_services__job__run_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/services/{job}/schedule": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Set Schedule */
+        put: operations["set_schedule_api_services__job__schedule_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/services/{job}/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Stop Run */
+        post: operations["stop_run_api_services__job__stop_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -782,6 +953,15 @@ export interface components {
             /** Issue */
             issue: number;
         };
+        /** Bypass */
+        Bypass: {
+            /** Attempt */
+            attempt: number;
+            /** Head Sha */
+            head_sha: string;
+            /** Question */
+            question: string;
+        };
         /** CapacityView */
         CapacityView: {
             /** Active */
@@ -797,6 +977,18 @@ export interface components {
             slots_held: number[];
             /** Slots Used */
             slots_used: number;
+        };
+        /**
+         * Change
+         * @description A console change not yet installed: "applying", or "failed" to record.
+         */
+        Change: {
+            /** Pr */
+            pr?: number | null;
+            /** State */
+            state: string;
+            /** Url */
+            url?: string | null;
         };
         /** Column */
         Column: {
@@ -883,18 +1075,20 @@ export interface components {
             /** Url */
             url: string;
         };
-        /** ExamAttempt */
+        /**
+         * ExamAttempt
+         * @description A submitted attempt of this head, and its result once graded.
+         */
         ExamAttempt: {
             /** Attempt */
             attempt: number;
-            /** Max */
-            max: number;
-            /** Passed */
-            passed: boolean;
+            /** Chat */
+            chat: boolean;
+            /** General */
+            general: components["schemas"]["ExamTurn"][];
             /** Questions */
-            questions: components["schemas"]["ExamQuestionResult"][];
-            /** Score */
-            score: number;
+            questions: components["schemas"]["ExamQuestion"][];
+            result: components["schemas"]["ExamResult"] | null;
         };
         /** ExamEntry */
         ExamEntry: {
@@ -914,12 +1108,20 @@ export interface components {
         };
         /** ExamQuestion */
         ExamQuestion: {
+            /** Assisted */
+            assisted: boolean;
             /** Id */
             id: string;
             /** Options */
             options?: string[] | null;
             /** Prompt */
             prompt: string;
+            /** Thread */
+            thread: components["schemas"]["ExamTurn"][];
+            /** Tips */
+            tips: number;
+            /** Tips Left */
+            tips_left: number | null;
             /**
              * Type
              * @enum {string}
@@ -932,18 +1134,26 @@ export interface components {
             concept: string;
             /** Explanation */
             explanation?: string | null;
+            /** Feedback */
+            feedback?: string | null;
+            /** Help */
+            help?: ("bypassed" | "assisted") | null;
             /** Hunk */
             hunk?: string | null;
             /** Id */
             id: string;
             /** Points */
-            points: number;
+            points?: number | null;
         };
         /**
          * ExamQuestions
-         * @description The served projection of an attempt: never a key entry or a rubric.
+         * @description The open attempt, as the skill's projection serves it.
          */
         ExamQuestions: {
+            /** Chat */
+            chat: boolean;
+            /** General */
+            general: components["schemas"]["ExamTurn"][];
             /** Head Sha */
             head_sha: string;
             /** Pr */
@@ -962,15 +1172,51 @@ export interface components {
             /** Repo */
             repo: string;
         };
+        /** ExamResult */
+        ExamResult: {
+            /** Max */
+            max: number;
+            /** Passed */
+            passed: boolean;
+            /** Questions */
+            questions: components["schemas"]["ExamQuestionResult"][];
+            /** Score */
+            score: number;
+        };
         /**
          * ExamState
          * @enum {string}
          */
         ExamState: "new" | "generating" | "open" | "grading" | "passed" | "skipped" | "disabled" | "error";
+        /** ExamTurn */
+        ExamTurn: {
+            /** Error */
+            error: string | null;
+            /** Id */
+            id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "tip" | "question" | "general";
+            /** Message */
+            message: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "running" | "done" | "failed";
+            /** Text */
+            text: string;
+        };
         /** ExamView */
         ExamView: {
             /** Attempt */
             attempt: number;
+            /** Attempts */
+            attempts: components["schemas"]["ExamAttempt"][];
+            /** Bypassed */
+            bypassed: string | null;
             /** Debt */
             debt: boolean;
             /** Detail */
@@ -982,9 +1228,9 @@ export interface components {
             pr: number;
             /** Repo */
             repo: string;
-            /** Results */
-            results: components["schemas"]["ExamAttempt"][];
             state: components["schemas"]["ExamState"];
+            /** Tip Cap */
+            tip_cap: number;
         };
         /** ExamsView */
         ExamsView: {
@@ -1027,6 +1273,25 @@ export interface components {
             note: string;
             /** Provider */
             provider: string;
+        };
+        /**
+         * GeneralTurn
+         * @description A message in the attempt's general chat.
+         */
+        GeneralTurn: {
+            /** Attempt */
+            attempt: number;
+            /** Head Sha */
+            head_sha: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "general";
+            /** Message */
+            message: string;
+            /** Question */
+            question?: null;
         };
         /**
          * GhostCard
@@ -1092,6 +1357,40 @@ export interface components {
             title: string;
             /** Url */
             url: string;
+        };
+        /** Job */
+        Job: {
+            change?: components["schemas"]["Change"] | null;
+            current_schedule?: components["schemas"]["Schedule"] | null;
+            /** Description */
+            description: string;
+            /** Id */
+            id: string;
+            last_run: components["schemas"]["Run"] | null;
+            /** Name */
+            name: string;
+            /** Next Run */
+            next_run: string | null;
+            /** Read Only */
+            read_only: boolean;
+            /**
+             * Recent Runs
+             * @default []
+             */
+            recent_runs: components["schemas"]["RecentRun"][];
+            /** Running */
+            running: boolean;
+            /** Schedule */
+            schedule: string;
+            /** State */
+            state: string;
+            /**
+             * Upcoming
+             * @default []
+             */
+            upcoming: string[];
+            /** Warning */
+            warning?: string | null;
         };
         /** MessageView */
         MessageView: {
@@ -1507,6 +1806,25 @@ export interface components {
             /** Task Issue */
             task_issue: number;
         };
+        /**
+         * QuestionTurn
+         * @description A tip on a question, or a message in its thread.
+         */
+        QuestionTurn: {
+            /** Attempt */
+            attempt: number;
+            /** Head Sha */
+            head_sha: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "question" | "tip";
+            /** Message */
+            message: string;
+            /** Question */
+            question: string;
+        };
         /** QueueRow */
         QueueRow: {
             /** Blocked */
@@ -1551,6 +1869,15 @@ export interface components {
         ReadyReq: {
             /** Issue */
             issue: number;
+        };
+        /** RecentRun */
+        RecentRun: {
+            /** At */
+            at: string;
+            /** Duration Seconds */
+            duration_seconds?: number | null;
+            /** Result */
+            result: string;
         };
         /** ReplyReq */
         ReplyReq: {
@@ -1610,6 +1937,13 @@ export interface components {
              */
             text: string;
         };
+        /** Run */
+        Run: {
+            /** At */
+            at: string;
+            /** Duration Seconds */
+            duration_seconds?: number | null;
+        };
         /** RunReq */
         RunReq: {
             /**
@@ -1622,6 +1956,31 @@ export interface components {
              * @default
              */
             model: string;
+        };
+        /**
+         * Schedule
+         * @description A schedule in the services config's shape: `every`, `daily` with `tz`, or `calendar`.
+         */
+        Schedule: {
+            /** Calendar */
+            calendar?: string | null;
+            /** Daily */
+            daily?: string | null;
+            /** Every */
+            every?: number | null;
+            /** Tz */
+            tz?: string | null;
+        };
+        /** ServicesView */
+        ServicesView: {
+            /** Config Installed */
+            config_installed: boolean;
+            /** Managed */
+            managed: components["schemas"]["Job"][];
+            /** Now */
+            now: string;
+            /** Read Only */
+            read_only: components["schemas"]["Job"][];
         };
         /**
          * StepState
@@ -2001,6 +2360,151 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ExamView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    bypass_api_exam__owner___name___pr__bypass_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                name: string;
+                pr: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Bypass"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExamView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    unbypass_api_exam__owner___name___pr__bypass_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                name: string;
+                pr: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Bypass"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExamView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    start_api_exam__owner___name___pr__turns_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                name: string;
+                pr: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QuestionTurn"] | components["schemas"]["GeneralTurn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stream_api_exam__owner___name___pr__turns__turn_id__stream_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                owner: string;
+                name: string;
+                pr: number;
+                turn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
@@ -2463,6 +2967,218 @@ export interface operations {
                 "application/json": components["schemas"]["ReadyReq"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    services_api_services_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServicesView"];
+                };
+            };
+        };
+    };
+    pause_api_services__job__pause_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resume_api_services__job__resume_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    retry_api_services__job__retry_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_now_api_services__job__run_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_schedule_api_services__job__schedule_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    [key: string]: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stop_run_api_services__job__stop_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {

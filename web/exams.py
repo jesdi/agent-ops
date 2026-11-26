@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from typing import Annotated, Callable, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi import APIRouter, Depends, HTTPException, Path, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from dispatcher import exams as state
@@ -12,6 +13,10 @@ from dispatcher.exam_lifecycle import ExamState, exam_url
 from web.auth import Operator, current_operator
 
 Slug = r"[A-Za-z0-9][A-Za-z0-9._-]*"
+
+
+Owner = Annotated[str, Path(pattern=rf"^{Slug}$")]
+Pr = Annotated[int, Path(ge=1)]
 
 
 class ExamRequest(BaseModel):
@@ -25,6 +30,13 @@ class Answers(BaseModel):
     attempt: int = Field(strict=True)
     head_sha: str
     answers: dict[str, Annotated[int, Field(strict=True)] | str]
+
+
+class Bypass(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    attempt: int = Field(strict=True)
+    head_sha: str
+    question: str
 
 
 class Exam(BaseModel):
@@ -42,43 +54,72 @@ class ExamAccepted(Exam):
     pending: bool
 
 
+class ExamTurn(BaseModel):
+    id: str
+    kind: Literal["tip", "question", "general"]
+    message: str
+    text: str
+    status: Literal["running", "done", "failed"]
+    error: str | None
+
+
 class ExamQuestion(BaseModel):
     id: str
     type: Literal["choice", "text"]
     prompt: str
     options: list[str] | None = None
+    tips: int   # the question's finished tips in this attempt
+    tips_left: int | None   # the tips it may still take; None when the attempt takes none
+    assisted: bool
+    thread: list[ExamTurn]
 
 
-class ExamQuestions(BaseModel):
-    """The served projection of an attempt: never a key entry or a rubric."""
+class AttemptChat(BaseModel):
+    """An attempt's served questions with their chat, never a key entry or a rubric, and what
+    it takes now: `chat` for question and general turns."""
+    questions: list[ExamQuestion]
+    general: list[ExamTurn]   # the attempt's general chat
+    chat: bool
+
+
+class ExamQuestions(AttemptChat):
+    """The open attempt, as the skill's projection serves it."""
     version: int
     repo: str
     pr: int
     head_sha: str
-    questions: list[ExamQuestion]
 
 
 class ExamQuestionResult(BaseModel):
     id: str
     concept: str
-    points: int | float
+    points: int | float | None = None   # absent for a bypassed question
+    help: Literal["bypassed", "assisted"] | None = None
     explanation: str | None = None   # only for a question under 1 point
     hunk: str | None = None
+    feedback: str | None = None   # the grader's line, only for a missed or partial free-text question
 
 
-class ExamAttempt(BaseModel):
-    attempt: int
+class ExamResult(BaseModel):
     passed: bool
     score: int | float
     max: int | float
     questions: list[ExamQuestionResult]
 
 
+class ExamAttempt(AttemptChat):
+    """A submitted attempt of this head, and its result once graded."""
+    attempt: int
+    result: ExamResult | None
+
+
 class ExamView(Exam):
     detail: str
     attempt: int
-    exam: ExamQuestions | None
-    results: list[ExamAttempt]
+    tip_cap: int   # the tips a question gets per attempt
+    exam: ExamQuestions | None   # the open attempt, while it waits for answers
+    bypassed: str | None   # the open attempt's bypassed question
+    attempts: list[ExamAttempt]
 
 
 class ExamEntry(Exam):
@@ -88,6 +129,16 @@ class ExamEntry(Exam):
 
 class ExamsView(BaseModel):
     exams: list[ExamEntry]
+
+
+STATUS = {state.Refusal.CONFLICT: 409, state.Refusal.BUSY: 409, state.Refusal.UNKNOWN: 422,
+          state.Refusal.INCOMPLETE: 422, state.Refusal.TOO_LONG: 422, state.Refusal.USAGE: 429,
+          state.Refusal.UNAVAILABLE: 503}
+
+
+def refused(request: Request, exc: state.Refused) -> JSONResponse:
+    """The one HTTP answer to a change the exam refused."""
+    return JSONResponse({"detail": exc.detail}, status_code=STATUS[exc.refusal])
 
 
 def _url(console: str, doc: dict) -> str:
@@ -119,11 +170,10 @@ def router(sources, cfg: Callable[[], Config]) -> APIRouter:
 
     def view(repo: str, pr: int) -> ExamView:
         """The exam as its page reads it; the questions only while they wait for answers."""
-        doc = sources.exam_state(repo, pr)
+        doc = sources.exam_view(repo, pr)
         if doc is None:
             raise HTTPException(404, "exam not found")
-        waiting = doc["state"] == ExamState.OPEN
-        return ExamView(**doc, exam=state.public(cfg().state_dir, repo, pr) if waiting else None)
+        return ExamView(**doc)
 
     @routes.get("/api/exam/{owner}/{name}/{pr}", response_model=ExamView, response_model_exclude_unset=True)
     def read_exam(owner: Annotated[str, Path(pattern=rf"^{Slug}$")],
@@ -136,11 +186,19 @@ def router(sources, cfg: Callable[[], Config]) -> APIRouter:
     def answer(body: Answers, owner: Annotated[str, Path(pattern=rf"^{Slug}$")],
                name: Annotated[str, Path(pattern=rf"^{Slug}$")],
                pr: Annotated[int, Path(ge=1)], op: Operator = Depends(current_operator)):
-        outcome = sources.submit_exam(f"{owner}/{name}", pr, body.attempt, body.head_sha, body.answers)
-        if outcome == "conflict":
-            raise HTTPException(409, "this attempt is not open for answers")
-        if outcome == "incomplete":
-            raise HTTPException(422, "every question needs an answer")
+        sources.submit_exam(f"{owner}/{name}", pr, body.attempt, body.head_sha, body.answers)
         return view(f"{owner}/{name}", pr)
+
+    def set_bypass(body: Bypass, owner: str, name: str, pr: int, on: bool) -> ExamView:
+        sources.bypass_exam(f"{owner}/{name}", pr, body.attempt, body.head_sha, body.question, on)
+        return view(f"{owner}/{name}", pr)
+
+    @routes.post("/api/exam/{owner}/{name}/{pr}/bypass", response_model=ExamView, response_model_exclude_unset=True)
+    def bypass(body: Bypass, owner: Owner, name: Owner, pr: Pr, op: Operator = Depends(current_operator)):
+        return set_bypass(body, owner, name, pr, True)
+
+    @routes.delete("/api/exam/{owner}/{name}/{pr}/bypass", response_model=ExamView, response_model_exclude_unset=True)
+    def unbypass(body: Bypass, owner: Owner, name: Owner, pr: Pr, op: Operator = Depends(current_operator)):
+        return set_bypass(body, owner, name, pr, False)
 
     return routes

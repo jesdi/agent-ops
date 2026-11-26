@@ -5,8 +5,9 @@ Interface under test (defined here, built by the ticket), on top of test_exam_ge
         {"attempt": int, "head_sha": str, "answers": {question id: int (choice index) | str}}
         200 accepted; 409 for a repeated attempt, an earlier attempt or another head_sha;
         422 for a missing answer. A 409 or 422 changes nothing.
-    GET .../ `attempt` is the current attempt; `results` lists graded attempts, oldest first:
-        {"attempt", "passed", "score", "max", "questions": [{"id", "concept", "points", ...}]}
+    GET .../ `attempt` is the current attempt; `attempts` lists the submitted attempts of
+        this head, oldest first, each {"attempt", "questions", "result"}, the result None while
+        it is graded, then {"passed", "score", "max", "questions": [{"id", "concept", "points", ...}]}
         a question with points < 1 also carries "explanation" and "hunk"; a passed one
         carries nothing of the key.
     The same `run(request, *, model, timeout)` runs the grading session. Its request file:
@@ -94,7 +95,7 @@ class Session:
 
 
 class Scoring(PrExam):
-    def score(self, exam, answers, grades):
+    def score(self, exam, answers, grades, flags):
         exam, answers, grades = (json.loads(Path(p).read_text()) for p in (exam, answers, grades))
         kinds = {c["id"]: c["kind"] for c in exam["concepts"]}
         out, missed, total, why_ok = [], [], 0, True
@@ -155,7 +156,7 @@ def graded_once(box, body, **kw):
 
 
 def result_of(body, attempt):
-    [res] = [r for r in body["results"] if r["attempt"] == attempt]
+    [res] = [a["result"] for a in body["attempts"] if a["attempt"] == attempt]
     return res
 
 
@@ -213,7 +214,7 @@ def test_nothing_limits_the_attempts(tmp_path, monkeypatch):
         assert body["state"] == "open" and len(body["exam"]["questions"]) == 2
         seen.append(body["attempt"])
     assert seen == list(range(seen[0], seen[0] + 4))
-    assert [r["attempt"] for r in body["results"]] == [seen[0] - 1, *seen[:-1]]
+    assert [a["attempt"] for a in body["attempts"]] == [seen[0] - 1, *seen[:-1]]
     assert not any(s[3] != "pending" for s in box.posted())
     assert len(box.session.followups()) == 4
 
@@ -309,7 +310,7 @@ def test_a_result_for_a_head_that_moved_during_grading_is_dropped(tmp_path, monk
     assert not any(s[1] == HEAD for s in new)
     after = box.read().json()
     assert after["state"] != "passed"
-    assert after["results"] == []
+    assert after["attempts"] == []
 
 
 @pytest.mark.parametrize("failure", [subprocess.TimeoutExpired("session", 600),
@@ -340,4 +341,6 @@ def test_accepted_answers_are_answered_202_with_the_exam_as_the_get_reads_it(tmp
     response = submit(box, body)
     assert response.status_code == 202
     assert response.json() == box.read().json()
-    assert response.json() == {**body, "state": "grading", "exam": None}
+    grading = {"attempt": 1, "questions": [{**q, "tips_left": None} for q in body["exam"]["questions"]],
+               "general": [], "chat": True, "result": None}
+    assert response.json() == {**body, "state": "grading", "exam": None, "attempts": [grading]}

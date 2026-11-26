@@ -86,13 +86,13 @@ def test_a_push_while_the_exam_is_open_replaces_it_with_one_on_the_new_head(tmp_
     failed = answers_for(body, wrong=("q0", "q1"))
     assert submit(box, body, failed).status_code == 202
     box.work()
-    assert box.read().json()["results"]
+    assert box.read().json()["attempts"]
     push(box)
     body = box.read().json()
     assert body["state"] == "open"
     assert body["head_sha"] == NEW
     assert body["attempt"] == 1
-    assert not body.get("results")
+    assert not body.get("attempts")
     assert [r["req"]["head_sha"] for r in box.session.calls if r["req"]["mode"] == "first"] == [
         HEAD, NEW]
     assert (REPO, NEW, "exam", "pending") in box.posted()
@@ -166,7 +166,7 @@ def test_a_push_during_grading_replaces_the_exam_and_drops_every_old_attempt(tmp
     box.session.followup_spec = [("t9", LEASE, "text")]
     first = opened(box)
     body = graded_once(box, first, answers=answers_for(first, wrong=("q0", "q1")))
-    assert body["state"] == "open" and body["results"]
+    assert body["state"] == "open" and body["attempts"]
 
     def moved():
         box.session.during = None
@@ -179,7 +179,7 @@ def test_a_push_during_grading_replaces_the_exam_and_drops_every_old_attempt(tmp
     assert body["state"] == "open"
     assert body["head_sha"] == NEW
     assert body["attempt"] == 1
-    assert not body.get("results")
+    assert not body.get("attempts")
     assert (REPO, NEW, "exam", "pending") in box.posted()
     assert not any(s[3] == "success" for s in box.posted())
 
