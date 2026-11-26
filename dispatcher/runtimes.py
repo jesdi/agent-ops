@@ -27,6 +27,8 @@ class Runtime:
     headless_args: Callable[[str, str, str], str]
     auth_file: str          # sole provider credential file exposed to inspection
     inspection_args: Callable[[str, str], list[str]]  # (bare model, effort), no shell quoting
+    stream_args: Callable[[str, str], list[str]]  # (bare model, effort): inspection's, streaming JSON lines
+    stream_text: Callable[[dict], str]  # one streamed JSON line -> the reply text it carries, or ""
     package: str = ""       # where the host package lands, "" = the lone binary at binary_mount
 
     @property
@@ -53,6 +55,10 @@ class Runtime:
         """A text-only turn in a clean home; no repository tools or customizations."""
         return [self.cli, *self.inspection_args(model, effort)]
 
+    def streaming(self, model: str, effort: str) -> list[str]:
+        """A text-only turn like `inspection`, its reply streamed as JSON lines."""
+        return [self.cli, *self.stream_args(model, effort)]
+
     def resume(self, session_id: str, message: str) -> str:
         """The args a launch takes to continue with the (quoted) message."""
         return " ".join(filter(None, (self.resume_args(session_id), message)))
@@ -60,6 +66,34 @@ class Runtime:
     def resume_cmd(self, session_id: str, message: str = "") -> str:
         """The whole resume command line, e.g. for a crash repro."""
         return f"{self.cli} {self.resume(session_id, message)}"
+
+
+def _claude_args(model: str, effort: str, output: tuple[str, ...] = ('text',)) -> list[str]:
+    return ['-p', '--model', model, '--tools', '',
+            '--safe-mode', '--restricted', '--strict-mcp-config',
+            '--mcp-config', '{"mcpServers":{}}', '--setting-sources', '',
+            '--no-session-persistence', '--output-format', *output,
+            *(['--effort', effort] if effort else [])]
+
+
+def _claude_text(event: dict) -> str:
+    delta = event.get("event", {}).get("delta", {}) if event.get("type") == "stream_event" else {}
+    return delta.get("text", "") if delta.get("type") == "text_delta" else ""
+
+
+def _codex_args(model: str, effort: str, *json: str) -> list[str]:
+    return ['exec', '--model', model, '--sandbox', 'read-only',
+            '--ephemeral', '--skip-git-repo-check', *json,
+            '-c', 'notify=[]', '-c', 'web_search="disabled"',
+            *[arg for feature in ('shell_tool', 'unified_exec', 'code_mode', 'code_mode_host',
+                                  'apps', 'plugins', 'hooks', 'multi_agent', 'multi_agent_v2')
+              for arg in ('--disable', feature)],
+            *(['-c', f'model_reasoning_effort="{effort}"'] if effort else []), '-']
+
+
+def _codex_text(event: dict) -> str:
+    item = event.get("item", {}) if event.get("type") == "item.completed" else {}
+    return item.get("text", "") if item.get("type") == "agent_message" else ""
 
 
 CLAUDE = Runtime(
@@ -97,13 +131,10 @@ CLAUDE = Runtime(
         f"-p {prompt} --permission-mode auto --model {model}"
         f"{' --effort ' + effort if effort else ''}"),
     auth_file=".credentials.json",
-    inspection_args=lambda model, effort: [
-        '-p', '--model', model, '--tools', '',
-        '--safe-mode', '--restricted', '--strict-mcp-config',
-        '--mcp-config', '{"mcpServers":{}}', '--setting-sources', '',
-        '--no-session-persistence', '--output-format', 'text',
-        *(['--effort', effort] if effort else [])],
-
+    inspection_args=_claude_args,
+    stream_args=lambda model, effort: _claude_args(
+        model, effort, ('stream-json', '--include-partial-messages', '--verbose')),
+    stream_text=_claude_text,
 )
 
 CODEX = Runtime(
@@ -142,14 +173,9 @@ CODEX = Runtime(
         f"{' -c model_reasoning_effort=' + effort if effort else ''}"
         f" --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check {prompt}"),
     auth_file="auth.json",
-    inspection_args=lambda model, effort: [
-        'exec', '--model', model, '--sandbox', 'read-only',
-        '--ephemeral', '--skip-git-repo-check',
-        '-c', 'notify=[]', '-c', 'web_search="disabled"',
-        *[arg for feature in ('shell_tool', 'unified_exec', 'code_mode', 'code_mode_host',
-                              'apps', 'plugins', 'hooks', 'multi_agent', 'multi_agent_v2')
-          for arg in ('--disable', feature)],
-        *(['-c', f'model_reasoning_effort="{effort}"'] if effort else []), '-'],
+    inspection_args=_codex_args,
+    stream_args=lambda model, effort: _codex_args(model, effort, '--json'),
+    stream_text=_codex_text,
     # The whole package, not the executable: Codex spawns helpers from next
     # to its real path (code-mode host, rg, bwrap). The session image links
     # /usr/local/bin/codex to /opt/codex/bin/codex.

@@ -99,7 +99,7 @@ def restart(cur: dict, d: Path) -> None:
         elif path.name != STATE_FILE:
             path.unlink(missing_ok=True)
     cur.update(state=ExamState.GENERATING, head_sha=None, attempt=0, results=[], passed_concepts=[],
-               grading=None, followup=None, delta=False, detail="", job=None)
+               grading=None, followup=None, delta=False, detail="", job=None, bypassed=None)
 
 
 def new_head(cur: dict, d: Path) -> None:

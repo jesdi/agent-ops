@@ -267,6 +267,8 @@ Global Claude Code config (rules, hooks, and plugins like engram, ponytail and c
 
 To add a new one, run `pnpm dlx @jesdi/skills-cli install <skill>` and add its `.claude/skills/<skill>` and `.agents/skills/<skill>` lines to `.gitignore`.
 
+Never pin `pr-exam` back past `@jesdi/skills` 0.0.103: its `pr_exam.py` is the first with `context` and `score --flags`, which the exam host calls.
+
 The session hook of skills-cli updates only global skills (`~/.my-skills`). Project skills stay at the versions pinned in `.my-skills.json`. To move them to the latest release, run `pnpm dlx @jesdi/skills-cli@latest update --all` and commit the new pins.
 
 ## Deployment

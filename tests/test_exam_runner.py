@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from dispatcher import containers, exam_runner, exams
 from tests.webfakes import make_config
 
@@ -92,8 +94,10 @@ def test_public_parses_the_projection_and_raises_on_failure():
 
 
 def test_score_and_record_raise_on_a_script_failure():
-    assert _script(0, stdout='{"passed": true}')[0].score(Path("e"), Path("a"), Path("g")) == {"passed": True}
-    _raises(lambda: _script(1)[0].score(Path("e"), Path("a"), Path("g")), "score failed")
+    scorer, calls = _script(0, stdout='{"passed": true}')
+    assert scorer.score(Path("e"), Path("a"), Path("g"), Path("f")) == {"passed": True}
+    assert calls == [["score", "--exam", "e", "--answers", "a", "--grades", "g", "--flags", "f"]]
+    _raises(lambda: _script(1)[0].score(Path("e"), Path("a"), Path("g"), Path("f")), "score failed")
     ok, calls = _script(0)
     ok.record(Path("rec"), Path("e"), Path("r"), "2026-11-19")
     assert calls == [["record", "--records", "rec", "--exam", "e", "--result", "r", "--today", "2026-11-19"]]
@@ -112,7 +116,16 @@ def test_grades_must_be_a_regular_file_with_a_grade_for_every_text_question(tmp_
         out.write_text(bad)
         assert exams._grades(out, texts) == (None, "the grading session's grades are malformed")
     out.write_text('{"q1": {"grade": "partial"}}')
-    assert exams._grades(out, texts) == ({"q1": {"grade": "partial"}}, "")
+    assert exams._grades(out, texts) == ({"q1": {"grade": "partial", "feedback": ""}}, "")
+
+
+def test_grades_keep_only_the_text_questions_and_a_capped_feedback_line(tmp_path):
+    out = tmp_path / "grades.json"
+    out.write_text(json.dumps({"q1": {"grade": "pass", "feedback": ["not", "a line"], "extra": 1},
+                               "q2": {"grade": "fail", "feedback": "y" * 5000},
+                               "q3": {"grade": "pass", "feedback": "not a text question"}}))
+    assert exams._grades(out, [{"id": "q1"}, {"id": "q2"}]) == (
+        {"q1": {"grade": "pass", "feedback": ""}, "q2": {"grade": "fail", "feedback": "y" * 1000}}, "")
 
 
 def test_label_events_reads_every_page_and_keeps_only_label_changes():
@@ -136,3 +149,20 @@ def test_pr_reads_the_fields_exam_work_needs():
     pr = _github(lambda argv, **kw: SimpleNamespace(stdout=json.dumps(doc))).pr("o/r", 7)
     assert pr == {"head_sha": "abc", "base_ref": "main", "title": "T", "body": None,
                   "state": "closed", "merged": True, "labels": ["exam:defer"]}
+
+
+def test_context_hands_the_skill_the_turn_and_tells_a_prompt_too_long_from_another_refusal():
+    seen = []
+
+    def run(argv, **kw):
+        seen.append(json.loads(Path(argv[argv.index("--turn") + 1]).read_text()))
+        return SimpleNamespace(returncode=0, stdout="PROMPT", stderr="")
+    turn = {"kind": "general", "message": "why?", "thread": []}
+    assert exam_runner.PrExam(run=run).context(Path("e"), Path("d"), Path("b"), turn) == "PROMPT"
+    assert seen == [turn]
+    too_long = "prompt is 500,000 characters, over the 400,000-character limit\n"
+    with pytest.raises(exam_runner.PromptTooLong):
+        _script(1, stderr=too_long)[0].context(Path("e"), Path("d"), Path("b"), turn)
+    with pytest.raises(ValueError, match="question q9: not in the exam") as refused:
+        _script(1, stderr="question q9: not in the exam\n")[0].context(Path("e"), Path("d"), Path("b"), turn)
+    assert not isinstance(refused.value, exam_runner.PromptTooLong)

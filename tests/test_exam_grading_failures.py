@@ -24,14 +24,14 @@ def test_a_failed_lookup_after_the_follow_up_never_grades_old_answers_against_it
     box.work()
     assert failed
     body = box.read().json()
-    assert body["state"] == "generating" and [r["attempt"] for r in body["results"]] == [1]
+    assert body["state"] == "generating" and [a["attempt"] for a in body["attempts"]] == [1]
     graded = len(box.session.graded())
     box.work()
     body = box.read().json()
     assert (body["state"], body["attempt"]) == ("open", 2)
     assert len(body["exam"]["questions"]) == 2
     assert len(box.session.graded()) == graded
-    assert [r["attempt"] for r in body["results"]] == [1]
+    assert [a["attempt"] for a in body["attempts"]] == [1]
 
 
 def test_a_failed_status_post_is_retried_without_writing_the_records_again(tmp_path, monkeypatch):

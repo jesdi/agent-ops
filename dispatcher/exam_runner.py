@@ -7,6 +7,7 @@ import json
 import os
 import shlex
 import subprocess
+import tempfile
 import sys
 from pathlib import Path
 
@@ -84,8 +85,17 @@ class Github:
         return {"slug": info["slug"], "id": info["id"]}
 
 
+# `pr_exam.py context` exits 1 for every refusal; only its stderr tells a prompt over its limit,
+# as "prompt is N characters, over the PROMPT_LIMIT-character limit" (pr_exam.py `context`).
+TOO_LONG = "-character limit"
+
+
+class PromptTooLong(ValueError):
+    """`pr_exam.py context` refused a turn's prompt as too long."""
+
+
 class PrExam:
-    """The skill's script, run as the skill documents: `validate` and `public`."""
+    """The skill's script, run as the skill documents it."""
 
     def __init__(self, script: Path = SCRIPT, *, run=subprocess.run):
         self.script, self.run = script, run
@@ -110,11 +120,24 @@ class PrExam:
             raise ValueError(proc.stderr.strip() or "config failed")
         return json.loads(proc.stdout)
 
-    def score(self, exam: Path, answers: Path, grades: Path) -> dict:
-        proc = self._call("score", "--exam", exam, "--answers", answers, "--grades", grades)
+    def score(self, exam: Path, answers: Path, grades: Path, flags: Path) -> dict:
+        proc = self._call("score", "--exam", exam, "--answers", answers, "--grades", grades, "--flags", flags)
         if proc.returncode:
             raise ValueError(proc.stderr.strip() or "score failed")
         return json.loads(proc.stdout)
+
+    def context(self, exam: Path, diff: Path, body: Path, turn: dict) -> str:
+        """The prompt of a chat turn, as the skill's `context` prints it for the turn document
+        `turn`. PromptTooLong when the skill refuses the prompt as too long, ValueError when it
+        refuses it for another reason."""
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "turn.json").write_text(json.dumps(turn))
+            proc = self._call("context", "--exam", exam, "--diff", diff, "--body", body, "--turn", Path(tmp) / "turn.json")
+        if proc.returncode and TOO_LONG in proc.stderr:
+            raise PromptTooLong(proc.stderr.strip())
+        if proc.returncode:
+            raise ValueError(proc.stderr.strip() or "context failed")
+        return proc.stdout
 
     def record(self, records: Path, exam: Path, result: Path, today: str) -> None:
         proc = self._call("record", "--records", records, "--exam", exam, "--result", result,
